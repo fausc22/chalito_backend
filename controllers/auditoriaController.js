@@ -39,7 +39,7 @@ const obtenerAuditoria = async (req, res) => {
                 metodo_http, 
                 estado, 
                 tiempo_procesamiento,
-                detalles_adicionales
+                detalles
             FROM auditoria 
             WHERE 1=1
         `;
