@@ -1,0 +1,54 @@
+{
+  "name": "sistema-chalito-backend",
+  "version": "1.0.0",
+  "description": "Backend API para Sistema Gastronómico Chalito",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "dev:debug": "nodemon --inspect server.js",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "migrate": "node scripts/migrate.js",
+    "seed": "node scripts/seed.js"
+  },
+  "keywords": [
+    "api",
+    "restaurant",
+    "pos",
+    "gastronomico",
+    "nodejs",
+    "mysql"
+  ],
+  "author": "Tu Nombre",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.12.2",
+    "bcryptjs": "^2.4.3",
+    "compression": "^1.7.4",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "express-rate-limit": "^7.1.5",
+    "express-session": "^1.18.1",
+    "express-validator": "^7.0.1",
+    "helmet": "^7.1.0",
+    "joi": "^17.11.0",
+    "jsonwebtoken": "^9.0.2",
+    "moment": "^2.29.4",
+    "moment-timezone": "^0.5.43",
+    "morgan": "^1.10.0",
+    "multer": "^1.4.5-lts.1",
+    "mysql2": "^3.6.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.8.10",
+    "jest": "^29.7.0",
+    "nodemon": "^3.0.2",
+    "supertest": "^6.3.3"
+  },
+  "engines": {
+    "node": ">=16.0.0",
+    "npm": ">=8.0.0"
+  }
+}
