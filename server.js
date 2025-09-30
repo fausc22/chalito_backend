@@ -112,6 +112,10 @@ app.use('/auth', authRoutes);
 app.use('/auditoria', auditoriaRoutes);
 
 
+// Aca lo hago sin destructuring porque exportan solo el router sino no me dejaba
+const inventarioRoutes = require('./routes/inventarioRoutes');
+app.use('/inventario', inventarioRoutes);
+
 
 // Middleware global de manejo de errores
 app.use((error, req, res, next) => {

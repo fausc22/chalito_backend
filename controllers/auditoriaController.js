@@ -164,7 +164,7 @@ const obtenerDetalleAuditoria = async (req, res) => {
                 tabla_afectada, 
                 registro_id, 
                 ip_address, 
-                usuario_agent,
+                user_agent,
                 endpoint, 
                 metodo_http, 
                 detalles,
