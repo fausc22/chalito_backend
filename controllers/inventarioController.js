@@ -56,7 +56,7 @@ const crearArticulo = async (req, res) => {
 
         // Verificar que el nombre no esté duplicado
         const [nombreExistente] = await db.execute(
-            'SELECT id FROM articulos WHERE nombre = ? AND activo = 1', 
+            'SELECT id FROM articulos WHERE nombre = ? AND activo = "1"', 
             [nombre]
         );
 
@@ -430,7 +430,7 @@ const editarArticulo = async (req, res) => {
         // Verificar nombre único si se está cambiando
         if (nombre && nombre !== datosAnteriores.nombre) {
             const [nombreExistente] = await db.execute(
-                'SELECT id FROM articulos WHERE nombre = ? AND id != ? AND activo = 1',
+                'SELECT id FROM articulos WHERE nombre = ? AND id != ? AND activo = "1"',
                 [nombre, id]
             );
 
@@ -579,7 +579,7 @@ const eliminarArticulo = async (req, res) => {
 
         // Soft delete: marcar como inactivo
         await db.execute(
-            'UPDATE articulos SET activo = 0 WHERE id = ?',
+            'UPDATE articulos SET activo = "0" WHERE id = ?',
             [id]
         );
 
@@ -1052,7 +1052,7 @@ const obtenerContenidoArticulo = async (req, res) => {
 
         // Verificar que el artículo existe y es elaborado
         const [articulo] = await db.execute(
-            'SELECT id, nombre, tipo FROM articulos WHERE id = ? AND activo = 1',
+            'SELECT id, nombre, tipo FROM articulos WHERE id = ? AND activo = "1"',
             [id]
         );
 
@@ -1137,7 +1137,7 @@ const agregarIngredienteAArticulo = async (req, res) => {
 
         // Verificar que el artículo existe y es elaborado
         const [articulo] = await db.execute(
-            'SELECT id, nombre, tipo FROM articulos WHERE id = ? AND activo = 1',
+            'SELECT id, nombre, tipo FROM articulos WHERE id = ? AND activo = "1"',
             [id]
         );
 
@@ -1410,7 +1410,7 @@ const obtenerStockBajo = async (req, res) => {
             FROM articulos a
             INNER JOIN categorias c ON a.categoria_id = c.id
             WHERE a.stock_actual <= a.stock_minimo 
-            AND a.activo = 1
+            AND a.activo = "1"
             ORDER BY a.stock_actual ASC, a.nombre
         `;
 
@@ -1442,7 +1442,7 @@ const obtenerStockBajo = async (req, res) => {
  */
 const obtenerCategorias = async (req, res) => {
     try {
-        const query = 'SELECT id, nombre, descripcion, orden FROM categorias ORDER BY orden, nombre';
+        const query = 'SELECT id, nombre, descripcion, orden, activo FROM categorias WHERE activo = "1" ORDER BY orden, nombre';
         const [categorias] = await db.execute(query);
 
         res.json({
@@ -1467,7 +1467,7 @@ const crearCategoria = async (req, res) => {
     try {
         console.log('📁 Creando nueva categoría...');
 
-        const { nombre, descripcion, orden = 0 } = req.body;
+        const { nombre, descripcion } = req.body;
 
         if (!nombre || nombre.trim() === '') {
             return res.status(400).json({
@@ -1489,16 +1489,24 @@ const crearCategoria = async (req, res) => {
             });
         }
 
+        // ✅ Obtener el orden máximo actual
+        const [maxOrdenResult] = await db.execute(
+            'SELECT MAX(orden) as maxOrden FROM categorias WHERE activo = "1"'
+        );
+
+        // ✅ Calcular siguiente orden
+        const nuevoOrden = (maxOrdenResult[0].maxOrden || 0) + 1;
+
         // Insertar categoría
         const query = `
-            INSERT INTO categorias (nombre, descripcion, orden)
-            VALUES (?, ?, ?)
+            INSERT INTO categorias (nombre, descripcion, orden, activo)
+            VALUES (?, ?, ?, 1)
         `;
 
         const [result] = await db.execute(query, [
             nombre.trim(),
             descripcion || null,
-            parseInt(orden) || 0
+            nuevoOrden // ✅ Usar orden calculado
         ]);
 
         // Auditar creación
@@ -1506,7 +1514,7 @@ const crearCategoria = async (req, res) => {
             accion: 'CREATE_CATEGORIA',
             tabla: 'categorias',
             registroId: result.insertId,
-            datosNuevos: limpiarDatosSensibles({ nombre, descripcion, orden }),
+            datosNuevos: limpiarDatosSensibles({ nombre, descripcion, orden: nuevoOrden }),
             detallesAdicionales: `Categoría creada: ${nombre}`
         });
 
@@ -1519,7 +1527,7 @@ const crearCategoria = async (req, res) => {
                 id: result.insertId,
                 nombre,
                 descripcion,
-                orden
+                orden: nuevoOrden
             }
         });
 
@@ -1548,7 +1556,7 @@ const obtenerCategoria = async (req, res) => {
         }
 
         const [categorias] = await db.execute(
-            'SELECT id, nombre, descripcion, orden FROM categorias WHERE id = ?',
+            'SELECT id, nombre, descripcion, orden, activo FROM categorias WHERE id = ?',
             [id]
         );
 
@@ -1561,7 +1569,7 @@ const obtenerCategoria = async (req, res) => {
 
         // Obtener cantidad de artículos en esta categoría
         const [countArticulos] = await db.execute(
-            'SELECT COUNT(*) as total_articulos FROM articulos WHERE categoria_id = ? AND activo = 1',
+            'SELECT COUNT(*) as total_articulos FROM articulos WHERE categoria_id = ? AND activo = "1"',
             [id]
         );
 
@@ -1612,7 +1620,7 @@ const editarCategoria = async (req, res) => {
         // Verificar nombre único si se está cambiando
         if (nombre && nombre !== datosAnteriores.nombre) {
             const [nombreExistente] = await db.execute(
-                'SELECT id FROM categorias WHERE nombre = ? AND id != ?',
+                'SELECT id FROM categorias WHERE nombre = ? AND id != ? AND activo = "1"',
                 [nombre, id]
             );
 
@@ -1649,7 +1657,7 @@ const editarCategoria = async (req, res) => {
         }
 
         // Actualizar categoría
-        const query = `UPDATE categorias SET ${camposActualizar.join(', ')} WHERE id = ?`;
+        const query = `UPDATE categorias SET ${camposActualizar.join(', ')} WHERE id = ? AND activo = "1"`;
         valoresActualizar.push(id);
 
         await db.execute(query, valoresActualizar);
@@ -1683,7 +1691,7 @@ const editarCategoria = async (req, res) => {
 };
 
 /**
- * Eliminar categoría
+ * Eliminar categoría - (soft delete)
  */
 const eliminarCategoria = async (req, res) => {
     try {
@@ -1698,7 +1706,7 @@ const eliminarCategoria = async (req, res) => {
 
         // Obtener datos de la categoría
         const datosAnteriores = await obtenerDatosAnteriores('categorias', id);
-        if (!datosAnteriores) {
+        if (!datosAnteriores || datosAnteriores.activo != 1) {
             return res.status(404).json({
                 success: false,
                 message: 'Categoría no encontrada'
@@ -1707,7 +1715,7 @@ const eliminarCategoria = async (req, res) => {
 
         // Verificar si tiene artículos asociados
         const [tieneArticulos] = await db.execute(
-            'SELECT COUNT(*) as count FROM articulos WHERE categoria_id = ?',
+            'SELECT COUNT(*) as count FROM articulos WHERE categoria_id = ? AND activo = "1"',
             [id]
         );
 
@@ -1720,7 +1728,7 @@ const eliminarCategoria = async (req, res) => {
         }
 
         // Eliminar categoría
-        await db.execute('DELETE FROM categorias WHERE id = ?', [id]);
+        await db.execute('UPDATE categorias SET activo = "0" WHERE id = ?', [id]);
 
         // Auditar eliminación
         await auditarOperacion(req, {
@@ -1762,7 +1770,7 @@ const filtrarCategorias = async (req, res) => {
             pagina = 1
         } = req.query;
 
-        let whereConditions = ['1=1'];
+        let whereConditions = ['c.activo = "1"'];
         let queryParams = [];
 
         // Filtro por nombre
@@ -1776,12 +1784,12 @@ const filtrarCategorias = async (req, res) => {
         // Query principal con conteo de artículos
         let query = `
             SELECT 
-                c.id, c.nombre, c.descripcion, c.orden,
+                c.id, c.nombre, c.descripcion, c.orden, c.activo,
                 COUNT(a.id) as total_articulos
             FROM categorias c
             LEFT JOIN articulos a ON c.id = a.categoria_id AND a.activo = 1
             WHERE ${whereClause}
-            GROUP BY c.id, c.nombre, c.descripcion, c.orden
+            GROUP BY c.id, c.nombre, c.descripcion, c.orden, c.activo
             ORDER BY c.orden, c.nombre
         `;
 
