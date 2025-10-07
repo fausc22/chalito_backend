@@ -116,6 +116,9 @@ app.use('/auditoria', auditoriaRoutes);
 const inventarioRoutes = require('./routes/inventarioRoutes');
 app.use('/inventario', inventarioRoutes);
 
+// Para manejo de las imagenes de los articulos
+const path = require('path');
+app.use('/resources', express.static(path.join(__dirname, 'resources')));
 
 // Middleware global de manejo de errores
 app.use((error, req, res, next) => {

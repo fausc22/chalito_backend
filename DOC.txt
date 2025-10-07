@@ -1,0 +1,14 @@
+SIEMPRE trabajar sobre mi rama
+git branch, git status
+git checkout facu
+
+# HAGO CAMBIOS
+git add .
+git commit -m "Fix: corrección en el login"
+git push
+
+# Cuando todo esté perfecto
+git checkout main
+git pull origin main
+git merge facu (OJO con merge, fusiona todo)
+git push origin main

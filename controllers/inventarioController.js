@@ -12,7 +12,7 @@ const { auditarOperacion, obtenerDatosAnteriores, limpiarDatosSensibles } = requ
 const crearArticulo = async (req, res) => {
     try {
         console.log('📦 Creando nuevo artículo...');
-        
+
         const {
             categoria_id,
             codigo_barra,
@@ -43,7 +43,7 @@ const crearArticulo = async (req, res) => {
 
         // Verificar que la categoría existe
         const [categoria] = await db.execute(
-            'SELECT id FROM categorias WHERE id = ?', 
+            'SELECT id FROM categorias WHERE id = ?',
             [categoria_id]
         );
 
@@ -56,7 +56,7 @@ const crearArticulo = async (req, res) => {
 
         // Verificar que el nombre no esté duplicado
         const [nombreExistente] = await db.execute(
-            'SELECT id FROM articulos WHERE nombre = ? AND activo = "1"', 
+            'SELECT id FROM articulos WHERE nombre = ? AND activo = "1"',
             [nombre]
         );
 
@@ -70,7 +70,7 @@ const crearArticulo = async (req, res) => {
         // Verificar código de barras si se proporciona
         if (codigo_barra) {
             const [codigoExistente] = await db.execute(
-                'SELECT id FROM articulos WHERE codigo_barra = ?', 
+                'SELECT id FROM articulos WHERE codigo_barra = ?',
                 [codigo_barra]
             );
 
@@ -180,7 +180,7 @@ const crearArticulo = async (req, res) => {
 const obtenerArticulo = async (req, res) => {
     try {
         const { id } = req.params;
-        
+
         if (!id || isNaN(parseInt(id))) {
             return res.status(400).json({
                 success: false,
@@ -256,7 +256,7 @@ const obtenerArticulo = async (req, res) => {
 const filtrarArticulos = async (req, res) => {
     try {
         console.log('🔍 Filtrando artículos...');
-        
+
         const {
             nombre,
             categoria_id,
@@ -296,7 +296,8 @@ const filtrarArticulos = async (req, res) => {
         // Filtro por estado activo
         if (activo !== 'all') {
             whereConditions.push('a.activo = ?');
-            queryParams.push(activo === 'true' ? 1 : 0);
+            // queryParams.push(activo === 'true' ? 1 : 0);
+            queryParams.push(parseInt(activo));
         }
 
         const whereClause = whereConditions.join(' AND ');
@@ -305,7 +306,7 @@ const filtrarArticulos = async (req, res) => {
         let query = `
             SELECT 
                 a.id, a.codigo_barra, a.nombre, a.descripcion, a.precio,
-                a.stock_actual, a.stock_minimo, a.tipo, a.activo,
+                a.stock_actual, a.stock_minimo, a.tipo, a.imagen_url, a.activo,
                 a.fecha_creacion, a.fecha_modificacion,
                 c.id as categoria_id, c.nombre as categoria_nombre,
                 CASE 
@@ -318,14 +319,22 @@ const filtrarArticulos = async (req, res) => {
             ORDER BY a.nombre ASC
         `;
 
-        // Paginación -- Cambie limite por 10 y maximo de 30
-        const limiteNum = Math.min(parseInt(limite) || 10, 30);
+        // Paginación -- Cambie limite por 10 y maximo de 100
+        const limiteNum = Math.min(parseInt(limite) || 10, 100);
         const paginaNum = Math.max(parseInt(pagina) || 1, 1);
         const offset = (paginaNum - 1) * limiteNum;
 
         query += ` LIMIT ${limiteNum} OFFSET ${offset}`;
 
         const [resultados] = await db.execute(query, queryParams);
+
+        // Convertir precio a número para mandar al front
+        const resultadosFormateados = resultados.map(art => ({
+            ...art,
+            precio: parseFloat(art.precio),
+            stock_actual: parseInt(art.stock_actual),
+            stock_minimo: parseInt(art.stock_minimo)
+        }));
 
         // Query de conteo
         const queryCount = `
@@ -342,7 +351,7 @@ const filtrarArticulos = async (req, res) => {
 
         res.json({
             success: true,
-            data: resultados,
+            data: resultadosFormateados, // En vez de resultados. Formatea el numero pq tenia problemas en el front
             meta: {
                 pagina_actual: paginaNum,
                 total_registros: total,
@@ -378,7 +387,8 @@ const editarArticulo = async (req, res) => {
             stock_minimo,
             tipo,
             imagen_url,
-            activo
+            activo,
+            ingredientes = []
         } = req.body;
 
         if (!id || isNaN(parseInt(id))) {
@@ -494,35 +504,91 @@ const editarArticulo = async (req, res) => {
             });
         }
 
-        // Actualizar ingrediente
-        const query = `UPDATE ingredientes SET ${camposActualizar.join(', ')} WHERE id = ?`;
-        valoresActualizar.push(id);
+        // Actualizar artículo
+        // const query = `UPDATE articulos SET ${camposActualizar.join(', ')} WHERE id = ?`;
+        // valoresActualizar.push(id);
 
-        await db.execute(query, valoresActualizar);
+        // await db.execute(query, valoresActualizar);
 
-        // Auditar cambios
-        await auditarOperacion(req, {
-            accion: 'UPDATE_INGREDIENTE',
-            tabla: 'ingredientes',
-            registroId: id,
-            datosAnteriores: limpiarDatosSensibles(datosAnteriores),
-            datosNuevos: limpiarDatosSensibles(req.body),
-            detallesAdicionales: `Ingrediente actualizado: ${nombre || datosAnteriores.nombre}`
-        });
+        // Iniciar transacción si hay ingredientes que actualizar
+        const connection = await db.getConnection();
+        await connection.beginTransaction();
 
-        console.log(`✅ Ingrediente actualizado: ID ${id}`);
+        try {
+            // Actualizar artículo
+            const query = `UPDATE articulos SET ${camposActualizar.join(', ')} WHERE id = ?`;
+            valoresActualizar.push(id);
 
-        res.json({
-            success: true,
-            message: 'Ingrediente actualizado exitosamente',
-            data: { id: parseInt(id) }
-        });
+            await connection.execute(query, valoresActualizar);
+
+            // ✅ Si es ELABORADO y hay ingredientes, actualizar contenido
+            if (tipo === 'ELABORADO' && ingredientes.length > 0) {
+                // Eliminar ingredientes actuales
+                await connection.execute(
+                    'DELETE FROM articulo_contenido WHERE articulo_id = ?',
+                    [id]
+                );
+
+                // Insertar nuevos ingredientes
+                for (const ingrediente of ingredientes) {
+                    // Validar que el ingrediente existe
+                    const [ingExiste] = await connection.execute(
+                        'SELECT id FROM ingredientes WHERE id = ? AND disponible = 1',
+                        [ingrediente.ingrediente_id]
+                    );
+
+                    if (ingExiste.length === 0) {
+                        throw new Error(`Ingrediente ID ${ingrediente.ingrediente_id} no encontrado o no disponible`);
+                    }
+
+                    await connection.execute(`
+                        INSERT INTO articulo_contenido (
+                            articulo_id, ingrediente_id, unidad_medida, cantidad
+                        ) VALUES (?, ?, ?, ?)
+                    `, [
+                        id,
+                        ingrediente.ingrediente_id,
+                        ingrediente.unidad_medida || 'UNIDADES',
+                        ingrediente.cantidad
+                    ]);
+                }
+
+                console.log(`✅ ${ingredientes.length} ingredientes actualizados para artículo ID ${id}`);
+            }
+
+            // Auditar cambios
+            await auditarOperacion(req, {
+                accion: 'UPDATE_ARTICULO',
+                tabla: 'articulos',
+                registroId: id,
+                datosAnteriores: limpiarDatosSensibles(datosAnteriores),
+                datosNuevos: limpiarDatosSensibles(req.body),
+                detallesAdicionales: `Artículo actualizado: ${nombre || datosAnteriores.nombre}`
+            });
+
+            await connection.commit();
+            connection.release();
+
+
+            console.log(`✅ Artículo actualizado: ID ${id}`);
+
+            res.json({
+                success: true,
+                message: 'Artículo actualizado correctamente',
+                data: { id: parseInt(id) }
+            });
+
+        } catch (transactionError) {
+            await connection.rollback();
+            connection.release();
+            throw transactionError;
+        }
 
     } catch (error) {
-        console.error('❌ Error editando ingrediente:', error);
+        console.error('❌ Error editando artículo:', error);
         res.status(500).json({
             success: false,
-            message: 'Error al editar ingrediente',
+            message: 'Error al editar artículo',
             error: process.env.NODE_ENV === 'development' ? error.message : undefined
         });
     }
@@ -596,7 +662,7 @@ const eliminarArticulo = async (req, res) => {
 
         res.json({
             success: true,
-            message: 'Artículo eliminado exitosamente',
+            message: 'Artículo eliminado correctamente',
             data: {
                 id: parseInt(id),
                 nombre: datosAnteriores.nombre
@@ -623,7 +689,7 @@ const eliminarArticulo = async (req, res) => {
 const crearIngrediente = async (req, res) => {
     try {
         console.log('🧂 Creando nuevo ingrediente...');
-        
+
         const {
             nombre,
             descripcion,
@@ -716,7 +782,7 @@ const crearIngrediente = async (req, res) => {
 const obtenerIngrediente = async (req, res) => {
     try {
         const { id } = req.params;
-        
+
         if (!id || isNaN(parseInt(id))) {
             return res.status(400).json({
                 success: false,
@@ -775,7 +841,7 @@ const obtenerIngrediente = async (req, res) => {
 const filtrarIngredientes = async (req, res) => {
     try {
         console.log('🔍 Filtrando ingredientes...');
-        
+
         const {
             nombre,
             disponible = 1,
@@ -809,8 +875,8 @@ const filtrarIngredientes = async (req, res) => {
             ORDER BY nombre ASC
         `;
 
-        // Paginación -- Cambie limite por 10 y maximo de 30
-        const limiteNum = Math.min(parseInt(limite) || 10, 30);
+        // Paginación -- Cambie limite por 10 y maximo de 100
+        const limiteNum = Math.min(parseInt(limite) || 10, 100);
         const paginaNum = Math.max(parseInt(pagina) || 1, 1);
         const offset = (paginaNum - 1) * limiteNum;
 
@@ -1422,7 +1488,7 @@ const obtenerStockBajo = async (req, res) => {
             success: true,
             data: resultados,
             total: resultados.length,
-            message: resultados.length > 0 
+            message: resultados.length > 0
                 ? `${resultados.length} artículos requieren reposición`
                 : 'No hay artículos con stock bajo'
         });
@@ -1473,6 +1539,46 @@ const crearCategoria = async (req, res) => {
             return res.status(400).json({
                 success: false,
                 message: 'El nombre de la categoría es obligatorio'
+            });
+        }
+
+        // Verificar si existe (activa O inactiva)
+        const [estado] = await db.execute(
+            'SELECT id, activo FROM categorias WHERE nombre = ?',
+            [nombre]
+        );
+
+        if (estado.length > 0) {
+            const categoriaExistente = estado[0];
+
+            // Si existe pero está inactiva, habilitarla
+            if (Number(categoriaExistente.activo) === 0) {
+                console.log('Reactivando categoría...');
+
+                // Calcular nuevo orden para la categoría reactivada
+                const [maxOrdenResult] = await db.execute(
+                    'SELECT MAX(orden) as maxOrden FROM categorias WHERE activo = 1'
+                );
+                const nuevoOrden = (maxOrdenResult[0].maxOrden || 0) + 1;
+
+                await db.execute(
+                    'UPDATE categorias SET activo = 1, descripcion = ?, orden = ? WHERE id = ?',
+                    [descripcion || null, nuevoOrden, categoriaExistente.id]
+                );
+
+                console.log(`✅ Categoría reactivada: ${nombre} con orden ${nuevoOrden}`);
+
+                return res.status(200).json({
+                    success: true,
+                    message: 'Categoría reactivada exitosamente',
+                    data: { id: categoriaExistente.id, nombre, orden: nuevoOrden }
+                });
+            }
+
+            // Si existe y está activa, error
+            return res.status(409).json({
+                success: false,
+                message: 'Ya existe una categoría activa con ese nombre'
             });
         }
 
@@ -1893,20 +1999,20 @@ module.exports = {
     filtrarArticulos,
     editarArticulo,
     eliminarArticulo,
-    
+
     // Ingredientes
     crearIngrediente,
     obtenerIngrediente,
     filtrarIngredientes,
     editarIngrediente,
     eliminarIngrediente,
-    
+
     // Contenido de elaborados
     obtenerContenidoArticulo,
     agregarIngredienteAArticulo,
     editarContenidoArticulo,
     eliminarIngredienteDeArticulo,
-    
+
     // Categorías
     crearCategoria,
     obtenerCategoria,
@@ -1914,7 +2020,7 @@ module.exports = {
     editarCategoria,
     eliminarCategoria,
     obtenerCategorias,
-    
+
     // Auxiliares
     obtenerStockBajo,
     calcularCostoElaborado
