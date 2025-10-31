@@ -167,7 +167,7 @@ const obtenerDetalleAuditoria = async (req, res) => {
                 user_agent,
                 endpoint, 
                 metodo_http, 
-                detalles_adicionales,
+                detalles,
                 estado, 
                 tiempo_procesamiento
             FROM auditoria 
@@ -297,7 +297,7 @@ const obtenerAuditoriaConFiltros = async (req, res) => {
             SELECT 
                 id, fecha_hora, usuario_id, usuario_nombre, accion, 
                 tabla_afectada, registro_id, ip_address, endpoint, 
-                metodo_http, estado, tiempo_procesamiento, detalles_adicionales
+                metodo_http, estado, tiempo_procesamiento, detalles
             FROM auditoria 
             WHERE 1=1
         `;
@@ -345,7 +345,7 @@ const obtenerAuditoriaConFiltros = async (req, res) => {
                 accion LIKE ? OR 
                 tabla_afectada LIKE ? OR 
                 endpoint LIKE ? OR
-                detalles_adicionales LIKE ?
+                detalles LIKE ?
             )`);
             const searchTerm = `%${busqueda_texto.trim()}%`;
             queryParams.push(searchTerm, searchTerm, searchTerm, searchTerm, searchTerm);
