@@ -2,9 +2,10 @@ const express = require('express');
 const router = express.Router();
 const authController = require('../controllers/authController');
 const authMiddleware = require('../middlewares/authMiddleware');
+const { loginRateLimiter, apiRateLimiter } = require('../middlewares/rateLimitMiddleware');
 
-// ✅ RUTAS PÚBLICAS
-router.post('/login', authController.login);
+// ✅ RUTAS PÚBLICAS (con rate limiting)
+router.post('/login', loginRateLimiter, authController.login);
 router.post('/refresh-token', authController.refreshToken);
 
 // ✅ RUTAS PRIVADAS
