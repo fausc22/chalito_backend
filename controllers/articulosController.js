@@ -12,24 +12,31 @@ const obtenerArticulos = async (req, res) => {
     try {
         const { categoria, disponible } = req.query;
 
-        let query = 'SELECT * FROM articulos WHERE 1=1';
+        let query = `
+            SELECT 
+                a.*,
+                c.nombre as categoria_nombre
+            FROM articulos a
+            LEFT JOIN categorias c ON a.categoria_id = c.id
+            WHERE 1=1
+        `;
         const params = [];
 
-        // Filtro por categoría
+        // Filtro por categoría (puede ser ID o nombre)
         if (categoria) {
-            query += ' AND categoria = ?';
-            params.push(categoria);
+            query += ' AND (a.categoria_id = ? OR c.nombre = ?)';
+            params.push(categoria, categoria);
         }
 
-        // Filtro por disponibilidad
+        // Filtro por disponibilidad (usando el campo 'activo')
         if (disponible !== undefined) {
             const disponibleBool = disponible === 'true' || disponible === '1';
-            query += ' AND disponible = ?';
+            query += ' AND a.activo = ?';
             params.push(disponibleBool);
         }
 
         // Ordenar por nombre
-        query += ' ORDER BY nombre ASC';
+        query += ' ORDER BY a.nombre ASC';
 
         const [articulos] = await db.execute(query, params);
 
@@ -57,7 +64,12 @@ const obtenerArticuloPorId = async (req, res) => {
         }
 
         const [articulos] = await db.execute(
-            'SELECT * FROM articulos WHERE id = ?',
+            `SELECT 
+                a.*,
+                c.nombre as categoria_nombre
+            FROM articulos a
+            LEFT JOIN categorias c ON a.categoria_id = c.id
+            WHERE a.id = ?`,
             [id]
         );
 
@@ -82,13 +94,16 @@ const obtenerArticuloPorId = async (req, res) => {
 const obtenerCategorias = async (req, res) => {
     try {
         const [categorias] = await db.execute(
-            'SELECT DISTINCT categoria FROM articulos WHERE categoria IS NOT NULL ORDER BY categoria ASC'
+            `SELECT 
+                c.id, 
+                c.nombre, 
+                c.descripcion,
+                c.orden
+            FROM categorias c
+            ORDER BY c.orden ASC, c.nombre ASC`
         );
 
-        // Extraer solo los valores de categoría
-        const listaCategorias = categorias.map(cat => cat.categoria);
-
-        res.json(listaCategorias);
+        res.json(categorias);
     } catch (error) {
         console.error('❌ Error al obtener categorías:', error);
         res.status(500).json({
@@ -105,37 +120,39 @@ const obtenerCategorias = async (req, res) => {
 const crearArticulo = async (req, res) => {
     try {
         const {
-            codigo,
+            codigo_barra,
             nombre,
             descripcion,
             precio,
-            categoria,
-            tiempoPreparacion,
-            disponible = true,
-            imagen
+            categoria_id,
+            stock_actual = 0,
+            stock_minimo = 0,
+            tipo = 'OTRO',
+            imagen_url,
+            activo = true
         } = req.body;
 
         // Validaciones
         const errores = [];
 
-        if (!codigo || codigo.trim() === '') {
-            errores.push('El código es obligatorio');
-        }
-
         if (!nombre || nombre.trim() === '') {
             errores.push('El nombre es obligatorio');
         }
 
-        if (!precio || isNaN(precio) || parseFloat(precio) <= 0) {
-            errores.push('El precio debe ser mayor a 0');
+        if (!precio || isNaN(precio) || parseFloat(precio) < 0) {
+            errores.push('El precio debe ser mayor o igual a 0');
         }
 
-        if (!categoria || categoria.trim() === '') {
+        if (!categoria_id || isNaN(categoria_id)) {
             errores.push('La categoría es obligatoria');
         }
 
-        if (tiempoPreparacion && (isNaN(tiempoPreparacion) || parseInt(tiempoPreparacion) < 0)) {
-            errores.push('El tiempo de preparación debe ser un número positivo');
+        if (stock_actual !== undefined && (isNaN(stock_actual) || parseInt(stock_actual) < 0)) {
+            errores.push('El stock actual debe ser un número positivo o cero');
+        }
+
+        if (stock_minimo !== undefined && (isNaN(stock_minimo) || parseInt(stock_minimo) < 0)) {
+            errores.push('El stock mínimo debe ser un número positivo o cero');
         }
 
         if (errores.length > 0) {
@@ -145,37 +162,56 @@ const crearArticulo = async (req, res) => {
             });
         }
 
-        // Verificar si el código ya existe
-        const [existente] = await db.execute(
-            'SELECT id FROM articulos WHERE codigo = ?',
-            [codigo.trim()]
+        // Verificar que la categoría existe
+        const [categoriaExiste] = await db.execute(
+            'SELECT id FROM categorias WHERE id = ?',
+            [categoria_id]
         );
 
-        if (existente.length > 0) {
-            return res.status(409).json({ error: 'El código de artículo ya existe' });
+        if (categoriaExiste.length === 0) {
+            return res.status(404).json({ error: 'La categoría especificada no existe' });
+        }
+
+        // Verificar si el código de barra ya existe (si se proporciona)
+        if (codigo_barra) {
+            const [existente] = await db.execute(
+                'SELECT id FROM articulos WHERE codigo_barra = ?',
+                [codigo_barra.trim()]
+            );
+
+            if (existente.length > 0) {
+                return res.status(409).json({ error: 'El código de barra ya existe' });
+            }
         }
 
         // Insertar artículo
         const [result] = await db.execute(
             `INSERT INTO articulos (
-                codigo, nombre, descripcion, precio, categoria,
-                tiempoPreparacion, disponible, imagen
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                categoria_id, codigo_barra, nombre, descripcion, precio,
+                stock_actual, stock_minimo, tipo, imagen_url, activo
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
-                codigo.trim(),
+                parseInt(categoria_id),
+                codigo_barra ? codigo_barra.trim() : null,
                 nombre.trim(),
                 descripcion ? descripcion.trim() : null,
                 parseFloat(precio),
-                categoria.trim(),
-                tiempoPreparacion ? parseInt(tiempoPreparacion) : null,
-                disponible === true || disponible === 'true' || disponible === 1,
-                imagen || null
+                parseInt(stock_actual),
+                parseInt(stock_minimo),
+                tipo,
+                imagen_url || null,
+                activo === true || activo === 'true' || activo === 1
             ]
         );
 
-        // Obtener el artículo creado
+        // Obtener el artículo creado con el nombre de la categoría
         const [nuevoArticulo] = await db.execute(
-            'SELECT * FROM articulos WHERE id = ?',
+            `SELECT 
+                a.*,
+                c.nombre as categoria_nombre
+            FROM articulos a
+            LEFT JOIN categorias c ON a.categoria_id = c.id
+            WHERE a.id = ?`,
             [result.insertId]
         );
 
@@ -200,14 +236,16 @@ const actualizarArticulo = async (req, res) => {
     try {
         const { id } = req.params;
         const {
-            codigo,
+            codigo_barra,
             nombre,
             descripcion,
             precio,
-            categoria,
-            tiempoPreparacion,
-            disponible,
-            imagen
+            categoria_id,
+            stock_actual,
+            stock_minimo,
+            tipo,
+            imagen_url,
+            activo
         } = req.body;
 
         // Validación del ID
@@ -228,24 +266,24 @@ const actualizarArticulo = async (req, res) => {
         // Validaciones
         const errores = [];
 
-        if (codigo !== undefined && (!codigo || codigo.trim() === '')) {
-            errores.push('El código no puede estar vacío');
-        }
-
         if (nombre !== undefined && (!nombre || nombre.trim() === '')) {
             errores.push('El nombre no puede estar vacío');
         }
 
-        if (precio !== undefined && (isNaN(precio) || parseFloat(precio) <= 0)) {
-            errores.push('El precio debe ser mayor a 0');
+        if (precio !== undefined && (isNaN(precio) || parseFloat(precio) < 0)) {
+            errores.push('El precio debe ser mayor o igual a 0');
         }
 
-        if (categoria !== undefined && (!categoria || categoria.trim() === '')) {
+        if (categoria_id !== undefined && (!categoria_id || isNaN(categoria_id))) {
             errores.push('La categoría no puede estar vacía');
         }
 
-        if (tiempoPreparacion !== undefined && (isNaN(tiempoPreparacion) || parseInt(tiempoPreparacion) < 0)) {
-            errores.push('El tiempo de preparación debe ser un número positivo');
+        if (stock_actual !== undefined && (isNaN(stock_actual) || parseInt(stock_actual) < 0)) {
+            errores.push('El stock actual debe ser un número positivo o cero');
+        }
+
+        if (stock_minimo !== undefined && (isNaN(stock_minimo) || parseInt(stock_minimo) < 0)) {
+            errores.push('El stock mínimo debe ser un número positivo o cero');
         }
 
         if (errores.length > 0) {
@@ -255,15 +293,27 @@ const actualizarArticulo = async (req, res) => {
             });
         }
 
-        // Si se cambia el código, verificar que no exista en otro artículo
-        if (codigo && codigo !== articuloExistente[0].codigo) {
+        // Verificar que la categoría existe (si se proporciona)
+        if (categoria_id !== undefined) {
+            const [categoriaExiste] = await db.execute(
+                'SELECT id FROM categorias WHERE id = ?',
+                [categoria_id]
+            );
+
+            if (categoriaExiste.length === 0) {
+                return res.status(404).json({ error: 'La categoría especificada no existe' });
+            }
+        }
+
+        // Si se cambia el código de barra, verificar que no exista en otro artículo
+        if (codigo_barra && codigo_barra !== articuloExistente[0].codigo_barra) {
             const [codigoExistente] = await db.execute(
-                'SELECT id FROM articulos WHERE codigo = ? AND id != ?',
-                [codigo.trim(), id]
+                'SELECT id FROM articulos WHERE codigo_barra = ? AND id != ?',
+                [codigo_barra.trim(), id]
             );
 
             if (codigoExistente.length > 0) {
-                return res.status(409).json({ error: 'El código de artículo ya existe' });
+                return res.status(409).json({ error: 'El código de barra ya existe' });
             }
         }
 
@@ -271,9 +321,9 @@ const actualizarArticulo = async (req, res) => {
         const campos = [];
         const valores = [];
 
-        if (codigo !== undefined) {
-            campos.push('codigo = ?');
-            valores.push(codigo.trim());
+        if (codigo_barra !== undefined) {
+            campos.push('codigo_barra = ?');
+            valores.push(codigo_barra ? codigo_barra.trim() : null);
         }
 
         if (nombre !== undefined) {
@@ -291,24 +341,34 @@ const actualizarArticulo = async (req, res) => {
             valores.push(parseFloat(precio));
         }
 
-        if (categoria !== undefined) {
-            campos.push('categoria = ?');
-            valores.push(categoria.trim());
+        if (categoria_id !== undefined) {
+            campos.push('categoria_id = ?');
+            valores.push(parseInt(categoria_id));
         }
 
-        if (tiempoPreparacion !== undefined) {
-            campos.push('tiempoPreparacion = ?');
-            valores.push(tiempoPreparacion ? parseInt(tiempoPreparacion) : null);
+        if (stock_actual !== undefined) {
+            campos.push('stock_actual = ?');
+            valores.push(parseInt(stock_actual));
         }
 
-        if (disponible !== undefined) {
-            campos.push('disponible = ?');
-            valores.push(disponible === true || disponible === 'true' || disponible === 1);
+        if (stock_minimo !== undefined) {
+            campos.push('stock_minimo = ?');
+            valores.push(parseInt(stock_minimo));
         }
 
-        if (imagen !== undefined) {
-            campos.push('imagen = ?');
-            valores.push(imagen || null);
+        if (tipo !== undefined) {
+            campos.push('tipo = ?');
+            valores.push(tipo);
+        }
+
+        if (imagen_url !== undefined) {
+            campos.push('imagen_url = ?');
+            valores.push(imagen_url || null);
+        }
+
+        if (activo !== undefined) {
+            campos.push('activo = ?');
+            valores.push(activo === true || activo === 'true' || activo === 1);
         }
 
         if (campos.length === 0) {
@@ -324,9 +384,14 @@ const actualizarArticulo = async (req, res) => {
             valores
         );
 
-        // Obtener el artículo actualizado
+        // Obtener el artículo actualizado con el nombre de la categoría
         const [articuloActualizado] = await db.execute(
-            'SELECT * FROM articulos WHERE id = ?',
+            `SELECT 
+                a.*,
+                c.nombre as categoria_nombre
+            FROM articulos a
+            LEFT JOIN categorias c ON a.categoria_id = c.id
+            WHERE a.id = ?`,
             [id]
         );
 
@@ -344,7 +409,7 @@ const actualizarArticulo = async (req, res) => {
 };
 
 /**
- * Eliminar un artículo (soft delete - marcar como no disponible)
+ * Eliminar un artículo (soft delete - marcar como no activo)
  * DELETE /articulos/:id
  */
 const eliminarArticulo = async (req, res) => {
@@ -366,15 +431,15 @@ const eliminarArticulo = async (req, res) => {
             return res.status(404).json({ error: 'Artículo no encontrado' });
         }
 
-        // Soft delete: marcar como no disponible
+        // Soft delete: marcar como no activo
         await db.execute(
-            'UPDATE articulos SET disponible = false WHERE id = ?',
+            'UPDATE articulos SET activo = false WHERE id = ?',
             [id]
         );
 
         res.json({
-            message: 'Artículo marcado como no disponible',
-            articulo: { ...articuloExistente[0], disponible: false }
+            message: 'Artículo marcado como no activo',
+            articulo: { ...articuloExistente[0], activo: false }
         });
     } catch (error) {
         console.error('❌ Error al eliminar artículo:', error);
