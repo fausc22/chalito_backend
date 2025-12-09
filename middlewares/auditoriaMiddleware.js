@@ -34,7 +34,7 @@ const registrarAuditoria = async ({
 }) => {
     try {
         const query = `
-            INSERT INTO auditoria (
+            INSERT INTO auditorias (
                 usuario_id, usuario_nombre, accion, tabla_afectada, registro_id,
                 datos_anteriores, datos_nuevos, ip_address, user_agent, endpoint,
                 metodo_http, detalles, estado, tiempo_procesamiento

@@ -74,11 +74,11 @@ router.put('/articulos/:id',
  * DELETE /inventario/articulos/:id
  * Eliminar artículo (soft delete)
  */
-router.delete('/articulos/:id', 
+router.delete('/articulos/:id',
     ...soloAdminGerente,
-    middlewareAuditoria({ 
-        accion: 'DELETE_ARTICULO', 
-        tabla: 'articulos' 
+    middlewareAuditoria({
+        accion: 'DELETE_ARTICULO',
+        tabla: 'articulos'
     }),
     inventarioController.eliminarArticulo
 );
@@ -92,12 +92,12 @@ router.delete('/articulos/:id',
  * Listar ingredientes con filtros
  * Query params: nombre, disponible, limite, pagina
  */
-router.get('/ingredientes', 
+router.get('/ingredientes',
     ...soloAdminGerente,
-    middlewareAuditoria({ 
-        accion: 'VIEW_INGREDIENTES', 
+    middlewareAuditoria({
+        accion: 'VIEW_INGREDIENTES',
         tabla: 'ingredientes',
-        incluirQuery: true 
+        incluirQuery: true
     }),
     inventarioController.filtrarIngredientes
 );
@@ -106,11 +106,11 @@ router.get('/ingredientes',
  * GET /inventario/ingredientes/:id
  * Obtener ingrediente específico
  */
-router.get('/ingredientes/:id', 
+router.get('/ingredientes/:id',
     ...soloAdminGerente,
-    middlewareAuditoria({ 
-        accion: 'VIEW_INGREDIENTE', 
-        tabla: 'ingredientes' 
+    middlewareAuditoria({
+        accion: 'VIEW_INGREDIENTE',
+        tabla: 'ingredientes'
     }),
     inventarioController.obtenerIngrediente
 );
@@ -120,12 +120,12 @@ router.get('/ingredientes/:id',
  * Crear nuevo ingrediente
  * Body: nombre, descripcion, precio_extra, disponible
  */
-router.post('/ingredientes', 
+router.post('/ingredientes',
     ...soloAdminGerente,
-    middlewareAuditoria({ 
-        accion: 'CREATE_INGREDIENTE', 
+    middlewareAuditoria({
+        accion: 'CREATE_INGREDIENTE',
         tabla: 'ingredientes',
-        incluirBody: true 
+        incluirBody: true
     }),
     inventarioController.crearIngrediente
 );
@@ -134,12 +134,12 @@ router.post('/ingredientes',
  * PUT /inventario/ingredientes/:id
  * Editar ingrediente existente
  */
-router.put('/ingredientes/:id', 
+router.put('/ingredientes/:id',
     ...soloAdminGerente,
-    middlewareAuditoria({ 
-        accion: 'UPDATE_INGREDIENTE', 
+    middlewareAuditoria({
+        accion: 'UPDATE_INGREDIENTE',
         tabla: 'ingredientes',
-        incluirBody: true 
+        incluirBody: true
     }),
     inventarioController.editarIngrediente
 );

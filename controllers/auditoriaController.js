@@ -40,7 +40,7 @@ const obtenerAuditoria = async (req, res) => {
                 estado, 
                 tiempo_procesamiento,
                 detalles
-            FROM auditoria 
+            FROM auditorias
             WHERE 1=1
         `;
 
@@ -100,7 +100,7 @@ const obtenerAuditoria = async (req, res) => {
         const [resultados] = await db.execute(query, queryParams);
 
         // ✅ Query de conteo con los mismos filtros
-        let queryCount = `SELECT COUNT(*) as total FROM auditoria WHERE 1=1`;
+        let queryCount = `SELECT COUNT(*) as total FROM auditorias WHERE 1=1`;
         let countParams = [...queryParams]; // Copiar los mismos parámetros
 
         // Reutilizar las mismas condiciones para el conteo
@@ -170,7 +170,7 @@ const obtenerDetalleAuditoria = async (req, res) => {
                 detalles,
                 estado, 
                 tiempo_procesamiento
-            FROM auditoria 
+            FROM auditorias
             WHERE id = ?
         `;
 
@@ -212,7 +212,7 @@ const obtenerDatosFiltros = async (req, res) => {
         // ✅ Queries con límites seguros y sin parámetros (no hay entrada del usuario)
         const queryUsuarios = `
             SELECT DISTINCT usuario_nombre
-            FROM auditoria 
+            FROM auditorias 
             WHERE usuario_nombre IS NOT NULL 
             AND usuario_nombre != ''
             ORDER BY usuario_nombre ASC
@@ -221,7 +221,7 @@ const obtenerDatosFiltros = async (req, res) => {
 
         const queryAcciones = `
             SELECT DISTINCT accion
-            FROM auditoria 
+            FROM auditorias 
             WHERE accion IS NOT NULL 
             AND accion != ''
             ORDER BY accion ASC
@@ -230,7 +230,7 @@ const obtenerDatosFiltros = async (req, res) => {
 
         const queryMetodos = `
             SELECT DISTINCT metodo_http
-            FROM auditoria 
+            FROM auditorias 
             WHERE metodo_http IS NOT NULL 
             AND metodo_http != ''
             ORDER BY metodo_http ASC
@@ -298,7 +298,7 @@ const obtenerAuditoriaConFiltros = async (req, res) => {
                 id, fecha_hora, usuario_id, usuario_nombre, accion, 
                 tabla_afectada, registro_id, ip_address, endpoint, 
                 metodo_http, estado, tiempo_procesamiento, detalles
-            FROM auditoria 
+            FROM auditorias
             WHERE 1=1
         `;
 
@@ -374,7 +374,7 @@ const obtenerAuditoriaConFiltros = async (req, res) => {
         const [resultados] = await db.execute(query, queryParams);
 
         // ✅ Conteo con los mismos filtros
-        let queryCount = `SELECT COUNT(*) as total FROM auditoria WHERE 1=1`;
+        let queryCount = `SELECT COUNT(*) as total FROM auditorias WHERE 1=1`;
         
         if (whereConditions.length > 0) {
             queryCount += ' AND ' + whereConditions.join(' AND ');
@@ -424,7 +424,7 @@ const obtenerEstadisticasSimples = async (req, res) => {
                 COUNT(DISTINCT accion) as acciones_unicas,
                 MIN(fecha_hora) as primera_auditoria,
                 MAX(fecha_hora) as ultima_auditoria
-            FROM auditoria
+            FROM auditorias
         `;
 
         const [resultado] = await db.execute(query);
@@ -458,7 +458,7 @@ const obtenerAuditoriaSimple = async (req, res) => {
             SELECT 
                 id, fecha_hora, usuario_nombre, accion, 
                 tabla_afectada, endpoint, metodo_http, estado
-            FROM auditoria 
+            FROM auditorias 
             ORDER BY fecha_hora DESC 
             LIMIT 10
         `;

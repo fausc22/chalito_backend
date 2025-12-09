@@ -200,7 +200,7 @@ const crearArticulo = async (req, res) => {
                 parseInt(stock_minimo),
                 tipo,
                 imagen_url || null,
-                activo === true || activo === 'true' || activo === 1
+                activo ? 1 : 0
             ]
         );
 
@@ -368,7 +368,7 @@ const actualizarArticulo = async (req, res) => {
 
         if (activo !== undefined) {
             campos.push('activo = ?');
-            valores.push(activo === true || activo === 'true' || activo === 1);
+            valores.push(activo ? 1 : 0);
         }
 
         if (campos.length === 0) {

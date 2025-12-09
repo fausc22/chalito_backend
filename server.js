@@ -13,6 +13,7 @@ const app = express();
 const authRoutes = require('./routes/authRoutes');
 const auditoriaRoutes = require('./routes/auditoriaRoutes');
 const articulosRoutes = require('./routes/articulosRoutes');
+const inventarioRoutes = require('./routes/inventarioRoutes');
 
 
 // CORS configuration - Optimizado para VPS
@@ -112,6 +113,7 @@ app.get('/health', async (req, res) => {
 app.use('/auth', authRoutes);
 app.use('/auditoria', auditoriaRoutes);
 app.use('/articulos', articulosRoutes);
+app.use('/inventario', inventarioRoutes);
 
 
 
