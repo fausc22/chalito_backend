@@ -14,6 +14,9 @@ const authRoutes = require('./routes/authRoutes');
 const auditoriaRoutes = require('./routes/auditoriaRoutes');
 const articulosRoutes = require('./routes/articulosRoutes');
 const inventarioRoutes = require('./routes/inventarioRoutes');
+const pedidosRoutes = require('./routes/pedidosRoutes');
+const ventasRoutes = require('./routes/ventasRoutes');
+const comandasRoutes = require('./routes/comandasRoutes');
 
 
 // CORS configuration - Optimizado para VPS
@@ -114,6 +117,9 @@ app.use('/auth', authRoutes);
 app.use('/auditoria', auditoriaRoutes);
 app.use('/articulos', articulosRoutes);
 app.use('/inventario', inventarioRoutes);
+app.use('/pedidos', pedidosRoutes);
+app.use('/ventas', ventasRoutes);
+app.use('/comandas', comandasRoutes);
 
 
 
