@@ -22,8 +22,7 @@ const comandasRoutes = require('../routes/comandasRoutes');
 // CORS configuration - Optimizado para VPS
 const allowedOrigins = [
     'http://localhost:3000', 
-    "https://chalitonextjs.vercel.app"
-    
+    "https://chalito-nextjs.vercel.app"
 ];
 
 // En desarrollo, permitir cualquier origen localhost
