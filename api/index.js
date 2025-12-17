@@ -10,13 +10,13 @@ const cookieParser = require('cookie-parser');
 const port = process.env.PORT || 3001;
 const app = express();
 
-const authRoutes = require('./routes/authRoutes');
-const auditoriaRoutes = require('./routes/auditoriaRoutes');
-const articulosRoutes = require('./routes/articulosRoutes');
-const inventarioRoutes = require('./routes/inventarioRoutes');
-const pedidosRoutes = require('./routes/pedidosRoutes');
-const ventasRoutes = require('./routes/ventasRoutes');
-const comandasRoutes = require('./routes/comandasRoutes');
+const authRoutes = require('../routes/authRoutes');
+const auditoriaRoutes = require('../routes/auditoriaRoutes');
+const articulosRoutes = require('../routes/articulosRoutes');
+const inventarioRoutes = require('../routes/inventarioRoutes');
+const pedidosRoutes = require('../routes/pedidosRoutes');
+const ventasRoutes = require('../routes/ventasRoutes');
+const comandasRoutes = require('../routes/comandasRoutes');
 
 
 // CORS configuration - Optimizado para VPS
@@ -61,7 +61,7 @@ const corsOptions = {
 };
 
 
-const { middlewareAuditoria } = require('./middlewares/auditoriaMiddleware');
+const { middlewareAuditoria } = require('../middlewares/auditoriaMiddleware');
 
 app.use(cors(corsOptions));
 app.use(cookieParser());  
@@ -73,7 +73,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.get('/health', async (req, res) => {
     try {
         // Test básico de conexión a BD
-        const db = require('./controllers/dbPromise');
+        const db = require('../controllers/dbPromise');
         const startTime = Date.now();
         await db.execute('SELECT 1');
         const dbResponseTime = Date.now() - startTime;
