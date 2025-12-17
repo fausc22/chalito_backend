@@ -11,6 +11,7 @@ const {
 
 const { authenticateToken } = require('../middlewares/authMiddleware');
 const { apiRateLimiter } = require('../middlewares/rateLimitMiddleware');
+const { handleImageUpload } = require('../middlewares/uploadMiddleware');
 
 /**
  * Rutas de artículos
@@ -27,10 +28,12 @@ router.get('/', apiRateLimiter, authenticateToken, obtenerArticulos);
 router.get('/:id', apiRateLimiter, authenticateToken, obtenerArticuloPorId);
 
 // Crear nuevo artículo
-router.post('/', apiRateLimiter, authenticateToken, crearArticulo);
+// Soporta multipart/form-data (con imagen) y application/json (con imagen_url)
+router.post('/', apiRateLimiter, authenticateToken, handleImageUpload, crearArticulo);
 
 // Actualizar artículo existente
-router.put('/:id', apiRateLimiter, authenticateToken, actualizarArticulo);
+// Soporta multipart/form-data (con imagen) y application/json (con imagen_url)
+router.put('/:id', apiRateLimiter, authenticateToken, handleImageUpload, actualizarArticulo);
 
 // Eliminar artículo (soft delete)
 router.delete('/:id', apiRateLimiter, authenticateToken, eliminarArticulo);

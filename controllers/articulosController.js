@@ -116,9 +116,18 @@ const obtenerCategorias = async (req, res) => {
 /**
  * Crear un nuevo artículo
  * POST /articulos
+ * 
+ * Soporta dos formatos:
+ * 1. multipart/form-data con imagen (campo 'imagen') - req.cloudinaryUrl contendrá la URL
+ * 2. application/json con imagen_url como string
  */
 const crearArticulo = async (req, res) => {
     try {
+        // Si viene imagen subida a Cloudinary, usar esa URL
+        // Si no, usar imagen_url del body (compatibilidad con JSON)
+        const imagenUrlFinal = req.cloudinaryUrl || req.body.imagen_url || null;
+
+        // Parsear valores numéricos (multer devuelve strings en multipart/form-data)
         const {
             codigo_barra,
             nombre,
@@ -128,7 +137,6 @@ const crearArticulo = async (req, res) => {
             stock_actual = 0,
             stock_minimo = 0,
             tipo = 'OTRO',
-            imagen_url,
             activo = true
         } = req.body;
 
@@ -184,7 +192,7 @@ const crearArticulo = async (req, res) => {
             }
         }
 
-        // Insertar artículo
+        // Insertar artículo con imagen de Cloudinary si está disponible
         const [result] = await db.execute(
             `INSERT INTO articulos (
                 categoria_id, codigo_barra, nombre, descripcion, precio,
@@ -199,8 +207,8 @@ const crearArticulo = async (req, res) => {
                 parseInt(stock_actual),
                 parseInt(stock_minimo),
                 tipo,
-                imagen_url || null,
-                activo ? 1 : 0
+                imagenUrlFinal, // Usar URL de Cloudinary si existe, sino la del body o null
+                activo === true || activo === 'true' || activo === '1' ? 1 : 0
             ]
         );
 
@@ -231,6 +239,14 @@ const crearArticulo = async (req, res) => {
 /**
  * Actualizar un artículo existente
  * PUT /articulos/:id
+ * 
+ * Soporta dos formatos:
+ * 1. multipart/form-data con imagen (campo 'imagen') - req.cloudinaryUrl contendrá la URL
+ * 2. application/json con imagen_url como string
+ * 
+ * Si viene imagen nueva (req.cloudinaryUrl), se actualiza.
+ * Si NO viene imagen nueva pero viene imagen_url en body, se actualiza.
+ * Si NO viene ninguna imagen, se mantiene la actual.
  */
 const actualizarArticulo = async (req, res) => {
     try {
@@ -247,6 +263,21 @@ const actualizarArticulo = async (req, res) => {
             imagen_url,
             activo
         } = req.body;
+
+        // Determinar qué hacer con la imagen:
+        // - Si hay req.cloudinaryUrl (imagen nueva subida), usar esa
+        // - Si no hay imagen nueva pero viene imagen_url en body, usar esa
+        // - Si no viene nada, mantener la actual (no actualizar el campo)
+        let imagenUrlFinal = undefined; // undefined = no actualizar
+        if (req.cloudinaryUrl) {
+            // Nueva imagen subida a Cloudinary
+            imagenUrlFinal = req.cloudinaryUrl;
+            console.log(`📸 Actualizando imagen del artículo ${id} con nueva imagen de Cloudinary`);
+        } else if (imagen_url !== undefined) {
+            // imagen_url viene en el body (puede ser null para eliminar o una URL)
+            imagenUrlFinal = imagen_url || null;
+        }
+        // Si imagenUrlFinal es undefined, no se actualiza el campo imagen_url
 
         // Validación del ID
         if (!id || isNaN(id)) {
@@ -361,14 +392,17 @@ const actualizarArticulo = async (req, res) => {
             valores.push(tipo);
         }
 
-        if (imagen_url !== undefined) {
+        // Actualizar imagen_url solo si se proporciona una nueva (Cloudinary o body)
+        if (imagenUrlFinal !== undefined) {
             campos.push('imagen_url = ?');
-            valores.push(imagen_url || null);
+            valores.push(imagenUrlFinal);
         }
 
         if (activo !== undefined) {
+            // Manejar diferentes formatos de activo (boolean, string, número)
+            const activoValue = activo === true || activo === 'true' || activo === '1' || activo === 1;
             campos.push('activo = ?');
-            valores.push(activo ? 1 : 0);
+            valores.push(activoValue ? 1 : 0);
         }
 
         if (campos.length === 0) {
