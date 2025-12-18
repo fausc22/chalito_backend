@@ -6,17 +6,34 @@ const {
     obtenerCategorias,
     crearArticulo,
     actualizarArticulo,
-    eliminarArticulo
+    eliminarArticulo,
+    uploadImagen,
+    uploadSingle
 } = require('../controllers/articulosController');
 
 const { authenticateToken } = require('../middlewares/authMiddleware');
 const { apiRateLimiter } = require('../middlewares/rateLimitMiddleware');
-const { handleImageUpload } = require('../middlewares/uploadMiddleware');
 
 /**
  * Rutas de artículos
  * Todas las rutas requieren autenticación y rate limiting
  */
+
+// =====================================================
+// ENDPOINT DE SUBIDA DE IMÁGENES
+// =====================================================
+
+/**
+ * POST /articulos/upload-imagen
+ * Sube una imagen a Cloudinary y retorna la URL
+ * Body: multipart/form-data con campo 'imagen'
+ * Respuesta: { imagen_url, public_id }
+ */
+router.post('/upload-imagen', apiRateLimiter, authenticateToken, uploadSingle, uploadImagen);
+
+// =====================================================
+// ENDPOINTS ESTÁNDAR DE ARTÍCULOS
+// =====================================================
 
 // Obtener categorías (debe ir antes de /:id para evitar conflictos)
 router.get('/categorias', apiRateLimiter, authenticateToken, obtenerCategorias);
@@ -28,12 +45,10 @@ router.get('/', apiRateLimiter, authenticateToken, obtenerArticulos);
 router.get('/:id', apiRateLimiter, authenticateToken, obtenerArticuloPorId);
 
 // Crear nuevo artículo
-// Soporta multipart/form-data (con imagen) y application/json (con imagen_url)
-router.post('/', apiRateLimiter, authenticateToken, handleImageUpload, crearArticulo);
+router.post('/', apiRateLimiter, authenticateToken, crearArticulo);
 
 // Actualizar artículo existente
-// Soporta multipart/form-data (con imagen) y application/json (con imagen_url)
-router.put('/:id', apiRateLimiter, authenticateToken, handleImageUpload, actualizarArticulo);
+router.put('/:id', apiRateLimiter, authenticateToken, actualizarArticulo);
 
 // Eliminar artículo (soft delete)
 router.delete('/:id', apiRateLimiter, authenticateToken, eliminarArticulo);

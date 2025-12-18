@@ -9,7 +9,6 @@ const pool = mysql.createPool({
     password: process.env.DB_PASSWORD,
     database: process.env.DB_DATABASE,
     port: process.env.DB_PORT || 3306,
-    ssl: { rejectUnauthorized: true },
     // ✅ Solo opciones VÁLIDAS para mysql2
     waitForConnections: true,
     connectionLimit: 10,

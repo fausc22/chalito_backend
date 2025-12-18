@@ -1,55 +1,58 @@
 /**
- * Configuración de Cloudinary para gestión de imágenes
+ * CONFIGURACIÓN DE CLOUDINARY
  * 
- * Variables de entorno requeridas:
- * - CLOUDINARY_NAME: Nombre de la cuenta de Cloudinary
- * - CLOUDINARY_KEY: API Key de Cloudinary
- * - CLOUDINARY_SECRET: API Secret de Cloudinary
+ * Variables de entorno requeridas en .env:
+ * - CLOUDINARY_CLOUD_NAME
+ * - CLOUDINARY_API_KEY
+ * - CLOUDINARY_API_SECRET
  * 
- * Estas variables deben configurarse en Render en la sección de Environment Variables
+ * Autor: Sistema Chalito Backend
+ * Última actualización: 2025
  */
 
 const cloudinary = require('cloudinary').v2;
 require('dotenv').config();
 
 // Validar que las variables de entorno estén configuradas
-const requiredEnvVars = ['CLOUDINARY_NAME', 'CLOUDINARY_KEY', 'CLOUDINARY_SECRET'];
-const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
+const requiredEnvVars = {
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET
+};
+
+const missingVars = Object.keys(requiredEnvVars).filter(key => !requiredEnvVars[key]);
 
 if (missingVars.length > 0) {
-    console.warn(`⚠️  Advertencia: Variables de entorno de Cloudinary faltantes: ${missingVars.join(', ')}`);
-    console.warn('   El servicio de imágenes no funcionará hasta que se configuren estas variables.');
+    console.warn('⚠️  ADVERTENCIA: Variables de Cloudinary faltantes:', missingVars.join(', '));
+    console.warn('   La subida de imágenes NO funcionará hasta configurar estas variables en .env');
 }
 
 // Configurar Cloudinary
 cloudinary.config({
-    cloud_name: process.env.CLOUDINARY_NAME,
-    api_key: process.env.CLOUDINARY_KEY,
-    api_secret: process.env.CLOUDINARY_SECRET,
-    secure: true // Usar HTTPS
+    cloud_name: requiredEnvVars.cloud_name,
+    api_key: requiredEnvVars.api_key,
+    api_secret: requiredEnvVars.api_secret,
+    secure: true // Siempre usar HTTPS
 });
 
 /**
- * Subir imagen a Cloudinary desde buffer en memoria
- * @param {Buffer} imageBuffer - Buffer de la imagen
- * @param {string} folder - Carpeta en Cloudinary (ej: 'articulos')
- * @param {string} publicId - ID público opcional (si no se proporciona, Cloudinary genera uno)
- * @returns {Promise<Object>} Resultado de la subida con secure_url
+ * Subir imagen a Cloudinary desde buffer
+ * @param {Buffer} fileBuffer - Buffer del archivo de imagen
+ * @param {Object} options - Opciones de subida
+ * @returns {Promise<Object>} Resultado de Cloudinary con secure_url y public_id
  */
-const uploadImage = async (imageBuffer, folder = 'articulos', publicId = null) => {
+const uploadImageToCloudinary = (fileBuffer, options = {}) => {
     return new Promise((resolve, reject) => {
         const uploadOptions = {
-            folder: folder,
+            folder: options.folder || 'chalito/articulos',
             resource_type: 'image',
-            format: 'auto', // Cloudinary detecta el formato automáticamente
-            quality: 'auto', // Optimización automática de calidad
-            fetch_format: 'auto' // Conversión automática a formato moderno (WebP cuando sea posible)
+            allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
+            transformation: [
+                { quality: 'auto' }, // Optimización automática
+                { fetch_format: 'auto' } // Formato moderno (WebP cuando sea posible)
+            ],
+            ...options
         };
-
-        // Si se proporciona un publicId, agregarlo
-        if (publicId) {
-            uploadOptions.public_id = publicId;
-        }
 
         const uploadStream = cloudinary.uploader.upload_stream(
             uploadOptions,
@@ -64,33 +67,31 @@ const uploadImage = async (imageBuffer, folder = 'articulos', publicId = null) =
             }
         );
 
-        // Subir el buffer directamente
-        uploadStream.end(imageBuffer);
+        uploadStream.end(fileBuffer);
     });
 };
 
 /**
- * Eliminar imagen de Cloudinary (opcional, para limpieza futura)
- * @param {string} publicId - ID público de la imagen en Cloudinary
+ * Eliminar imagen de Cloudinary (opcional para futuras mejoras)
+ * @param {string} publicId - public_id de la imagen en Cloudinary
  * @returns {Promise<Object>} Resultado de la eliminación
  */
-const deleteImage = async (publicId) => {
-    return new Promise((resolve, reject) => {
-        cloudinary.uploader.destroy(publicId, (error, result) => {
-            if (error) {
-                console.error('❌ Error al eliminar imagen de Cloudinary:', error);
-                reject(error);
-            } else {
-                console.log(`✅ Imagen eliminada de Cloudinary: ${publicId}`);
-                resolve(result);
-            }
-        });
-    });
+const deleteImageFromCloudinary = async (publicId) => {
+    try {
+        const result = await cloudinary.uploader.destroy(publicId);
+        console.log(`🗑️  Imagen eliminada de Cloudinary: ${publicId}`);
+        return result;
+    } catch (error) {
+        console.error('❌ Error al eliminar imagen de Cloudinary:', error);
+        throw error;
+    }
 };
 
 module.exports = {
     cloudinary,
-    uploadImage,
-    deleteImage
+    uploadImageToCloudinary,
+    deleteImageFromCloudinary
 };
+
+
 

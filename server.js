@@ -7,7 +7,7 @@ const axios = require('axios');
 const cookieParser = require('cookie-parser');
 
 
-const port = process.env.PORT || 3001;
+const port = process.env.PORT;
 const app = express();
 
 const authRoutes = require('./routes/authRoutes');
@@ -22,7 +22,7 @@ const comandasRoutes = require('./routes/comandasRoutes');
 // CORS configuration - Optimizado para VPS
 const allowedOrigins = [
     'http://localhost:3000', 
-    "https://chalitonextjs.vercel.app"
+    
     
 ];
 
