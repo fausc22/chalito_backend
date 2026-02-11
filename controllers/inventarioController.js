@@ -56,7 +56,7 @@ const crearArticulo = async (req, res) => {
 
         // Verificar que el nombre no esté duplicado
         const [nombreExistente] = await db.execute(
-            'SELECT id FROM articulos WHERE nombre = ? AND activo = 1', 
+            'SELECT id FROM articulos WHERE UPPER(nombre) = UPPER(?) AND activo = 1', 
             [nombre]
         );
 
@@ -96,7 +96,7 @@ const crearArticulo = async (req, res) => {
             `;
 
             const [resultArticulo] = await connection.execute(queryArticulo, [
-                categoria_id, codigo_barra || null, nombre, descripcion || null, precio,
+                categoria_id, codigo_barra || null, nombre.toUpperCase(), descripcion || null, precio,
                 stock_actual, stock_minimo, tipo, imagen_url || null
             ]);
 
@@ -115,9 +115,9 @@ const crearArticulo = async (req, res) => {
                         throw new Error(`Ingrediente ID ${ingrediente.ingrediente_id} no encontrado o no disponible`);
                     }
 
-                    // Insertar en articulo_contenido
+                    // Insertar en articulos_contenido
                     await connection.execute(`
-                        INSERT INTO articulo_contenido (
+                        INSERT INTO articulos_contenido (
                             articulo_id, ingrediente_id, unidad_medida, cantidad
                         ) VALUES (?, ?, ?, ?)
                     `, [
@@ -219,7 +219,7 @@ const obtenerArticulo = async (req, res) => {
                     ac.id, ac.unidad_medida, ac.cantidad,
                     i.id as ingrediente_id, i.nombre,
                     i.descripcion as ingrediente_descripcion, i.precio_extra
-                FROM articulo_contenido ac
+                FROM articulos_contenido ac
                 INNER JOIN ingredientes i ON ac.ingrediente_id = i.id
                 WHERE ac.articulo_id = ?
                 ORDER BY i.nombre
@@ -305,7 +305,7 @@ const filtrarArticulos = async (req, res) => {
         let query = `
             SELECT
                 a.id, a.codigo_barra, a.nombre, a.descripcion, a.precio,
-                a.stock_actual, a.stock_minimo, a.tipo, a.activo,
+                a.stock_actual, a.stock_minimo, a.tipo, a.imagen_url, a.activo,
                 a.fecha_creacion, a.fecha_modificacion,
                 c.id as categoria_id, c.nombre as categoria,
                 CASE
@@ -416,7 +416,7 @@ const editarArticulo = async (req, res) => {
         // Verificar cambio de tipo si tiene contenido
         if (tipo && tipo !== datosAnteriores.tipo && datosAnteriores.tipo === 'ELABORADO') {
             const [tieneContenido] = await db.execute(
-                'SELECT COUNT(*) as count FROM articulo_contenido WHERE articulo_id = ?',
+                'SELECT COUNT(*) as count FROM articulos_contenido WHERE articulo_id = ?',
                 [id]
             );
 
@@ -429,9 +429,9 @@ const editarArticulo = async (req, res) => {
         }
 
         // Verificar nombre único si se está cambiando
-        if (nombre && nombre !== datosAnteriores.nombre) {
+        if (nombre && nombre.toUpperCase() !== datosAnteriores.nombre.toUpperCase()) {
             const [nombreExistente] = await db.execute(
-                'SELECT id FROM articulos WHERE nombre = ? AND id != ? AND activo = 1',
+                'SELECT id FROM articulos WHERE UPPER(nombre) = UPPER(?) AND id != ? AND activo = 1',
                 [nombre, id]
             );
 
@@ -457,7 +457,7 @@ const editarArticulo = async (req, res) => {
         }
         if (nombre !== undefined) {
             camposActualizar.push('nombre = ?');
-            valoresActualizar.push(nombre);
+            valoresActualizar.push(nombre.toUpperCase());
         }
         if (descripcion !== undefined) {
             camposActualizar.push('descripcion = ?');
@@ -506,7 +506,7 @@ const editarArticulo = async (req, res) => {
         if (tipoFinal === 'ELABORADO') {
             // Primero eliminar todos los ingredientes existentes
             await db.execute(
-                'DELETE FROM articulo_contenido WHERE articulo_id = ?',
+                'DELETE FROM articulos_contenido WHERE articulo_id = ?',
                 [id]
             );
 
@@ -526,9 +526,9 @@ const editarArticulo = async (req, res) => {
                         });
                     }
 
-                    // Insertar en articulo_contenido
+                    // Insertar en articulos_contenido
                     await db.execute(`
-                        INSERT INTO articulo_contenido (
+                        INSERT INTO articulos_contenido (
                             articulo_id, ingrediente_id, unidad_medida, cantidad
                         ) VALUES (?, ?, ?, ?)
                     `, [
@@ -594,34 +594,63 @@ const eliminarArticulo = async (req, res) => {
             });
         }
 
-        // Verificar si está en pedidos activos
-        const [pedidosActivos] = await db.execute(`
+        // Verificar si está en CUALQUIER pedido (activo o histórico)
+        const [pedidosConArticulo] = await db.execute(`
             SELECT COUNT(*) as count
-            FROM pedidos_contenido pd
-            INNER JOIN pedidos p ON pd.pedido_id = p.id
-            WHERE pd.articulo_id = ?
-            AND p.estado IN ('PENDIENTE', 'EN_PREPARACION', 'LISTO')
+            FROM pedidos_contenido
+            WHERE articulo_id = ?
         `, [id]);
 
-        if (pedidosActivos[0].count > 0) {
+        if (pedidosConArticulo[0].count > 0) {
+            console.log(`⚠️ No se puede eliminar: artículo está en ${pedidosConArticulo[0].count} pedido(s)`);
             return res.status(400).json({
                 success: false,
-                message: `No se puede eliminar el artículo porque está en ${pedidosActivos[0].count} pedido(s) activo(s)`,
-                pedidos_activos: pedidosActivos[0].count
+                message: `No se puede eliminar el artículo porque está en ${pedidosConArticulo[0].count} pedido(s)`
             });
         }
 
+        // Verificar si tiene adicionales asignados
+        const [adicionalesAsignados] = await db.execute(`
+            SELECT COUNT(*) as count
+            FROM adicionales_contenido
+            WHERE articulo_id = ?
+        `, [id]);
+
+        if (adicionalesAsignados[0].count > 0) {
+            console.log(`⚠️ No se puede eliminar: artículo tiene ${adicionalesAsignados[0].count} adicional(es) asignado(s)`);
+            return res.status(400).json({
+                success: false,
+                message: `No se puede eliminar porque tiene ${adicionalesAsignados[0].count} adicional(es) asignado(s)`
+            });
+        }
+
+        console.log(`✅ Validaciones pasadas, procediendo a eliminar artículo ${id}`);
+
         // Eliminar ingredientes del artículo primero (si tiene)
-        await db.execute(
-            'DELETE FROM articulo_contenido WHERE articulo_id = ?',
+        const [resultContenido] = await db.execute(
+            'DELETE FROM articulos_contenido WHERE articulo_id = ?',
             [id]
         );
+        console.log(`  → Eliminados ${resultContenido.affectedRows} ingrediente(s) del artículo`);
+
+        // Eliminar adicionales del artículo (si tiene - aunque ya validamos que no debería tener)
+        const [resultAdicionales] = await db.execute(
+            'DELETE FROM adicionales_contenido WHERE articulo_id = ?',
+            [id]
+        );
+        console.log(`  → Eliminados ${resultAdicionales.affectedRows} adicional(es) del artículo`);
 
         // Hard delete - eliminar permanentemente
-        await db.execute(
+        const [resultArticulo] = await db.execute(
             'DELETE FROM articulos WHERE id = ?',
             [id]
         );
+        
+        console.log(`  → Resultado eliminación artículo: ${resultArticulo.affectedRows} fila(s) afectada(s)`);
+
+        if (resultArticulo.affectedRows === 0) {
+            throw new Error('No se pudo eliminar el artículo de la base de datos');
+        }
 
         // Auditar eliminación
         await auditarOperacion(req, {
@@ -768,7 +797,7 @@ const obtenerIngrediente = async (req, res) => {
 
         // Contar en cuántos artículos se usa
         const [articulosUsando] = await db.execute(
-            'SELECT COUNT(*) as total FROM articulo_contenido WHERE ingrediente_id = ?',
+            'SELECT COUNT(*) as total FROM articulos_contenido WHERE ingrediente_id = ?',
             [id]
         );
 
@@ -1007,7 +1036,7 @@ const eliminarIngrediente = async (req, res) => {
 
         // Verificar si está siendo usado en artículos elaborados
         const [enUso] = await db.execute(
-            'SELECT COUNT(*) as count FROM articulo_contenido WHERE ingrediente_id = ?',
+            'SELECT COUNT(*) as count FROM articulos_contenido WHERE ingrediente_id = ?',
             [id]
         );
 
@@ -1093,7 +1122,7 @@ const obtenerContenidoArticulo = async (req, res) => {
                 i.id as ingrediente_id, i.nombre as ingrediente_nombre,
                 i.descripcion as ingrediente_descripcion, i.precio_extra,
                 i.disponible
-            FROM articulo_contenido ac
+            FROM articulos_contenido ac
             INNER JOIN ingredientes i ON ac.ingrediente_id = i.id
             WHERE ac.articulo_id = ?
             ORDER BY i.nombre
@@ -1193,7 +1222,7 @@ const agregarIngredienteAArticulo = async (req, res) => {
 
         // Verificar que no esté ya agregado
         const [yaExiste] = await db.execute(
-            'SELECT id FROM articulo_contenido WHERE articulo_id = ? AND ingrediente_id = ?',
+            'SELECT id FROM articulos_contenido WHERE articulo_id = ? AND ingrediente_id = ?',
             [id, ingrediente_id]
         );
 
@@ -1204,9 +1233,9 @@ const agregarIngredienteAArticulo = async (req, res) => {
             });
         }
 
-        // Insertar en articulo_contenido
+        // Insertar en articulos_contenido
         const query = `
-            INSERT INTO articulo_contenido (articulo_id, ingrediente_id, unidad_medida, cantidad)
+            INSERT INTO articulos_contenido (articulo_id, ingrediente_id, unidad_medida, cantidad)
             VALUES (?, ?, ?, ?)
         `;
 
@@ -1215,7 +1244,7 @@ const agregarIngredienteAArticulo = async (req, res) => {
         // Auditar operación
         await auditarOperacion(req, {
             accion: 'ADD_INGREDIENTE_ARTICULO',
-            tabla: 'articulo_contenido',
+            tabla: 'articulos_contenido',
             registroId: result.insertId,
             datosNuevos: { articulo_id: id, ingrediente_id, unidad_medida, cantidad },
             detallesAdicionales: `Ingrediente "${ingrediente[0].nombre}" agregado a artículo "${articulo[0].nombre}"`
@@ -1267,7 +1296,7 @@ const editarContenidoArticulo = async (req, res) => {
         const [contenidoExiste] = await db.execute(`
             SELECT ac.id, ac.unidad_medida, ac.cantidad,
                    a.nombre as articulo_nombre, i.nombre as ingrediente_nombre
-            FROM articulo_contenido ac
+            FROM articulos_contenido ac
             INNER JOIN articulos a ON ac.articulo_id = a.id
             INNER JOIN ingredientes i ON ac.ingrediente_id = i.id
             WHERE ac.articulo_id = ? AND ac.ingrediente_id = ?
@@ -1304,7 +1333,7 @@ const editarContenidoArticulo = async (req, res) => {
 
         // Actualizar
         const query = `
-            UPDATE articulo_contenido 
+            UPDATE articulos_contenido 
             SET ${camposActualizar.join(', ')} 
             WHERE articulo_id = ? AND ingrediente_id = ?
         `;
@@ -1316,7 +1345,7 @@ const editarContenidoArticulo = async (req, res) => {
         // Auditar cambios
         await auditarOperacion(req, {
             accion: 'UPDATE_CONTENIDO_ARTICULO',
-            tabla: 'articulo_contenido',
+            tabla: 'articulos_contenido',
             registroId: datosAnteriores.id,
             datosAnteriores: limpiarDatosSensibles(datosAnteriores),
             datosNuevos: limpiarDatosSensibles(req.body),
@@ -1356,7 +1385,7 @@ const eliminarIngredienteDeArticulo = async (req, res) => {
         // Verificar que existe la relación
         const [contenidoExiste] = await db.execute(`
             SELECT ac.id, a.nombre as articulo_nombre, i.nombre as ingrediente_nombre
-            FROM articulo_contenido ac
+            FROM articulos_contenido ac
             INNER JOIN articulos a ON ac.articulo_id = a.id
             INNER JOIN ingredientes i ON ac.ingrediente_id = i.id
             WHERE ac.articulo_id = ? AND ac.ingrediente_id = ?
@@ -1373,14 +1402,14 @@ const eliminarIngredienteDeArticulo = async (req, res) => {
 
         // Eliminar relación
         await db.execute(
-            'DELETE FROM articulo_contenido WHERE articulo_id = ? AND ingrediente_id = ?',
+            'DELETE FROM articulos_contenido WHERE articulo_id = ? AND ingrediente_id = ?',
             [id, ingrediente_id]
         );
 
         // Auditar eliminación
         await auditarOperacion(req, {
             accion: 'DELETE_INGREDIENTE_ARTICULO',
-            tabla: 'articulo_contenido',
+            tabla: 'articulos_contenido',
             registroId: datosAnteriores.id,
             datosAnteriores: limpiarDatosSensibles(datosAnteriores),
             detallesAdicionales: `Ingrediente "${datosAnteriores.ingrediente_nombre}" eliminado de artículo "${datosAnteriores.articulo_nombre}"`
@@ -1881,7 +1910,7 @@ const calcularCostoElaborado = async (req, res) => {
             SELECT 
                 SUM(i.precio_extra * ac.cantidad) as costo_total,
                 COUNT(*) as total_ingredientes
-            FROM articulo_contenido ac
+            FROM articulos_contenido ac
             INNER JOIN ingredientes i ON ac.ingrediente_id = i.id
             WHERE ac.articulo_id = ?
         `;

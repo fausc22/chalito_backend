@@ -2,8 +2,22 @@ const db = require('./dbPromise');
 const { auditarOperacion, obtenerDatosAnteriores } = require('../middlewares/auditoriaMiddleware');
 
 /**
+ * IMPORTANTE: La comanda NO maneja estado propio.
+ * El estado se deriva exclusivamente de pedidos.estado.
+ * 
+ * Las comandas existen solo para:
+ * - Impresión en cocina
+ * - Visualización de información del pedido
+ * 
+ * Para obtener el estado de una comanda, siempre hacer JOIN con pedidos:
+ * SELECT c.*, p.estado as estado_pedido FROM comandas c INNER JOIN pedidos p ON c.pedido_id = p.id
+ */
+
+/**
  * Crear una nueva comanda
  * POST /comandas
+ * 
+ * NOTA: No se incluye estado en la comanda, se obtiene desde pedidos.estado
  */
 const crearComanda = async (req, res) => {
         const connection = await db.getConnection();
@@ -31,8 +45,8 @@ const crearComanda = async (req, res) => {
             const comandaQuery = `
                 INSERT INTO comandas (
                     pedido_id, fecha, cliente_nombre, cliente_direccion, cliente_telefono, cliente_email,
-                    modalidad, horario_entrega, estado, observaciones, usuario_id, usuario_nombre
-                ) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    modalidad, horario_entrega, observaciones, usuario_id, usuario_nombre
+                ) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `;
             
             const comandaValues = [
@@ -43,7 +57,6 @@ const crearComanda = async (req, res) => {
                 comandaData.cliente_email,
                 comandaData.modalidad,
                 comandaData.horario_entrega ? new Date(comandaData.horario_entrega) : null,
-                comandaData.estado,
                 comandaData.observaciones,
                 usuario.id || null,
                 usuario.nombre || usuario.usuario || null
@@ -73,12 +86,13 @@ const crearComanda = async (req, res) => {
             await connection.commit();
             
             // Auditoría
+            // NOTA: La comanda no maneja estado propio, depende del pedido
             await auditarOperacion(req, {
                 accion: 'INSERT',
                 tabla: 'comandas',
                 registroId: comandaId,
                 datosNuevos: { comandaId, ...comandaData, articulos: articulos.length },
-                detallesAdicionales: `Comanda creada - Pedido #${comandaData.pedido_id} - Estado: ${comandaData.estado}`
+                detallesAdicionales: `Comanda creada - Pedido #${comandaData.pedido_id}`
             });
             
             res.status(201).json({
@@ -111,40 +125,53 @@ const crearComanda = async (req, res) => {
 /**
  * Obtener todas las comandas
  * GET /comandas
+ * 
+ * NOTA: La comanda no maneja estado propio, el estado se obtiene desde pedidos.estado
+ * Si se necesita filtrar por estado, se debe hacer JOIN con pedidos.
  */
 const obtenerComandas = async (req, res) => {
     try {
         const { estado, modalidad, pedido_id, fecha_desde, fecha_hasta } = req.query;
         
-        let query = 'SELECT * FROM comandas WHERE 1=1';
+        // Hacer JOIN con pedidos para obtener el estado
+        // La comanda no tiene estado propio, depende del pedido
+        let query = `
+            SELECT 
+                c.*,
+                p.estado as estado_pedido
+            FROM comandas c
+            INNER JOIN pedidos p ON c.pedido_id = p.id
+            WHERE 1=1
+        `;
         const params = [];
         
+        // Filtrar por estado del pedido (no de la comanda)
         if (estado) {
-            query += ' AND estado = ?';
+            query += ' AND p.estado = ?';
             params.push(estado);
         }
         
         if (modalidad) {
-            query += ' AND modalidad = ?';
+            query += ' AND c.modalidad = ?';
             params.push(modalidad);
         }
         
         if (pedido_id) {
-            query += ' AND pedido_id = ?';
+            query += ' AND c.pedido_id = ?';
             params.push(pedido_id);
         }
         
         if (fecha_desde) {
-            query += ' AND DATE(fecha) >= DATE(?)';
+            query += ' AND DATE(c.fecha) >= DATE(?)';
             params.push(fecha_desde);
         }
         
         if (fecha_hasta) {
-            query += ' AND DATE(fecha) <= DATE(?)';
+            query += ' AND DATE(c.fecha) <= DATE(?)';
             params.push(fecha_hasta);
         }
         
-        query += ' ORDER BY fecha DESC';
+        query += ' ORDER BY c.fecha DESC';
         
         const [comandas] = await db.execute(query, params);
         
@@ -161,15 +188,27 @@ const obtenerComandas = async (req, res) => {
     }
 };
 
+
 /**
- * Obtener una comanda por ID
+ * Obtener comanda por ID con estado del pedido
  * GET /comandas/:id
+ * 
+ * NOTA: La comanda no maneja estado propio, el estado se obtiene desde pedidos.estado
  */
 const obtenerComandaPorId = async (req, res) => {
         try {
-            const { id } = req.validatedParams;
+            const { id } = req.validatedParams || req.params;
             
-            const [comandas] = await db.execute('SELECT * FROM comandas WHERE id = ?', [id]);
+            // Hacer JOIN con pedidos para obtener el estado
+            const [comandas] = await db.execute(
+                `SELECT 
+                    c.*,
+                    p.estado as estado_pedido
+                FROM comandas c
+                INNER JOIN pedidos p ON c.pedido_id = p.id
+                WHERE c.id = ?`,
+                [id]
+            );
             
             if (comandas.length === 0) {
                 return res.status(404).json({
@@ -195,53 +234,6 @@ const obtenerComandaPorId = async (req, res) => {
             res.status(500).json({
                 success: false,
                 message: 'Error al obtener comanda'
-            });
-        }
-};
-
-/**
- * Actualizar estado de comanda
- * PUT /comandas/:id/estado
- */
-const actualizarEstadoComanda = async (req, res) => {
-        try {
-            const { id } = req.validatedParams || req.params;
-            const { estado } = req.validatedData || req.body;
-            
-            // Obtener datos anteriores
-            const datosAnteriores = await obtenerDatosAnteriores('comandas', id);
-            
-            if (!datosAnteriores) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Comanda no encontrada'
-                });
-            }
-            
-            await db.execute(
-                'UPDATE comandas SET estado = ? WHERE id = ?',
-                [estado, id]
-            );
-            
-            // Auditoría
-            await auditarOperacion(req, {
-                accion: 'UPDATE',
-                tabla: 'comandas',
-                registroId: id,
-                datosAnteriores,
-                datosNuevos: { ...datosAnteriores, estado },
-                detallesAdicionales: `Estado cambiado de "${datosAnteriores.estado}" a "${estado}"`
-            });
-            
-            res.json({
-                success: true,
-                message: 'Estado actualizado correctamente'
-            });
-        } catch (error) {
-            console.error('❌ Error al actualizar estado:', error);
-            res.status(500).json({
-                success: false,
-                message: 'Error al actualizar estado'
             });
         }
 };
@@ -294,7 +286,6 @@ module.exports = {
     crearComanda,
     obtenerComandas,
     obtenerComandaPorId,
-    actualizarEstadoComanda,
     actualizarObservaciones
 };
 

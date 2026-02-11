@@ -1,8 +1,115 @@
 const db = require('./dbPromise');
+const multer = require('multer');
+const { uploadImageToCloudinary } = require('../config/cloudinary');
 
 /**
  * Controller para gestión de artículos con validación y seguridad
  */
+
+// =====================================================
+// CONFIGURACIÓN DE MULTER PARA SUBIDA DE IMÁGENES
+// =====================================================
+
+// Almacenar en memoria (NO en disco)
+const storage = multer.memoryStorage();
+
+// Validar tipo de archivo
+const fileFilter = (req, file, cb) => {
+    const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+    
+    if (allowedTypes.includes(file.mimetype)) {
+        cb(null, true);
+    } else {
+        const error = new Error('Tipo de archivo no permitido. Solo JPG, JPEG, PNG, WEBP');
+        error.status = 400;
+        cb(error, false);
+    }
+};
+
+// Configurar multer
+const upload = multer({
+    storage: storage,
+    fileFilter: fileFilter,
+    limits: {
+        fileSize: 5 * 1024 * 1024, // 5MB máximo
+        files: 1 // Solo 1 archivo
+    }
+});
+
+// Middleware de multer para una sola imagen
+const uploadSingle = upload.single('imagen');
+
+// =====================================================
+// ENDPOINT: SUBIR IMAGEN A CLOUDINARY
+// =====================================================
+
+/**
+ * Subir imagen a Cloudinary
+ * POST /articulos/upload-imagen
+ * Body: multipart/form-data con campo 'imagen'
+ * Retorna: { imagen_url, public_id }
+ */
+const uploadImagen = async (req, res) => {
+    try {
+        // Validar que venga un archivo
+        if (!req.file) {
+            return res.status(400).json({
+                error: 'No se proporcionó ninguna imagen',
+                message: 'Debe enviar un archivo en el campo "imagen"'
+            });
+        }
+
+        // Validar tamaño
+        if (req.file.size > 5 * 1024 * 1024) {
+            return res.status(400).json({
+                error: 'Archivo demasiado grande',
+                message: 'El tamaño máximo permitido es 5MB'
+            });
+        }
+
+        console.log(`📤 Subiendo imagen: ${req.file.originalname} (${(req.file.size / 1024).toFixed(2)}KB)`);
+
+        // Subir a Cloudinary
+        const result = await uploadImageToCloudinary(req.file.buffer, {
+            folder: 'chalito/articulos'
+        });
+
+        // Respuesta exitosa
+        res.status(200).json({
+            success: true,
+            message: 'Imagen subida exitosamente',
+            data: {
+                imagen_url: result.secure_url,
+                public_id: result.public_id,
+                width: result.width,
+                height: result.height,
+                format: result.format,
+                size: result.bytes
+            }
+        });
+
+    } catch (error) {
+        console.error('❌ Error al subir imagen:', error);
+        
+        // Manejar errores de Cloudinary
+        if (error.http_code) {
+            return res.status(error.http_code).json({
+                error: 'Error de Cloudinary',
+                message: error.message
+            });
+        }
+
+        // Error genérico
+        res.status(500).json({
+            error: 'Error al subir imagen',
+            message: process.env.NODE_ENV === 'development' ? error.message : 'Error interno del servidor'
+        });
+    }
+};
+
+// =====================================================
+// ENDPOINTS EXISTENTES (sin cambios)
+// =====================================================
 
 /**
  * Obtener todos los artículos con filtros opcionales
@@ -456,5 +563,7 @@ module.exports = {
     obtenerCategorias,
     crearArticulo,
     actualizarArticulo,
-    eliminarArticulo
+    eliminarArticulo,
+    uploadImagen,
+    uploadSingle // Exportar middleware de multer
 };

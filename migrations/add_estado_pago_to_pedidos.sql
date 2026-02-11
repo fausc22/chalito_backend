@@ -10,3 +10,13 @@ CREATE INDEX `idx_estado_pago` ON `pedidos` (`estado_pago`);
 
 
 
+
+
+
+
+
+
+
+
+
+

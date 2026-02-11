@@ -5,10 +5,32 @@ const session = require('express-session');
 const cors = require('cors');
 const axios = require('axios');
 const cookieParser = require('cookie-parser');
+const http = require('http');
+const { Server } = require('socket.io');
 
 
 const port = process.env.PORT;
 const app = express();
+
+// Crear servidor HTTP para Socket.IO
+const server = http.createServer(app);
+
+// Configurar Socket.IO
+const io = new Server(server, {
+    cors: {
+        origin: process.env.NODE_ENV === 'development' 
+            ? ['http://localhost:3000', /^http:\/\/localhost:\d+$/]
+            : process.env.FRONTEND_URL || 'http://localhost:3000',
+        methods: ['GET', 'POST'],
+        credentials: true
+    },
+    pingTimeout: 60000,
+    pingInterval: 25000
+});
+
+// Inicializar servicio de sockets
+const { getInstance: getSocketService } = require('./services/SocketService');
+const socketService = getSocketService(io);
 
 const authRoutes = require('./routes/authRoutes');
 const auditoriaRoutes = require('./routes/auditoriaRoutes');
@@ -17,8 +39,12 @@ const inventarioRoutes = require('./routes/inventarioRoutes');
 const pedidosRoutes = require('./routes/pedidosRoutes');
 const ventasRoutes = require('./routes/ventasRoutes');
 const comandasRoutes = require('./routes/comandasRoutes');
-const gastosRoutes = require('./routes/gastosRoutes');
-const fondosRoutes = require('./routes/fondosRoutes');
+const configuracionRoutes = require('./routes/configuracionRoutes');
+const healthRoutes = require('./routes/healthRoutes');
+const metricsRoutes = require('./routes/metricsRoutes');
+
+// Importar worker de cola de pedidos
+const OrderQueueWorker = require('./workers/OrderQueueWorker');
 
 
 // CORS configuration - Optimizado para VPS
@@ -122,8 +148,9 @@ app.use('/inventario', inventarioRoutes);
 app.use('/pedidos', pedidosRoutes);
 app.use('/ventas', ventasRoutes);
 app.use('/comandas', comandasRoutes);
-app.use('/gastos', gastosRoutes);
-app.use('/fondos', fondosRoutes);
+app.use('/configuracion-sistema', configuracionRoutes);
+app.use('/health', healthRoutes);
+app.use('/metrics', metricsRoutes);
 
 
 
@@ -142,7 +169,30 @@ app.use((error, req, res, next) => {
 });
 
 
-const server = app.listen(port, '0.0.0.0', () => {
+// Configurar Socket.IO connections
+io.on('connection', (socket) => {
+    console.log(`🔌 [Socket.IO] Cliente conectado: ${socket.id}`);
+    socketService.registrarCliente(socket.id);
+
+    socket.on('disconnect', () => {
+        console.log(`🔌 [Socket.IO] Cliente desconectado: ${socket.id}`);
+        socketService.desregistrarCliente(socket.id);
+    });
+
+    // Opcional: Suscripción a eventos específicos
+    socket.on('subscribe:pedidos', () => {
+        socket.join('pedidos-room');
+        console.log(`👂 [Socket.IO] Cliente ${socket.id} suscrito a pedidos`);
+    });
+
+    socket.on('subscribe:capacidad', () => {
+        socket.join('capacidad-room');
+        console.log(`👂 [Socket.IO] Cliente ${socket.id} suscrito a capacidad`);
+    });
+});
+
+// Usar server.listen en lugar de app.listen
+server.listen(port, '0.0.0.0', () => {
     console.log(`🚀 Servidor iniciado`);
     console.log(`🌍 Puerto: ${port}`);
     console.log(`🔧 Entorno: ${process.env.NODE_ENV || 'development'}`);
@@ -156,4 +206,39 @@ const server = app.listen(port, '0.0.0.0', () => {
     console.log(`   - Plataforma: ${process.platform}`);
     console.log(`   - Arquitectura: ${process.arch}`);
     console.log(`   - PID: ${process.pid}`);
+    
+    // Iniciar worker de cola de pedidos (con delay para asegurar que BD esté lista)
+    setTimeout(async () => {
+        try {
+            await OrderQueueWorker.start(null, io); // Pasar io para eventos WebSocket
+        } catch (error) {
+            console.error('❌ Error iniciando OrderQueueWorker:', error);
+        }
+    }, 3000); // Esperar 3 segundos después del inicio del servidor
+});
+
+// Exportar io para usar en otros módulos
+app.set('io', io);
+
+// Manejar cierre graceful del servidor
+process.on('SIGTERM', () => {
+    console.log('🛑 SIGTERM recibido, cerrando servidor gracefully...');
+    OrderQueueWorker.stop();
+    io.close(() => {
+        server.close(() => {
+            console.log('✅ Servidor cerrado');
+            process.exit(0);
+        });
+    });
+});
+
+process.on('SIGINT', () => {
+    console.log('🛑 SIGINT recibido, cerrando servidor gracefully...');
+    OrderQueueWorker.stop();
+    io.close(() => {
+        server.close(() => {
+            console.log('✅ Servidor cerrado');
+            process.exit(0);
+        });
+    });
 });

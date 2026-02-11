@@ -35,18 +35,18 @@ const crearPedidoSchema = z.object({
         errorMap: () => ({ message: 'La modalidad debe ser DELIVERY o RETIRO' })
     }),
     horario_entrega: z.string().datetime().optional().nullable(),
-    estado: z.enum(['RECIBIDO', 'EN_PREPARACION', 'ENTREGADO', 'CANCELADO'], {
-        errorMap: () => ({ message: 'Estado inválido. Los estados permitidos son: RECIBIDO, EN_PREPARACION, ENTREGADO, CANCELADO' })
+    estado: z.enum(['RECIBIDO', 'EN_PREPARACION', 'LISTO', 'ENTREGADO', 'CANCELADO'], {
+        errorMap: () => ({ message: 'Estado inválido. Los estados permitidos son: RECIBIDO, EN_PREPARACION, LISTO, ENTREGADO, CANCELADO' })
     }).default('RECIBIDO'),
     observaciones: z.string().max(255).optional().nullable(),
     articulos: z.array(pedidoContenidoSchema).min(1, 'Debe incluir al menos un artículo')
 });
 
 // Schema para actualizar estado de pedido
-// Estados según la tabla pedidos en BD: RECIBIDO, EN_PREPARACION, ENTREGADO, CANCELADO
+// Estados según la tabla pedidos en BD: RECIBIDO, EN_PREPARACION, LISTO, ENTREGADO, CANCELADO
 const actualizarEstadoPedidoSchema = z.object({
-    estado: z.enum(['RECIBIDO', 'EN_PREPARACION', 'ENTREGADO', 'CANCELADO'], {
-        errorMap: () => ({ message: 'Estado inválido. Los estados permitidos son: RECIBIDO, EN_PREPARACION, ENTREGADO, CANCELADO' })
+    estado: z.enum(['RECIBIDO', 'EN_PREPARACION', 'LISTO', 'ENTREGADO', 'CANCELADO'], {
+        errorMap: () => ({ message: 'Estado inválido. Los estados permitidos son: RECIBIDO, EN_PREPARACION, LISTO, ENTREGADO, CANCELADO' })
     })
 });
 
@@ -65,6 +65,33 @@ const actualizarArticuloPedidoSchema = z.object({
     subtotal: z.number().nonnegative('El subtotal debe ser mayor o igual a 0').optional(),
     personalizaciones: personalizacionesSchema,
     observaciones: z.string().max(255).optional().nullable()
+});
+
+// Schema para edición completa de pedido
+// Regla: articulos es OBLIGATORIO (siempre se reemplaza). Campos pedido se actualizan todos.
+const editarPedidoCompletoSchema = z.object({
+    // Campos de pedidos (todos actualizables)
+    cliente_nombre: z.string().max(150).optional().nullable(),
+    cliente_direccion: z.string().max(255).optional().nullable(),
+    cliente_telefono: z.string().max(50).optional().nullable(),
+    cliente_email: z.string().email('Email inválido').max(100).optional().nullable(),
+    origen_pedido: z.enum(['MOSTRADOR', 'TELEFONO', 'WHATSAPP', 'WEB'], {
+        errorMap: () => ({ message: 'Origen inválido. Valores: MOSTRADOR, TELEFONO, WHATSAPP, WEB' })
+    }).optional(),
+    modalidad: z.enum(['DELIVERY', 'RETIRO'], {
+        errorMap: () => ({ message: 'Modalidad debe ser DELIVERY o RETIRO' })
+    }).optional(),
+    horario_entrega: z.string().datetime().optional().nullable(),
+    estado_pago: z.enum(['DEBE', 'PAGADO'], {
+        errorMap: () => ({ message: 'Estado de pago inválido. Valores: DEBE, PAGADO' })
+    }).optional(),
+    medio_pago: z.string().max(50).optional().nullable(),
+    observaciones: z.string().max(255).optional().nullable(),
+    subtotal: z.number().nonnegative().optional(),
+    iva_total: z.number().nonnegative().optional(),
+    total: z.number().nonnegative().optional(),
+    // Items OBLIGATORIOS (siempre se reemplaza pedidos_contenido)
+    articulos: z.array(pedidoContenidoSchema).min(1, 'Debe incluir al menos un artículo')
 });
 
 // Middleware de validación genérico
@@ -124,10 +151,12 @@ module.exports = {
     actualizarObservacionesSchema,
     agregarArticuloSchema,
     actualizarArticuloPedidoSchema,
+    editarPedidoCompletoSchema,
     pedidoContenidoSchema,
     idParamSchema,
     validate,
     validateParams
 };
+
 
 
