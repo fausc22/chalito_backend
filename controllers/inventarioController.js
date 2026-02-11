@@ -1487,8 +1487,20 @@ const obtenerStockBajo = async (req, res) => {
  */
 const obtenerCategorias = async (req, res) => {
     try {
-        const query = 'SELECT id, nombre, descripcion, orden, activo FROM categorias ORDER BY orden, nombre';
-        const [categorias] = await db.execute(query);
+        const { activo } = req.query;
+        
+        let query = 'SELECT id, nombre, descripcion, orden, activo FROM categorias';
+        const params = [];
+        
+        // Filtro por activo si se proporciona
+        if (activo !== undefined) {
+            query += ' WHERE activo = ?';
+            params.push(activo === 'true' || activo === '1' ? 1 : 0);
+        }
+        
+        query += ' ORDER BY orden, nombre';
+        
+        const [categorias] = await db.execute(query, params);
 
         res.json({
             success: true,
@@ -1847,7 +1859,7 @@ const filtrarCategorias = async (req, res) => {
         // Query de conteo
         const queryCount = `SELECT COUNT(*) as total FROM categorias WHERE ${whereClause}`;
         const [countResult] = await db.execute(queryCount, queryParams);
-        const total = countResult[0].total;
+        const total = countResult && countResult.length > 0 ? countResult[0].total : 0;
 
         console.log(`✅ Categorías encontradas: ${resultados.length}, Total: ${total}`);
 
