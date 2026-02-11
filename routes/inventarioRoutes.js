@@ -306,6 +306,121 @@ router.delete('/categorias/:id',
 );
 
 // =====================================================
+// RUTAS DE ADICIONALES
+// =====================================================
+
+/**
+ * GET /inventario/adicionales
+ * Listar adicionales con filtros
+ * Query params: nombre, disponible, limite, pagina
+ */
+router.get('/adicionales',
+    ...soloAdminGerente,
+    middlewareAuditoria({
+        accion: 'VIEW_ADICIONALES',
+        tabla: 'adicionales',
+        incluirQuery: true
+    }),
+    inventarioController.filtrarAdicionales
+);
+
+/**
+ * GET /inventario/adicionales/:id
+ * Obtener adicional específico
+ */
+router.get('/adicionales/:id',
+    ...soloAdminGerente,
+    middlewareAuditoria({
+        accion: 'VIEW_ADICIONAL',
+        tabla: 'adicionales'
+    }),
+    inventarioController.obtenerAdicional
+);
+
+/**
+ * POST /inventario/adicionales
+ * Crear nuevo adicional
+ * Body: nombre, descripcion, precio_extra, disponible
+ */
+router.post('/adicionales',
+    ...soloAdminGerente,
+    middlewareAuditoria({
+        accion: 'CREATE_ADICIONAL',
+        tabla: 'adicionales',
+        incluirBody: true
+    }),
+    inventarioController.crearAdicional
+);
+
+/**
+ * PUT /inventario/adicionales/:id
+ * Editar adicional existente
+ */
+router.put('/adicionales/:id',
+    ...soloAdminGerente,
+    middlewareAuditoria({
+        accion: 'UPDATE_ADICIONAL',
+        tabla: 'adicionales',
+        incluirBody: true
+    }),
+    inventarioController.editarAdicional
+);
+
+/**
+ * DELETE /inventario/adicionales/:id
+ * Eliminar adicional
+ */
+router.delete('/adicionales/:id', 
+    ...soloAdminGerente,
+    middlewareAuditoria({ 
+        accion: 'DELETE_ADICIONAL', 
+        tabla: 'adicionales' 
+    }),
+    inventarioController.eliminarAdicional
+);
+
+/**
+ * GET /inventario/articulos/:id/adicionales
+ * Obtener adicionales asignados a un artículo
+ */
+router.get('/articulos/:id/adicionales',
+    ...soloAdminGerente,
+    middlewareAuditoria({
+        accion: 'VIEW_ADICIONALES_ARTICULO',
+        tabla: 'adicionales_contenido'
+    }),
+    inventarioController.obtenerAdicionalesPorArticulo
+);
+
+/**
+ * POST /inventario/articulos/:id/adicionales
+ * Asignar adicionales a un artículo
+ * Body: { adicionales: [id1, id2, ...] }
+ */
+router.post('/articulos/:id/adicionales',
+    ...soloAdminGerente,
+    middlewareAuditoria({
+        accion: 'ASIGNAR_ADICIONALES_ARTICULO',
+        tabla: 'adicionales_contenido',
+        incluirBody: true
+    }),
+    inventarioController.asignarAdicionalesAArticulo
+);
+
+/**
+ * DELETE /inventario/articulos/:id/adicionales/:adicionalId
+ * Eliminar adicional de un artículo
+ */
+router.delete('/articulos/:id/adicionales/:adicionalId',
+    ...soloAdminGerente,
+    middlewareAuditoria({
+        accion: 'ELIMINAR_ADICIONAL_ARTICULO',
+        tabla: 'adicionales_contenido'
+    }),
+    inventarioController.eliminarAdicionalDeArticulo
+);
+
+// =====================================================
 // RUTAS AUXILIARES
 // =====================================================
 
@@ -365,6 +480,7 @@ const validarIdNumerico = (paramName) => {
 // Aplicar validación a rutas con parámetros ID
 router.param('id', validarIdNumerico('id'));
 router.param('ingrediente_id', validarIdNumerico('ingrediente_id'));
+router.param('adicionalId', validarIdNumerico('adicionalId'));
 
 // =====================================================
 // MIDDLEWARE DE MANEJO DE ERRORES ESPECÍFICO

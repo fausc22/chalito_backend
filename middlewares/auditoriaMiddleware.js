@@ -32,13 +32,20 @@ const registrarAuditoria = async ({
     estado = 'EXITOSO',
     tiempoProcesamiento = null
 }) => {
+    // Verificar si las auditorías están activadas
+    const auditStatus = process.env.AUDIT_STATUS || 'ON';
+    if (auditStatus.toUpperCase() !== 'ON') {
+        // Si está desactivado, no registrar nada
+        return;
+    }
+
     try {
         const query = `
             INSERT INTO auditorias (
                 usuario_id, usuario_nombre, accion, tabla_afectada, registro_id,
-                datos_anteriores, datos_nuevos, ip_address, user_agent, endpoint,
+                datos_anteriores, datos_nuevos, ip_address, endpoint,
                 metodo_http, detalles, estado, tiempo_procesamiento
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
 
         const valores = [
@@ -50,7 +57,6 @@ const registrarAuditoria = async ({
             datosAnteriores ? JSON.stringify(datosAnteriores) : null,
             datosNuevos ? JSON.stringify(datosNuevos) : null,
             ipAddress,
-            userAgent,
             endpoint,
             metodoHttp,
             detallesAdicionales,

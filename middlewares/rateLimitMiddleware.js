@@ -15,7 +15,7 @@ const rateLimitConfigs = {
     },
     api: {
         windowMs: 1 * 60 * 1000, // 1 minuto
-        maxRequests: 100, // 100 requests
+        maxRequests: 10000, // 10000 requests (prácticamente deshabilitado para uso normal)
         message: 'Demasiadas peticiones. Intente nuevamente en un minuto.'
     },
     strict: {

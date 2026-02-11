@@ -1458,8 +1458,20 @@ const obtenerStockBajo = async (req, res) => {
  */
 const obtenerCategorias = async (req, res) => {
     try {
-        const query = 'SELECT id, nombre, descripcion, orden, activo FROM categorias ORDER BY orden, nombre';
-        const [categorias] = await db.execute(query);
+        const { activo } = req.query;
+        
+        let query = 'SELECT id, nombre, descripcion, orden, activo FROM categorias';
+        const params = [];
+        
+        // Filtro por activo si se proporciona
+        if (activo !== undefined) {
+            query += ' WHERE activo = ?';
+            params.push(activo === 'true' || activo === '1' ? 1 : 0);
+        }
+        
+        query += ' ORDER BY orden, nombre';
+        
+        const [categorias] = await db.execute(query, params);
 
         res.json({
             success: true,
@@ -1818,7 +1830,7 @@ const filtrarCategorias = async (req, res) => {
         // Query de conteo
         const queryCount = `SELECT COUNT(*) as total FROM categorias WHERE ${whereClause}`;
         const [countResult] = await db.execute(queryCount, queryParams);
-        const total = countResult[0].total;
+        const total = countResult && countResult.length > 0 ? countResult[0].total : 0;
 
         console.log(`✅ Categorías encontradas: ${resultados.length}, Total: ${total}`);
 
@@ -1899,6 +1911,627 @@ const calcularCostoElaborado = async (req, res) => {
     }
 };
 
+// =====================================================
+// GESTIÓN DE ADICIONALES
+// =====================================================
+
+/**
+ * Crear un nuevo adicional
+ */
+const crearAdicional = async (req, res) => {
+    try {
+        console.log('➕ Creando nuevo adicional...');
+        
+        const { nombre, descripcion, precio_extra = 0, disponible = true } = req.body;
+
+        // Validaciones básicas
+        if (!nombre || nombre.trim() === '') {
+            return res.status(400).json({
+                success: false,
+                message: 'El nombre del adicional es obligatorio'
+            });
+        }
+
+        if (precio_extra < 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'El precio extra no puede ser negativo'
+            });
+        }
+
+        // Verificar nombre único
+        const [nombreExistente] = await db.execute(
+            'SELECT id FROM adicionales WHERE nombre = ?',
+            [nombre.trim()]
+        );
+
+        if (nombreExistente.length > 0) {
+            return res.status(409).json({
+                success: false,
+                message: 'Ya existe un adicional con ese nombre'
+            });
+        }
+
+        // Insertar adicional
+        const query = `
+            INSERT INTO adicionales (nombre, descripcion, precio_extra, disponible, fecha_creacion)
+            VALUES (?, ?, ?, ?, NOW())
+        `;
+
+        const [result] = await db.execute(query, [
+            nombre.trim(),
+            descripcion?.trim() || null,
+            parseFloat(precio_extra),
+            disponible ? 1 : 0
+        ]);
+
+        // Auditar creación
+        await auditarOperacion(req, {
+            accion: 'CREATE_ADICIONAL',
+            tabla: 'adicionales',
+            registroId: result.insertId,
+            datosNuevos: limpiarDatosSensibles({ nombre, descripcion, precio_extra, disponible }),
+            detallesAdicionales: `Adicional creado: ${nombre}`
+        });
+
+        console.log(`✅ Adicional creado: ${nombre} - ID: ${result.insertId}`);
+
+        res.status(201).json({
+            success: true,
+            message: 'Adicional creado exitosamente',
+            data: {
+                id: result.insertId,
+                nombre,
+                descripcion,
+                precio_extra: parseFloat(precio_extra),
+                disponible: disponible ? 1 : 0
+            }
+        });
+
+    } catch (error) {
+        console.error('❌ Error creando adicional:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error al crear adicional',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+};
+
+/**
+ * Obtener adicional por ID
+ */
+const obtenerAdicional = async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        if (!id || isNaN(parseInt(id))) {
+            return res.status(400).json({
+                success: false,
+                message: 'ID de adicional inválido'
+            });
+        }
+
+        const query = `
+            SELECT id, nombre, descripcion, precio_extra, disponible, fecha_creacion
+            FROM adicionales
+            WHERE id = ?
+        `;
+
+        const [adicionales] = await db.execute(query, [id]);
+
+        if (adicionales.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Adicional no encontrado'
+            });
+        }
+
+        console.log(`✅ Adicional obtenido: ${adicionales[0].nombre}`);
+
+        res.json({
+            success: true,
+            data: adicionales[0]
+        });
+
+    } catch (error) {
+        console.error('❌ Error obteniendo adicional:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error al obtener adicional',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+};
+
+/**
+ * Listar y filtrar adicionales con paginación
+ */
+const filtrarAdicionales = async (req, res) => {
+    try {
+        console.log('🔍 Filtrando adicionales...');
+
+        const {
+            nombre,
+            disponible = 'all',
+            limite = 50,
+            pagina = 1
+        } = req.query;
+
+        let whereConditions = ['1=1'];
+        let queryParams = [];
+
+        // Filtro por nombre
+        if (nombre && nombre.trim() !== '') {
+            whereConditions.push('nombre LIKE ?');
+            queryParams.push(`%${nombre.trim()}%`);
+        }
+
+        // Filtro por disponibilidad
+        if (disponible !== 'all') {
+            whereConditions.push('disponible = ?');
+            queryParams.push(disponible === 'true' ? 1 : 0);
+        }
+
+        const whereClause = whereConditions.join(' AND ');
+
+        // Query principal
+        let query = `
+            SELECT id, nombre, descripcion, precio_extra, disponible, fecha_creacion
+            FROM adicionales
+            WHERE ${whereClause}
+            ORDER BY nombre ASC
+        `;
+
+        // Paginación
+        const limiteNum = Math.min(parseInt(limite) || 50, 100);
+        const paginaNum = Math.max(parseInt(pagina) || 1, 1);
+        const offset = (paginaNum - 1) * limiteNum;
+
+        query += ` LIMIT ${limiteNum} OFFSET ${offset}`;
+
+        const [resultados] = await db.execute(query, queryParams);
+
+        // Query de conteo
+        const queryCount = `SELECT COUNT(*) as total FROM adicionales WHERE ${whereClause}`;
+        const [countResult] = await db.execute(queryCount, queryParams);
+        const total = countResult[0].total;
+
+        console.log(`✅ Adicionales encontrados: ${resultados.length}, Total: ${total}`);
+
+        res.json({
+            success: true,
+            data: resultados,
+            meta: {
+                pagina_actual: paginaNum,
+                total_registros: total,
+                total_paginas: Math.ceil(total / limiteNum),
+                registros_por_pagina: limiteNum,
+                hay_mas: (paginaNum * limiteNum) < total
+            }
+        });
+
+    } catch (error) {
+        console.error('❌ Error filtrando adicionales:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error al filtrar adicionales',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+};
+
+/**
+ * Editar adicional existente
+ */
+const editarAdicional = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { nombre, descripcion, precio_extra, disponible } = req.body;
+
+        console.log(`✏️ Editando adicional: ID ${id}`);
+
+        if (!id || isNaN(parseInt(id))) {
+            return res.status(400).json({
+                success: false,
+                message: 'ID de adicional inválido'
+            });
+        }
+
+        // Obtener datos anteriores
+        const datosAnteriores = await obtenerDatosAnteriores('adicionales', id);
+        if (!datosAnteriores) {
+            return res.status(404).json({
+                success: false,
+                message: 'Adicional no encontrado'
+            });
+        }
+
+        // Validar precio_extra
+        if (precio_extra !== undefined && precio_extra < 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'El precio extra no puede ser negativo'
+            });
+        }
+
+        // Verificar nombre único si se está cambiando
+        if (nombre && nombre !== datosAnteriores.nombre) {
+            const [nombreExistente] = await db.execute(
+                'SELECT id FROM adicionales WHERE nombre = ? AND id != ?',
+                [nombre.trim(), id]
+            );
+
+            if (nombreExistente.length > 0) {
+                return res.status(409).json({
+                    success: false,
+                    message: 'Ya existe otro adicional con ese nombre'
+                });
+            }
+        }
+
+        // Construir query de actualización
+        const camposActualizar = [];
+        const valoresActualizar = [];
+
+        if (nombre !== undefined && nombre.trim() !== '') {
+            camposActualizar.push('nombre = ?');
+            valoresActualizar.push(nombre.trim());
+        }
+        if (descripcion !== undefined) {
+            camposActualizar.push('descripcion = ?');
+            valoresActualizar.push(descripcion?.trim() || null);
+        }
+        if (precio_extra !== undefined) {
+            camposActualizar.push('precio_extra = ?');
+            valoresActualizar.push(parseFloat(precio_extra));
+        }
+        if (disponible !== undefined) {
+            camposActualizar.push('disponible = ?');
+            valoresActualizar.push(disponible ? 1 : 0);
+        }
+
+        if (camposActualizar.length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'No se proporcionaron campos para actualizar'
+            });
+        }
+
+        // Actualizar adicional
+        const query = `UPDATE adicionales SET ${camposActualizar.join(', ')} WHERE id = ?`;
+        valoresActualizar.push(id);
+
+        await db.execute(query, valoresActualizar);
+
+        // Auditar cambios
+        await auditarOperacion(req, {
+            accion: 'UPDATE_ADICIONAL',
+            tabla: 'adicionales',
+            registroId: id,
+            datosAnteriores: limpiarDatosSensibles(datosAnteriores),
+            datosNuevos: limpiarDatosSensibles(req.body),
+            detallesAdicionales: `Adicional actualizado: ${nombre || datosAnteriores.nombre}`
+        });
+
+        console.log(`✅ Adicional actualizado: ID ${id}`);
+
+        res.json({
+            success: true,
+            message: 'Adicional actualizado exitosamente',
+            data: { id: parseInt(id) }
+        });
+
+    } catch (error) {
+        console.error('❌ Error editando adicional:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error al editar adicional',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+};
+
+/**
+ * Eliminar adicional (marcar como no disponible o eliminación física)
+ */
+const eliminarAdicional = async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        console.log(`🗑️ Eliminando adicional: ID ${id}`);
+
+        if (!id || isNaN(parseInt(id))) {
+            return res.status(400).json({
+                success: false,
+                message: 'ID de adicional inválido'
+            });
+        }
+
+        // Obtener datos anteriores
+        const datosAnteriores = await obtenerDatosAnteriores('adicionales', id);
+        if (!datosAnteriores) {
+            return res.status(404).json({
+                success: false,
+                message: 'Adicional no encontrado'
+            });
+        }
+
+        // Verificar si está siendo usado en artículos
+        const [enUso] = await db.execute(
+            'SELECT COUNT(*) as count FROM adicionales_contenido WHERE adicional_id = ?',
+            [id]
+        );
+
+        if (enUso[0].count > 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'No se puede eliminar el adicional porque está siendo usado en artículos'
+            });
+        }
+
+        // Eliminar adicional (eliminación física)
+        await db.execute('DELETE FROM adicionales WHERE id = ?', [id]);
+
+        // Auditar eliminación
+        await auditarOperacion(req, {
+            accion: 'DELETE_ADICIONAL',
+            tabla: 'adicionales',
+            registroId: id,
+            datosAnteriores: limpiarDatosSensibles(datosAnteriores),
+            detallesAdicionales: `Adicional eliminado: ${datosAnteriores.nombre}`
+        });
+
+        console.log(`✅ Adicional eliminado: ${datosAnteriores.nombre} - ID: ${id}`);
+
+        res.json({
+            success: true,
+            message: 'Adicional eliminado exitosamente',
+            data: { id: parseInt(id), nombre: datosAnteriores.nombre }
+        });
+
+    } catch (error) {
+        console.error('❌ Error eliminando adicional:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error al eliminar adicional',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+};
+
+/**
+ * Obtener adicionales asignados a un artículo
+ */
+const obtenerAdicionalesPorArticulo = async (req, res) => {
+    try {
+        const { id: articuloId } = req.params;
+
+        if (!articuloId || isNaN(parseInt(articuloId))) {
+            return res.status(400).json({
+                success: false,
+                message: 'ID de artículo inválido'
+            });
+        }
+
+        // Verificar que el artículo existe
+        const [articulo] = await db.execute(
+            'SELECT id, nombre FROM articulos WHERE id = ?',
+            [articuloId]
+        );
+
+        if (articulo.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Artículo no encontrado'
+            });
+        }
+
+        // Obtener adicionales asignados
+        const query = `
+            SELECT 
+                a.id,
+                a.nombre,
+                a.descripcion,
+                a.precio_extra,
+                a.disponible,
+                ac.id as contenido_id
+            FROM adicionales a
+            INNER JOIN adicionales_contenido ac ON a.id = ac.adicional_id
+            WHERE ac.articulo_id = ?
+            ORDER BY a.nombre ASC
+        `;
+
+        const [adicionales] = await db.execute(query, [articuloId]);
+
+        console.log(`✅ Adicionales obtenidos para artículo ${articuloId}: ${adicionales.length}`);
+
+        res.json({
+            success: true,
+            data: adicionales
+        });
+
+    } catch (error) {
+        console.error('❌ Error obteniendo adicionales del artículo:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error al obtener adicionales del artículo',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+};
+
+/**
+ * Asignar adicionales a un artículo
+ */
+const asignarAdicionalesAArticulo = async (req, res) => {
+    try {
+        const { id: articuloId } = req.params;
+        const { adicionales: adicionalesIds } = req.body;
+
+        console.log(`🔗 Asignando adicionales al artículo ${articuloId}...`);
+
+        if (!articuloId || isNaN(parseInt(articuloId))) {
+            return res.status(400).json({
+                success: false,
+                message: 'ID de artículo inválido'
+            });
+        }
+
+        if (!Array.isArray(adicionalesIds)) {
+            return res.status(400).json({
+                success: false,
+                message: 'adicionales debe ser un array'
+            });
+        }
+
+        // Verificar que el artículo existe
+        const [articulo] = await db.execute(
+            'SELECT id, nombre FROM articulos WHERE id = ?',
+            [articuloId]
+        );
+
+        if (articulo.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Artículo no encontrado'
+            });
+        }
+
+        // Eliminar asignaciones existentes
+        await db.execute(
+            'DELETE FROM adicionales_contenido WHERE articulo_id = ?',
+            [articuloId]
+        );
+
+        // Insertar nuevas asignaciones
+        if (adicionalesIds.length > 0) {
+            // Verificar que todos los adicionales existen
+            const placeholders = adicionalesIds.map(() => '?').join(',');
+            const [adicionalesExistentes] = await db.execute(
+                `SELECT id FROM adicionales WHERE id IN (${placeholders})`,
+                adicionalesIds
+            );
+
+            if (adicionalesExistentes.length !== adicionalesIds.length) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Uno o más adicionales no existen'
+                });
+            }
+
+            // Insertar asignaciones
+            const connection = await db.getConnection();
+            try {
+                // Obtener el siguiente ID disponible
+                const [maxIdResult] = await connection.execute(
+                    'SELECT COALESCE(MAX(id), 0) + 1 as next_id FROM adicionales_contenido'
+                );
+                let nextId = maxIdResult[0]?.next_id || 1;
+
+                for (const adicionalId of adicionalesIds) {
+                    await connection.execute(
+                        'INSERT INTO adicionales_contenido (id, articulo_id, adicional_id) VALUES (?, ?, ?)',
+                        [nextId, articuloId, adicionalId]
+                    );
+                    nextId++;
+                }
+                connection.release();
+            } catch (error) {
+                connection.release();
+                throw error;
+            }
+        }
+
+        // Auditar operación
+        await auditarOperacion(req, {
+            accion: 'ASIGNAR_ADICIONALES_ARTICULO',
+            tabla: 'adicionales_contenido',
+            registroId: articuloId,
+            datosNuevos: { articulo_id: articuloId, adicionales: adicionalesIds },
+            detallesAdicionales: `Adicionales asignados a artículo: ${articulo[0].nombre} - ${adicionalesIds.length} adicionales`
+        });
+
+        console.log(`✅ ${adicionalesIds.length} adicionales asignados al artículo ${articuloId}`);
+
+        res.json({
+            success: true,
+            message: 'Adicionales asignados exitosamente',
+            data: { articulo_id: parseInt(articuloId), adicionales: adicionalesIds }
+        });
+
+    } catch (error) {
+        console.error('❌ Error asignando adicionales:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error al asignar adicionales',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+};
+
+/**
+ * Eliminar adicional de un artículo
+ */
+const eliminarAdicionalDeArticulo = async (req, res) => {
+    try {
+        const { id: articuloId, adicionalId } = req.params;
+
+        console.log(`🔗 Eliminando adicional ${adicionalId} del artículo ${articuloId}...`);
+
+        if (!articuloId || isNaN(parseInt(articuloId)) || !adicionalId || isNaN(parseInt(adicionalId))) {
+            return res.status(400).json({
+                success: false,
+                message: 'IDs inválidos'
+            });
+        }
+
+        // Verificar que la asignación existe
+        const [asignacion] = await db.execute(
+            'SELECT * FROM adicionales_contenido WHERE articulo_id = ? AND adicional_id = ?',
+            [articuloId, adicionalId]
+        );
+
+        if (asignacion.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Asignación no encontrada'
+            });
+        }
+
+        // Eliminar asignación
+        await db.execute(
+            'DELETE FROM adicionales_contenido WHERE articulo_id = ? AND adicional_id = ?',
+            [articuloId, adicionalId]
+        );
+
+        // Auditar operación
+        await auditarOperacion(req, {
+            accion: 'ELIMINAR_ADICIONAL_ARTICULO',
+            tabla: 'adicionales_contenido',
+            registroId: articuloId,
+            datosAnteriores: { articulo_id: articuloId, adicional_id: adicionalId },
+            detallesAdicionales: `Adicional ${adicionalId} eliminado del artículo ${articuloId}`
+        });
+
+        console.log(`✅ Adicional ${adicionalId} eliminado del artículo ${articuloId}`);
+
+        res.json({
+            success: true,
+            message: 'Adicional eliminado del artículo exitosamente',
+            data: { articulo_id: parseInt(articuloId), adicional_id: parseInt(adicionalId) }
+        });
+
+    } catch (error) {
+        console.error('❌ Error eliminando adicional del artículo:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error al eliminar adicional del artículo',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+};
+
 module.exports = {
     // Artículos
     crearArticulo,
@@ -1930,5 +2563,15 @@ module.exports = {
 
     // Auxiliares
     obtenerStockBajo,
-    calcularCostoElaborado
+    calcularCostoElaborado,
+
+    // Adicionales
+    crearAdicional,
+    obtenerAdicional,
+    filtrarAdicionales,
+    editarAdicional,
+    eliminarAdicional,
+    obtenerAdicionalesPorArticulo,
+    asignarAdicionalesAArticulo,
+    eliminarAdicionalDeArticulo
 }
