@@ -10,6 +10,7 @@ const comandaContenidoSchema = z.object({
 });
 
 // Schema para crear una nueva comanda
+// NOTA: La comanda no maneja estado propio, el estado se deriva exclusivamente de pedidos.estado
 const crearComandaSchema = z.object({
     pedido_id: z.number().int().positive('El ID del pedido es requerido'),
     cliente_nombre: z.string().min(1, 'El nombre del cliente es requerido').max(150).optional().nullable(),
@@ -20,19 +21,12 @@ const crearComandaSchema = z.object({
         errorMap: () => ({ message: 'La modalidad debe ser DELIVERY o RETIRO' })
     }),
     horario_entrega: z.string().datetime().optional().nullable(),
-    estado: z.enum(['EN_PREPARACION', 'LISTA', 'CANCELADA'], {
-        errorMap: () => ({ message: 'Estado inválido. Los estados permitidos son: EN_PREPARACION, LISTA, CANCELADA' })
-    }).default('EN_PREPARACION'),
     observaciones: z.string().max(255).optional().nullable(),
     articulos: z.array(comandaContenidoSchema).min(1, 'Debe incluir al menos un artículo')
 });
 
-// Schema para actualizar estado de comanda
-const actualizarEstadoComandaSchema = z.object({
-    estado: z.enum(['EN_PREPARACION', 'LISTA', 'CANCELADA'], {
-        errorMap: () => ({ message: 'Estado inválido. Los estados permitidos son: EN_PREPARACION, LISTA, CANCELADA' })
-    })
-});
+// NOTA: No existe schema para actualizar estado de comanda porque la comanda no maneja estado propio.
+// El estado se deriva exclusivamente de pedidos.estado
 
 // Schema para actualizar observaciones de comanda
 const actualizarObservacionesComandaSchema = z.object({
@@ -92,7 +86,6 @@ const validateParams = (schema) => {
 
 module.exports = {
     crearComandaSchema,
-    actualizarEstadoComandaSchema,
     actualizarObservacionesComandaSchema,
     comandaContenidoSchema,
     idParamSchema,

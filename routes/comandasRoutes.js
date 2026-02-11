@@ -4,7 +4,6 @@ const {
     crearComanda,
     obtenerComandas,
     obtenerComandaPorId,
-    actualizarEstadoComanda,
     actualizarObservaciones
 } = require('../controllers/comandasController');
 
@@ -12,7 +11,6 @@ const { authenticateToken } = require('../middlewares/authMiddleware');
 const { apiRateLimiter } = require('../middlewares/rateLimitMiddleware');
 const { 
     crearComandaSchema, 
-    actualizarEstadoComandaSchema, 
     actualizarObservacionesComandaSchema,
     validate,
     validateParams,
@@ -33,10 +31,9 @@ router.get('/', apiRateLimiter, authenticateToken, obtenerComandas);
 // Obtener una comanda por ID
 router.get('/:id', apiRateLimiter, authenticateToken, validateParams(idParamSchema), obtenerComandaPorId);
 
-// Actualizar estado de comanda
-router.put('/:id/estado', apiRateLimiter, authenticateToken, validateParams(idParamSchema), validate(actualizarEstadoComandaSchema), actualizarEstadoComanda);
-
 // Actualizar observaciones de comanda
+// NOTA: No existe ruta para actualizar estado de comanda porque la comanda no maneja estado propio.
+// El estado se deriva exclusivamente de pedidos.estado
 router.put('/:id/observaciones', apiRateLimiter, authenticateToken, validateParams(idParamSchema), validate(actualizarObservacionesComandaSchema), actualizarObservaciones);
 
 module.exports = router;
