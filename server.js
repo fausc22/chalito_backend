@@ -42,6 +42,8 @@ const comandasRoutes = require('./routes/comandasRoutes');
 const configuracionRoutes = require('./routes/configuracionRoutes');
 const healthRoutes = require('./routes/healthRoutes');
 const metricsRoutes = require('./routes/metricsRoutes');
+const gastosRoutes = require('./routes/gastosRoutes');
+const fondosRoutes = require('./routes/fondosRoutes');
 
 // Importar worker de cola de pedidos
 const OrderQueueWorker = require('./workers/OrderQueueWorker');
@@ -151,6 +153,8 @@ app.use('/comandas', comandasRoutes);
 app.use('/configuracion-sistema', configuracionRoutes);
 app.use('/health', healthRoutes);
 app.use('/metrics', metricsRoutes);
+app.use('/gastos', gastosRoutes);
+app.use('/fondos', fondosRoutes);
 
 
 
