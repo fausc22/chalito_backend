@@ -20,17 +20,54 @@ const crearVenta = async (req, res) => {
         
         const { articulos, ...ventaData } = req.validatedData || req.body;
         const usuario = req.user || {};
+        const pedidoId = ventaData.pedido_id ? parseInt(ventaData.pedido_id, 10) : null;
+
+        // Si la venta viene asociada a pedido, validar existencia y unicidad 1:1
+        if (pedidoId) {
+            const [pedidoRows] = await connection.execute(
+                'SELECT id FROM pedidos WHERE id = ? FOR UPDATE',
+                [pedidoId]
+            );
+
+            if (pedidoRows.length === 0) {
+                await connection.rollback();
+                return res.status(404).json({
+                    success: false,
+                    message: `El pedido #${pedidoId} no existe`
+                });
+            }
+
+            const [ventaExistente] = await connection.execute(
+                'SELECT id FROM ventas WHERE pedido_id = ? LIMIT 1',
+                [pedidoId]
+            );
+
+            if (ventaExistente.length > 0) {
+                await connection.rollback();
+                return res.status(409).json({
+                    success: false,
+                    message: `El pedido #${pedidoId} ya está asociado a la venta #${ventaExistente[0].id}`,
+                    code: 'PEDIDO_YA_FACTURADO',
+                    data: {
+                        pedido_id: pedidoId,
+                        venta_id: ventaExistente[0].id
+                    }
+                });
+            }
+        }
         
         // Insertar venta
         const ventaQuery = `
             INSERT INTO ventas (
+                pedido_id,
                 fecha, cliente_nombre, cliente_direccion, cliente_telefono, cliente_email,
                 subtotal, iva_total, descuento, total, medio_pago, cuenta_id,
                 estado, observaciones, tipo_factura, usuario_id, usuario_nombre
-            ) VALUES (NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
         
         const ventaValues = [
+            pedidoId,
             ventaData.cliente_nombre || null,
             ventaData.cliente_direccion || null,
             ventaData.cliente_telefono || null,
@@ -108,6 +145,26 @@ const crearVenta = async (req, res) => {
                 ]
             );
         }
+
+        // Si la venta está asociada a un pedido, reflejar estado de pago cuando el esquema lo soporte
+        if (pedidoId) {
+            try {
+                await connection.execute(
+                    'UPDATE pedidos SET estado_pago = ?, medio_pago = ? WHERE id = ?',
+                    ['PAGADO', ventaData.medio_pago || 'EFECTIVO', pedidoId]
+                );
+            } catch (pedidoUpdateError) {
+                if (pedidoUpdateError.code === 'ER_BAD_FIELD_ERROR' && pedidoUpdateError.message?.includes('estado_pago')) {
+                    // Compatibilidad con esquemas antiguos sin columna estado_pago
+                    await connection.execute(
+                        'UPDATE pedidos SET medio_pago = ? WHERE id = ?',
+                        [ventaData.medio_pago || 'EFECTIVO', pedidoId]
+                    );
+                } else {
+                    throw pedidoUpdateError;
+                }
+            }
+        }
         
         await connection.commit();
         
@@ -118,6 +175,7 @@ const crearVenta = async (req, res) => {
             registroId: ventaId,
             datosNuevos: limpiarDatosSensibles({
                 ventaId,
+                pedido_id: pedidoId,
                 cliente: ventaData.cliente_nombre,
                 total: ventaData.total,
                 articulos: articulos.length
@@ -130,12 +188,20 @@ const crearVenta = async (req, res) => {
         res.status(201).json({
             success: true,
             message: 'Venta creada exitosamente',
-            data: { id: ventaId, ...ventaData }
+            data: { id: ventaId, pedido_id: pedidoId, ...ventaData }
         });
         
     } catch (error) {
         await connection.rollback();
         console.error('❌ Error al crear venta:', error);
+
+        if (error.code === 'ER_DUP_ENTRY' && error.message?.includes('pedido_id')) {
+            return res.status(409).json({
+                success: false,
+                message: 'El pedido ya está asociado a otra venta',
+                code: 'PEDIDO_YA_FACTURADO'
+            });
+        }
         
         await auditarOperacion(req, {
             accion: 'CREATE_VENTA',
@@ -244,7 +310,7 @@ const obtenerVentas = async (req, res) => {
         // Query principal con JOINs
         let query = `
             SELECT 
-                v.id, v.fecha, v.cliente_nombre, v.cliente_telefono,
+                v.id, v.pedido_id, v.fecha, v.cliente_nombre, v.cliente_telefono,
                 v.cliente_direccion, v.cliente_email,
                 v.subtotal, v.iva_total, v.descuento, v.total,
                 v.medio_pago, v.estado, v.observaciones,
@@ -328,7 +394,7 @@ const obtenerVentaPorId = async (req, res) => {
         // Query de la venta con JOINs
         const queryVenta = `
             SELECT 
-                v.id, v.fecha, v.cliente_nombre, v.cliente_telefono,
+                v.id, v.pedido_id, v.fecha, v.cliente_nombre, v.cliente_telefono,
                 v.cliente_direccion, v.cliente_email,
                 v.subtotal, v.iva_total, v.descuento, v.total,
                 v.medio_pago, v.estado, v.observaciones,

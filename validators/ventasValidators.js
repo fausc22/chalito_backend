@@ -21,6 +21,7 @@ const crearVentaSchema = z.object({
     total: z.number().nonnegative('El total debe ser mayor o igual a 0'),
     medio_pago: z.string().max(50).default('EFECTIVO'),
     cuenta_id: z.number().int().positive().optional().nullable(),
+    pedido_id: z.number().int().positive().optional().nullable(),
     estado: z.enum(['FACTURADA', 'ANULADA'], {
         errorMap: () => ({ message: 'Estado inválido' })
     }).default('FACTURADA'),

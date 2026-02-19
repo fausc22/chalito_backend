@@ -28,6 +28,53 @@ const io = new Server(server, {
     pingInterval: 25000
 });
 
+// Estado global de sincronización del worker
+const workerState = {
+    active: false,
+    lastHeartbeat: null
+};
+
+const WORKER_HEARTBEAT_INTERVAL_MS = 10000;
+let workerHeartbeatInterval = null;
+
+function emitWorkerStatus(ioInstance, active = true) {
+    workerState.active = Boolean(active);
+    workerState.lastHeartbeat = Date.now();
+
+    ioInstance.emit('worker_status', {
+        active: workerState.active,
+        timestamp: workerState.lastHeartbeat
+    });
+
+    console.log('Worker status emitido:', workerState.active ? 'ACTIVE' : 'INACTIVE');
+}
+
+function emitWorkerHeartbeat(ioInstance) {
+    workerState.lastHeartbeat = Date.now();
+
+    ioInstance.emit('worker_heartbeat', {
+        active: workerState.active,
+        timestamp: workerState.lastHeartbeat
+    });
+}
+
+function emitWorkerStatusToSocket(socket) {
+    socket.emit('worker_status', {
+        active: workerState.active,
+        timestamp: workerState.lastHeartbeat
+    });
+}
+
+function ensureWorkerHeartbeatInterval(ioInstance) {
+    if (workerHeartbeatInterval) return;
+
+    workerHeartbeatInterval = setInterval(() => {
+        if (workerState.active) {
+            emitWorkerHeartbeat(ioInstance);
+        }
+    }, WORKER_HEARTBEAT_INTERVAL_MS);
+}
+
 // Inicializar servicio de sockets
 const { getInstance: getSocketService } = require('./services/SocketService');
 const socketService = getSocketService(io);
@@ -42,9 +89,35 @@ const comandasRoutes = require('./routes/comandasRoutes');
 const configuracionRoutes = require('./routes/configuracionRoutes');
 const healthRoutes = require('./routes/healthRoutes');
 const metricsRoutes = require('./routes/metricsRoutes');
+const fondosRoutes = require('./routes/fondosRoutes');
+const gastosRoutes = require('./routes/gastosRoutes');
 
 // Importar worker de cola de pedidos
 const OrderQueueWorker = require('./workers/OrderQueueWorker');
+
+// Envolver start/stop para sincronizar estado sin tocar la lógica del worker
+const originalWorkerStart = OrderQueueWorker.start.bind(OrderQueueWorker);
+OrderQueueWorker.start = async (...args) => {
+    try {
+        const result = await originalWorkerStart(...args);
+        emitWorkerStatus(io, true);
+        return result;
+    } catch (error) {
+        emitWorkerStatus(io, false);
+        throw error;
+    }
+};
+
+const originalWorkerStop = OrderQueueWorker.stop.bind(OrderQueueWorker);
+OrderQueueWorker.stop = (...args) => {
+    const result = originalWorkerStop(...args);
+    emitWorkerStatus(io, false);
+    return result;
+};
+
+// Inicializar sincronización al boot sin duplicar intervals
+ensureWorkerHeartbeatInterval(io);
+emitWorkerStatus(io, Boolean(OrderQueueWorker.isRunning));
 
 
 // CORS configuration - Optimizado para VPS
@@ -151,8 +224,8 @@ app.use('/comandas', comandasRoutes);
 app.use('/configuracion-sistema', configuracionRoutes);
 app.use('/health', healthRoutes);
 app.use('/metrics', metricsRoutes);
-
-
+app.use('/fondos', fondosRoutes);
+app.use('/gastos', gastosRoutes);
 
 // Middleware global de manejo de errores
 app.use((error, req, res, next) => {
@@ -174,9 +247,29 @@ io.on('connection', (socket) => {
     console.log(`🔌 [Socket.IO] Cliente conectado: ${socket.id}`);
     socketService.registrarCliente(socket.id);
 
+    // Enviar snapshot inmediato del estado del worker al conectar
+    emitWorkerStatusToSocket(socket);
+    socket.emit('worker_connected', {
+        active: workerState.active,
+        timestamp: workerState.lastHeartbeat
+    });
+
     socket.on('disconnect', () => {
         console.log(`🔌 [Socket.IO] Cliente desconectado: ${socket.id}`);
         socketService.desregistrarCliente(socket.id);
+    });
+
+    // Compatibilidad con requests de estado desde frontend
+    socket.on('worker_status:request', () => {
+        emitWorkerStatusToSocket(socket);
+    });
+
+    socket.on('worker:status:request', () => {
+        emitWorkerStatusToSocket(socket);
+    });
+
+    socket.on('subscribe:worker-status', () => {
+        emitWorkerStatusToSocket(socket);
     });
 
     // Opcional: Suscripción a eventos específicos
@@ -224,6 +317,10 @@ app.set('io', io);
 process.on('SIGTERM', () => {
     console.log('🛑 SIGTERM recibido, cerrando servidor gracefully...');
     OrderQueueWorker.stop();
+    if (workerHeartbeatInterval) {
+        clearInterval(workerHeartbeatInterval);
+        workerHeartbeatInterval = null;
+    }
     io.close(() => {
         server.close(() => {
             console.log('✅ Servidor cerrado');
@@ -235,6 +332,10 @@ process.on('SIGTERM', () => {
 process.on('SIGINT', () => {
     console.log('🛑 SIGINT recibido, cerrando servidor gracefully...');
     OrderQueueWorker.stop();
+    if (workerHeartbeatInterval) {
+        clearInterval(workerHeartbeatInterval);
+        workerHeartbeatInterval = null;
+    }
     io.close(() => {
         server.close(() => {
             console.log('✅ Servidor cerrado');

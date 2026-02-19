@@ -545,23 +545,30 @@ const registrarMovimiento = async (req, res) => {
             observaciones
         } = req.validatedData || req.body;
         
-        const usuario = req.user || {};
+        const cuentaIdNum = Number(cuenta_id);
+        const montoNum = Number(monto);
         
         // Validar tipo
         if (!['INGRESO', 'EGRESO'].includes(tipo)) {
             await connection.rollback();
-            connection.release();
             return res.status(400).json({
                 success: false,
                 message: 'Tipo de movimiento inválido. Debe ser INGRESO o EGRESO'
             });
         }
+
+        // Validar cuenta_id
+        if (!Number.isInteger(cuentaIdNum) || cuentaIdNum <= 0) {
+            await connection.rollback();
+            return res.status(400).json({
+                success: false,
+                message: 'La cuenta de fondos es inválida'
+            });
+        }
         
         // Validar monto
-        const montoNum = parseFloat(monto);
-        if (isNaN(montoNum) || montoNum <= 0) {
+        if (!Number.isFinite(montoNum) || montoNum <= 0) {
             await connection.rollback();
-            connection.release();
             return res.status(400).json({
                 success: false,
                 message: 'El monto debe ser un número positivo'
@@ -571,12 +578,11 @@ const registrarMovimiento = async (req, res) => {
         // Verificar que la cuenta existe y está activa
         const [cuentas] = await connection.execute(
             'SELECT id, nombre, saldo FROM cuentas_fondos WHERE id = ? AND activa = 1',
-            [cuenta_id]
+            [cuentaIdNum]
         );
         
         if (cuentas.length === 0) {
             await connection.rollback();
-            connection.release();
             return res.status(404).json({
                 success: false,
                 message: 'Cuenta no encontrada o inactiva'
@@ -584,48 +590,77 @@ const registrarMovimiento = async (req, res) => {
         }
         
         const cuenta = cuentas[0];
-        const saldoAnterior = parseFloat(cuenta.saldo) || 0;
+        const saldoAnterior = Number(cuenta.saldo);
+        const saldoAnteriorNum = Number.isFinite(saldoAnterior) ? saldoAnterior : 0;
         
         // Calcular nuevo saldo
-        let saldoNuevo;
+        let saldoNuevoNum;
         if (tipo === 'INGRESO') {
-            saldoNuevo = saldoAnterior + montoNum;
+            saldoNuevoNum = saldoAnteriorNum + montoNum;
         } else {
-            saldoNuevo = saldoAnterior - montoNum;
+            saldoNuevoNum = saldoAnteriorNum - montoNum;
             
             // Validar que no quede saldo negativo
-            if (saldoNuevo < 0) {
+            if (saldoNuevoNum < 0) {
                 await connection.rollback();
-                connection.release();
                 return res.status(400).json({
                     success: false,
-                    message: `Saldo insuficiente. Saldo actual: $${saldoAnterior.toFixed(2)}`
+                    message: `Saldo insuficiente. Saldo actual: $${saldoAnteriorNum.toFixed(2)}`
                 });
             }
+        }
+
+        if (!Number.isFinite(saldoNuevoNum)) {
+            await connection.rollback();
+            return res.status(400).json({
+                success: false,
+                message: 'No se pudo calcular el nuevo saldo de la cuenta'
+            });
         }
         
         // Actualizar saldo de la cuenta
         await connection.execute(
             'UPDATE cuentas_fondos SET saldo = ? WHERE id = ?',
-            [saldoNuevo, cuenta_id]
+            [saldoNuevoNum, cuentaIdNum]
         );
         
-        // Registrar movimiento
+        // Registrar movimiento (manteniendo placeholders y tipos estrictos)
+        const movimientoParams = [
+            cuentaIdNum,
+            tipo,
+            'Movimiento manual',
+            null, // referencia_id para movimientos manuales
+            montoNum,
+            saldoAnteriorNum,
+            saldoNuevoNum,
+            observaciones || null
+        ];
+        
+        if (movimientoParams.some((value) => value === undefined)) {
+            await connection.rollback();
+            return res.status(400).json({
+                success: false,
+                message: 'Parámetros inválidos para registrar el movimiento'
+            });
+        }
+
+        console.log('🧪 INSERT movimientos_fondos params:', {
+            cuenta_id: movimientoParams[0],
+            tipo: movimientoParams[1],
+            origen: movimientoParams[2],
+            referencia_id: movimientoParams[3],
+            monto: movimientoParams[4],
+            saldo_anterior: movimientoParams[5],
+            saldo_nuevo: movimientoParams[6],
+            observaciones: movimientoParams[7]
+        });
+
         const [movimientoResult] = await connection.execute(
             `INSERT INTO movimientos_fondos (
-                fecha, cuenta_id, tipo, origen, monto,
+                fecha, cuenta_id, tipo, origen, referencia_id, monto,
                 saldo_anterior, saldo_nuevo, observaciones
-            ) VALUES (NOW(), ?, ?, ?, ?, ?, ?, ?)`,
-            [
-                cuenta_id,
-                tipo,
-                'Movimiento manual',
-                null,
-                montoNum,
-                saldoAnterior,
-                saldoNuevo,
-                observaciones || null
-            ]
+            ) VALUES (NOW(), ?, ?, ?, ?, ?, ?, ?, ?)`,
+            movimientoParams
         );
         
         const movimientoId = movimientoResult.insertId;
@@ -639,11 +674,11 @@ const registrarMovimiento = async (req, res) => {
             registroId: movimientoId,
             datosNuevos: limpiarDatosSensibles({
                 movimientoId,
-                cuenta_id,
+                cuenta_id: cuentaIdNum,
                 tipo,
                 monto: montoNum,
-                saldo_anterior: saldoAnterior,
-                saldo_nuevo: saldoNuevo
+                saldo_anterior: saldoAnteriorNum,
+                saldo_nuevo: saldoNuevoNum
             }),
             detallesAdicionales: `Movimiento ${tipo} manual - Cuenta: ${cuenta.nombre} - Monto: $${montoNum}`
         });
@@ -725,9 +760,24 @@ const obtenerHistorialUnificado = async (req, res) => {
             });
         }
         
-        const limiteNum = Math.min(parseInt(limit) || 50, 100);
-        const paginaNum = Math.max(parseInt(page) || 1, 1);
+        const limiteNumRaw = Number(limit);
+        const paginaNumRaw = Number(page);
+        const limiteNum = Math.min(
+            Number.isFinite(limiteNumRaw) && limiteNumRaw > 0 ? Math.floor(limiteNumRaw) : 50,
+            100
+        );
+        const paginaNum = Math.max(
+            Number.isFinite(paginaNumRaw) && paginaNumRaw > 0 ? Math.floor(paginaNumRaw) : 1,
+            1
+        );
         const offset = (paginaNum - 1) * limiteNum;
+
+        if (!Number.isInteger(limiteNum) || !Number.isInteger(offset) || limiteNum < 1 || offset < 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'Parámetros de paginación inválidos'
+            });
+        }
         
         // Construir query y parámetros dinámicamente
         let query = '';
@@ -818,11 +868,39 @@ const obtenerHistorialUnificado = async (req, res) => {
         }
         
         // ORDER BY, LIMIT y OFFSET
+        // Nota: en algunos entornos MySQL, usar placeholders en LIMIT/OFFSET
+        // junto con UNION ALL dispara ER_WRONG_ARGUMENTS. Como limiteNum y
+        // offset ya están validados como enteros seguros, se interpolan.
         query += `
             ORDER BY fecha DESC, registro_id DESC
-            LIMIT ? OFFSET ?`;
-        queryParams.push(limiteNum, offset);
+            LIMIT ${limiteNum} OFFSET ${offset}`;
         
+        const undefinedParams = queryParams
+            .map((value, index) => ({ value, index }))
+            .filter((item) => item.value === undefined);
+
+        if (undefinedParams.length > 0) {
+            console.error('❌ Parámetros undefined detectados en historial:', undefinedParams);
+            return res.status(400).json({
+                success: false,
+                message: 'Parámetros inválidos para obtener historial'
+            });
+        }
+
+        const placeholderCount = (query.match(/\?/g) || []).length;
+        if (placeholderCount !== queryParams.length) {
+            console.error('❌ Desfase placeholders/params en historial:', {
+                placeholderCount,
+                paramsCount: queryParams.length,
+                query: query.replace(/\s+/g, ' ').trim(),
+                queryParams
+            });
+            return res.status(500).json({
+                success: false,
+                message: 'Error interno al preparar consulta de historial'
+            });
+        }
+
         console.log(`🔍 Query params (${queryParams.length}):`, queryParams);
         console.log(`🔍 Query:`, query.replace(/\s+/g, ' ').trim());
         
