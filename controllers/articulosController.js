@@ -1,6 +1,12 @@
+const crypto = require('crypto');
 const db = require('./dbPromise');
 const multer = require('multer');
+const axios = require('axios');
 const { uploadImageToCloudinary } = require('../config/cloudinary');
+const {
+    calcularCostoArticuloElaborado: calcularCostoArticuloElaboradoService,
+    ERROR_CODES: COSTO_ERROR_CODES
+} = require('../services/ArticulosCostService');
 
 /**
  * Controller para gestión de artículos con validación y seguridad
@@ -38,6 +44,67 @@ const upload = multer({
 
 // Middleware de multer para una sola imagen
 const uploadSingle = upload.single('imagen');
+
+const normalizarPeso = (peso, { requerido = false } = {}) => {
+    if (peso === undefined || peso === null || peso === '') {
+        if (requerido) {
+            return { valido: false, mensaje: 'El peso es obligatorio' };
+        }
+        return { valido: true, valor: undefined };
+    }
+
+    const pesoNumero = Number(peso);
+    if (!Number.isInteger(pesoNumero)) {
+        return { valido: false, mensaje: 'El peso debe ser un número entero' };
+    }
+
+    if (pesoNumero < 1 || pesoNumero > 4) {
+        return { valido: false, mensaje: 'El peso debe estar entre 1 y 4' };
+    }
+
+    return { valido: true, valor: pesoNumero };
+};
+
+const validarIngredientes = (ingredientes) => {
+    if (!Array.isArray(ingredientes)) {
+        return { valido: false, mensaje: 'ingredientes debe ser un array' };
+    }
+
+    for (const ingrediente of ingredientes) {
+        const ingredienteId = Number(ingrediente?.ingrediente_id);
+        const cantidad = Number(ingrediente?.cantidad);
+        if (!Number.isInteger(ingredienteId) || ingredienteId <= 0) {
+            return { valido: false, mensaje: 'Cada ingrediente debe tener ingrediente_id válido' };
+        }
+        if (!Number.isFinite(cantidad) || cantidad <= 0) {
+            return { valido: false, mensaje: 'Cada ingrediente debe tener una cantidad mayor a 0' };
+        }
+    }
+
+    return { valido: true };
+};
+
+const sincronizarContenidoElaborado = async (connection, articuloId, ingredientes = []) => {
+    await connection.execute('DELETE FROM articulos_contenido WHERE articulo_id = ?', [articuloId]);
+
+    if (!Array.isArray(ingredientes) || ingredientes.length === 0) {
+        return;
+    }
+
+    for (const ingrediente of ingredientes) {
+        await connection.execute(
+            `INSERT INTO articulos_contenido (
+                articulo_id, ingrediente_id, unidad_medida, cantidad
+            ) VALUES (?, ?, ?, ?)`,
+            [
+                articuloId,
+                Number(ingrediente.ingrediente_id),
+                ingrediente.unidad_medida || 'UNIDADES',
+                Number(ingrediente.cantidad)
+            ]
+        );
+    }
+};
 
 // =====================================================
 // ENDPOINT: SUBIR IMAGEN A CLOUDINARY
@@ -184,7 +251,29 @@ const obtenerArticuloPorId = async (req, res) => {
             return res.status(404).json({ error: 'Artículo no encontrado' });
         }
 
-        res.json(articulos[0]);
+        const articulo = articulos[0];
+        let contenido = [];
+
+        if (articulo.tipo === 'ELABORADO') {
+            const [ingredientes] = await db.execute(
+                `SELECT 
+                    ac.ingrediente_id,
+                    i.nombre,
+                    ac.cantidad,
+                    ac.unidad_medida
+                 FROM articulos_contenido ac
+                 INNER JOIN ingredientes i ON i.id = ac.ingrediente_id
+                 WHERE ac.articulo_id = ?
+                 ORDER BY i.nombre ASC`,
+                [id]
+            );
+            contenido = ingredientes;
+        }
+
+        res.json({
+            ...articulo,
+            contenido
+        });
     } catch (error) {
         console.error('❌ Error al obtener artículo:', error);
         res.status(500).json({
@@ -225,6 +314,7 @@ const obtenerCategorias = async (req, res) => {
  * POST /articulos
  */
 const crearArticulo = async (req, res) => {
+    const connection = await db.getConnection();
     try {
         const {
             codigo_barra,
@@ -236,82 +326,87 @@ const crearArticulo = async (req, res) => {
             stock_minimo = 0,
             tipo = 'OTRO',
             imagen_url,
-            activo = true
+            activo = true,
+            peso,
+            ingredientes = []
         } = req.body;
 
-        // Validaciones
+        const pesoConFallback = peso ?? 1;
+
+        console.log('[articulos][create] Payload recibido', {
+            nombre,
+            categoria_id,
+            peso_recibido: req.body?.peso,
+            peso_usado: pesoConFallback
+        });
+
         const errores = [];
+        if (!nombre || nombre.trim() === '') errores.push('El nombre es obligatorio');
+        if (!precio || isNaN(precio) || parseFloat(precio) < 0) errores.push('El precio debe ser mayor o igual a 0');
+        if (!categoria_id || isNaN(categoria_id)) errores.push('La categoría es obligatoria');
+        if (stock_actual !== undefined && isNaN(stock_actual)) errores.push('El stock actual debe ser un número');
+        if (stock_minimo !== undefined && (isNaN(stock_minimo) || parseInt(stock_minimo, 10) < 0)) errores.push('El stock mínimo debe ser un número positivo o cero');
 
-        if (!nombre || nombre.trim() === '') {
-            errores.push('El nombre es obligatorio');
-        }
+        const pesoValidacion = normalizarPeso(pesoConFallback, { requerido: true });
+        if (!pesoValidacion.valido) errores.push(pesoValidacion.mensaje);
 
-        if (!precio || isNaN(precio) || parseFloat(precio) < 0) {
-            errores.push('El precio debe ser mayor o igual a 0');
-        }
-
-        if (!categoria_id || isNaN(categoria_id)) {
-            errores.push('La categoría es obligatoria');
-        }
-
-        if (stock_actual !== undefined && (isNaN(stock_actual) || parseInt(stock_actual) < 0)) {
-            errores.push('El stock actual debe ser un número positivo o cero');
-        }
-
-        if (stock_minimo !== undefined && (isNaN(stock_minimo) || parseInt(stock_minimo) < 0)) {
-            errores.push('El stock mínimo debe ser un número positivo o cero');
-        }
+        const ingredientesValidacion = validarIngredientes(ingredientes);
+        if (!ingredientesValidacion.valido) errores.push(ingredientesValidacion.mensaje);
 
         if (errores.length > 0) {
-            return res.status(400).json({
-                error: 'Errores de validación',
-                errores
-            });
+            return res.status(400).json({ error: 'Errores de validación', errores });
         }
 
-        // Verificar que la categoría existe
-        const [categoriaExiste] = await db.execute(
-            'SELECT id FROM categorias WHERE id = ?',
-            [categoria_id]
-        );
+        await connection.beginTransaction();
 
+        const [categoriaExiste] = await connection.execute('SELECT id FROM categorias WHERE id = ?', [categoria_id]);
         if (categoriaExiste.length === 0) {
+            await connection.rollback();
             return res.status(404).json({ error: 'La categoría especificada no existe' });
         }
 
-        // Verificar si el código de barra ya existe (si se proporciona)
         if (codigo_barra) {
-            const [existente] = await db.execute(
+            const [existente] = await connection.execute(
                 'SELECT id FROM articulos WHERE codigo_barra = ?',
                 [codigo_barra.trim()]
             );
-
             if (existente.length > 0) {
+                await connection.rollback();
                 return res.status(409).json({ error: 'El código de barra ya existe' });
             }
         }
 
-        // Insertar artículo
-        const [result] = await db.execute(
+        const [result] = await connection.execute(
             `INSERT INTO articulos (
                 categoria_id, codigo_barra, nombre, descripcion, precio,
-                stock_actual, stock_minimo, tipo, imagen_url, activo
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                stock_actual, stock_minimo, tipo, imagen_url, activo, peso
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
-                parseInt(categoria_id),
+                parseInt(categoria_id, 10),
                 codigo_barra ? codigo_barra.trim() : null,
                 nombre.trim(),
                 descripcion ? descripcion.trim() : null,
                 parseFloat(precio),
-                parseInt(stock_actual),
-                parseInt(stock_minimo),
+                parseInt(stock_actual, 10),
+                parseInt(stock_minimo, 10),
                 tipo,
                 imagen_url || null,
-                activo ? 1 : 0
+                activo ? 1 : 0,
+                pesoValidacion.valor
             ]
         );
 
-        // Obtener el artículo creado con el nombre de la categoría
+        if (tipo === 'ELABORADO') {
+            await sincronizarContenidoElaborado(connection, result.insertId, ingredientes);
+        }
+
+        await connection.commit();
+
+        console.log('[articulos][create] Query INSERT', {
+            articulo_id: result.insertId,
+            peso_enviado_query: pesoValidacion.valor
+        });
+
         const [nuevoArticulo] = await db.execute(
             `SELECT 
                 a.*,
@@ -327,11 +422,14 @@ const crearArticulo = async (req, res) => {
             articulo: nuevoArticulo[0]
         });
     } catch (error) {
+        try { await connection.rollback(); } catch (_) {}
         console.error('❌ Error al crear artículo:', error);
         res.status(500).json({
             error: 'Error al crear artículo',
             message: process.env.NODE_ENV === 'development' ? error.message : undefined
         });
+    } finally {
+        connection.release();
     }
 };
 
@@ -340,6 +438,7 @@ const crearArticulo = async (req, res) => {
  * PUT /articulos/:id
  */
 const actualizarArticulo = async (req, res) => {
+    const connection = await db.getConnection();
     try {
         const { id } = req.params;
         const {
@@ -352,146 +451,122 @@ const actualizarArticulo = async (req, res) => {
             stock_minimo,
             tipo,
             imagen_url,
-            activo
+            activo,
+            peso,
+            ingredientes
         } = req.body;
 
-        // Validación del ID
+        console.log('[articulos][update] Payload recibido', {
+            articulo_id: id,
+            peso_recibido: req.body?.peso
+        });
+
         if (!id || isNaN(id)) {
             return res.status(400).json({ error: 'ID de artículo inválido' });
         }
 
-        // Verificar que el artículo existe
-        const [articuloExistente] = await db.execute(
-            'SELECT * FROM articulos WHERE id = ?',
-            [id]
-        );
-
-        if (articuloExistente.length === 0) {
-            return res.status(404).json({ error: 'Artículo no encontrado' });
-        }
-
-        // Validaciones
         const errores = [];
+        if (nombre !== undefined && (!nombre || nombre.trim() === '')) errores.push('El nombre no puede estar vacío');
+        if (precio !== undefined && (isNaN(precio) || parseFloat(precio) < 0)) errores.push('El precio debe ser mayor o igual a 0');
+        if (categoria_id !== undefined && (!categoria_id || isNaN(categoria_id))) errores.push('La categoría no puede estar vacía');
+        if (stock_actual !== undefined && isNaN(stock_actual)) errores.push('El stock actual debe ser un número');
+        if (stock_minimo !== undefined && (isNaN(stock_minimo) || parseInt(stock_minimo, 10) < 0)) errores.push('El stock mínimo debe ser un número positivo o cero');
 
-        if (nombre !== undefined && (!nombre || nombre.trim() === '')) {
-            errores.push('El nombre no puede estar vacío');
-        }
+        const pesoValidacion = normalizarPeso(peso, { requerido: false });
+        if (!pesoValidacion.valido) errores.push(pesoValidacion.mensaje);
 
-        if (precio !== undefined && (isNaN(precio) || parseFloat(precio) < 0)) {
-            errores.push('El precio debe ser mayor o igual a 0');
-        }
-
-        if (categoria_id !== undefined && (!categoria_id || isNaN(categoria_id))) {
-            errores.push('La categoría no puede estar vacía');
-        }
-
-        if (stock_actual !== undefined && (isNaN(stock_actual) || parseInt(stock_actual) < 0)) {
-            errores.push('El stock actual debe ser un número positivo o cero');
-        }
-
-        if (stock_minimo !== undefined && (isNaN(stock_minimo) || parseInt(stock_minimo) < 0)) {
-            errores.push('El stock mínimo debe ser un número positivo o cero');
+        if (ingredientes !== undefined) {
+            const ingredientesValidacion = validarIngredientes(ingredientes);
+            if (!ingredientesValidacion.valido) errores.push(ingredientesValidacion.mensaje);
         }
 
         if (errores.length > 0) {
-            return res.status(400).json({
-                error: 'Errores de validación',
-                errores
-            });
+            return res.status(400).json({ error: 'Errores de validación', errores });
         }
 
-        // Verificar que la categoría existe (si se proporciona)
-        if (categoria_id !== undefined) {
-            const [categoriaExiste] = await db.execute(
-                'SELECT id FROM categorias WHERE id = ?',
-                [categoria_id]
-            );
+        await connection.beginTransaction();
 
+        const [articuloExistente] = await connection.execute('SELECT * FROM articulos WHERE id = ?', [id]);
+        if (articuloExistente.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ error: 'Artículo no encontrado' });
+        }
+        const articuloActual = articuloExistente[0];
+
+        // Compatibilidad operativa: permitir actualizar otros campos (ej. peso)
+        // en artículos heredados con stock negativo, siempre que no se intente
+        // cambiar ese stock negativo a otro valor también negativo.
+        if (stock_actual !== undefined && parseInt(stock_actual, 10) < 0) {
+            const stockActualBd = parseInt(articuloActual.stock_actual, 10);
+            if (parseInt(stock_actual, 10) !== stockActualBd) {
+                await connection.rollback();
+                return res.status(400).json({
+                    error: 'Errores de validación',
+                    errores: ['El stock actual debe ser un número positivo o cero']
+                });
+            }
+        }
+
+        if (categoria_id !== undefined) {
+            const [categoriaExiste] = await connection.execute('SELECT id FROM categorias WHERE id = ?', [categoria_id]);
             if (categoriaExiste.length === 0) {
+                await connection.rollback();
                 return res.status(404).json({ error: 'La categoría especificada no existe' });
             }
         }
 
-        // Si se cambia el código de barra, verificar que no exista en otro artículo
         if (codigo_barra && codigo_barra !== articuloExistente[0].codigo_barra) {
-            const [codigoExistente] = await db.execute(
+            const [codigoExistente] = await connection.execute(
                 'SELECT id FROM articulos WHERE codigo_barra = ? AND id != ?',
                 [codigo_barra.trim(), id]
             );
-
             if (codigoExistente.length > 0) {
+                await connection.rollback();
                 return res.status(409).json({ error: 'El código de barra ya existe' });
             }
         }
 
-        // Construir query de actualización dinámicamente
         const campos = [];
         const valores = [];
+        if (codigo_barra !== undefined) { campos.push('codigo_barra = ?'); valores.push(codigo_barra ? codigo_barra.trim() : null); }
+        if (nombre !== undefined) { campos.push('nombre = ?'); valores.push(nombre.trim()); }
+        if (descripcion !== undefined) { campos.push('descripcion = ?'); valores.push(descripcion ? descripcion.trim() : null); }
+        if (precio !== undefined) { campos.push('precio = ?'); valores.push(parseFloat(precio)); }
+        if (categoria_id !== undefined) { campos.push('categoria_id = ?'); valores.push(parseInt(categoria_id, 10)); }
+        if (stock_actual !== undefined) { campos.push('stock_actual = ?'); valores.push(parseInt(stock_actual, 10)); }
+        if (stock_minimo !== undefined) { campos.push('stock_minimo = ?'); valores.push(parseInt(stock_minimo, 10)); }
+        if (tipo !== undefined) { campos.push('tipo = ?'); valores.push(tipo); }
+        if (imagen_url !== undefined) { campos.push('imagen_url = ?'); valores.push(imagen_url || null); }
+        if (activo !== undefined) { campos.push('activo = ?'); valores.push(activo ? 1 : 0); }
+        if (peso !== undefined && peso !== null && peso !== '') { campos.push('peso = ?'); valores.push(pesoValidacion.valor); }
 
-        if (codigo_barra !== undefined) {
-            campos.push('codigo_barra = ?');
-            valores.push(codigo_barra ? codigo_barra.trim() : null);
-        }
-
-        if (nombre !== undefined) {
-            campos.push('nombre = ?');
-            valores.push(nombre.trim());
-        }
-
-        if (descripcion !== undefined) {
-            campos.push('descripcion = ?');
-            valores.push(descripcion ? descripcion.trim() : null);
-        }
-
-        if (precio !== undefined) {
-            campos.push('precio = ?');
-            valores.push(parseFloat(precio));
-        }
-
-        if (categoria_id !== undefined) {
-            campos.push('categoria_id = ?');
-            valores.push(parseInt(categoria_id));
-        }
-
-        if (stock_actual !== undefined) {
-            campos.push('stock_actual = ?');
-            valores.push(parseInt(stock_actual));
-        }
-
-        if (stock_minimo !== undefined) {
-            campos.push('stock_minimo = ?');
-            valores.push(parseInt(stock_minimo));
-        }
-
-        if (tipo !== undefined) {
-            campos.push('tipo = ?');
-            valores.push(tipo);
-        }
-
-        if (imagen_url !== undefined) {
-            campos.push('imagen_url = ?');
-            valores.push(imagen_url || null);
-        }
-
-        if (activo !== undefined) {
-            campos.push('activo = ?');
-            valores.push(activo ? 1 : 0);
-        }
-
-        if (campos.length === 0) {
+        if (campos.length === 0 && ingredientes === undefined) {
+            await connection.rollback();
             return res.status(400).json({ error: 'No hay campos para actualizar' });
         }
 
-        // Agregar ID al final de los valores
-        valores.push(id);
+        if (campos.length > 0) {
+            valores.push(id);
+            console.log('[articulos][update] Query UPDATE', {
+                articulo_id: id,
+                incluye_peso: (peso !== undefined && peso !== null && peso !== ''),
+                peso_enviado_query: (peso !== undefined && peso !== null && peso !== '') ? pesoValidacion.valor : '(sin cambio)'
+            });
+            await connection.execute(
+                `UPDATE articulos SET ${campos.join(', ')} WHERE id = ?`,
+                valores
+            );
+        }
 
-        // Ejecutar actualización
-        await db.execute(
-            `UPDATE articulos SET ${campos.join(', ')} WHERE id = ?`,
-            valores
-        );
+        const tipoFinal = tipo !== undefined ? tipo : articuloActual.tipo;
+        if (tipoFinal === 'ELABORADO' && Array.isArray(ingredientes)) {
+            await sincronizarContenidoElaborado(connection, id, ingredientes);
+        } else if (tipoFinal !== 'ELABORADO') {
+            await connection.execute('DELETE FROM articulos_contenido WHERE articulo_id = ?', [id]);
+        }
 
-        // Obtener el artículo actualizado con el nombre de la categoría
+        await connection.commit();
+
         const [articuloActualizado] = await db.execute(
             `SELECT 
                 a.*,
@@ -507,11 +582,140 @@ const actualizarArticulo = async (req, res) => {
             articulo: articuloActualizado[0]
         });
     } catch (error) {
+        try { await connection.rollback(); } catch (_) {}
         console.error('❌ Error al actualizar artículo:', error);
         res.status(500).json({
             error: 'Error al actualizar artículo',
             message: process.env.NODE_ENV === 'development' ? error.message : undefined
         });
+    } finally {
+        connection.release();
+    }
+};
+
+const obtenerAdicionalesPorArticulo = async (req, res) => {
+    try {
+        const { id: articuloId } = req.params;
+        if (!articuloId || isNaN(parseInt(articuloId, 10))) {
+            return res.status(400).json({ success: false, message: 'ID de artículo inválido' });
+        }
+
+        const [articulo] = await db.execute('SELECT id FROM articulos WHERE id = ?', [articuloId]);
+        if (articulo.length === 0) {
+            return res.status(404).json({ success: false, message: 'Artículo no encontrado' });
+        }
+
+        const [adicionales] = await db.execute(
+            `SELECT 
+                a.id,
+                a.nombre,
+                a.descripcion,
+                a.precio_extra,
+                a.disponible,
+                ac.id as contenido_id
+             FROM adicionales a
+             INNER JOIN adicionales_contenido ac ON a.id = ac.adicional_id
+             WHERE ac.articulo_id = ?
+             ORDER BY a.nombre ASC`,
+            [articuloId]
+        );
+
+        return res.json({ success: true, data: adicionales });
+    } catch (error) {
+        console.error('❌ Error al obtener adicionales del artículo:', error);
+        return res.status(500).json({ success: false, message: 'Error al obtener adicionales del artículo' });
+    }
+};
+
+const asignarAdicionalesAArticulo = async (req, res) => {
+    const connection = await db.getConnection();
+    try {
+        const { id: articuloId } = req.params;
+        const { adicionales: adicionalesIds } = req.body;
+
+        if (!articuloId || isNaN(parseInt(articuloId, 10))) {
+            return res.status(400).json({ success: false, message: 'ID de artículo inválido' });
+        }
+        if (!Array.isArray(adicionalesIds)) {
+            return res.status(400).json({ success: false, message: 'adicionales debe ser un array' });
+        }
+
+        const [articulo] = await connection.execute('SELECT id FROM articulos WHERE id = ?', [articuloId]);
+        if (articulo.length === 0) {
+            return res.status(404).json({ success: false, message: 'Artículo no encontrado' });
+        }
+
+        await connection.beginTransaction();
+        await connection.execute('DELETE FROM adicionales_contenido WHERE articulo_id = ?', [articuloId]);
+
+        if (adicionalesIds.length > 0) {
+            const placeholders = adicionalesIds.map(() => '?').join(',');
+            const [adicionalesExistentes] = await connection.execute(
+                `SELECT id FROM adicionales WHERE id IN (${placeholders})`,
+                adicionalesIds
+            );
+            if (adicionalesExistentes.length !== adicionalesIds.length) {
+                await connection.rollback();
+                return res.status(400).json({ success: false, message: 'Uno o más adicionales no existen' });
+            }
+
+            const [maxIdResult] = await connection.execute(
+                'SELECT COALESCE(MAX(id), 0) + 1 as next_id FROM adicionales_contenido'
+            );
+            let nextId = maxIdResult[0]?.next_id || 1;
+
+            for (const adicionalId of adicionalesIds) {
+                await connection.execute(
+                    'INSERT INTO adicionales_contenido (id, articulo_id, adicional_id) VALUES (?, ?, ?)',
+                    [nextId, articuloId, adicionalId]
+                );
+                nextId++;
+            }
+        }
+
+        await connection.commit();
+        return res.json({
+            success: true,
+            message: 'Adicionales asignados exitosamente',
+            data: { articulo_id: parseInt(articuloId, 10), adicionales: adicionalesIds }
+        });
+    } catch (error) {
+        try { await connection.rollback(); } catch (_) {}
+        console.error('❌ Error al asignar adicionales:', error);
+        return res.status(500).json({ success: false, message: 'Error al asignar adicionales' });
+    } finally {
+        connection.release();
+    }
+};
+
+const eliminarAdicionalDeArticulo = async (req, res) => {
+    try {
+        const { id: articuloId, adicionalId } = req.params;
+        if (!articuloId || isNaN(parseInt(articuloId, 10)) || !adicionalId || isNaN(parseInt(adicionalId, 10))) {
+            return res.status(400).json({ success: false, message: 'IDs inválidos' });
+        }
+
+        const [existe] = await db.execute(
+            'SELECT id FROM adicionales_contenido WHERE articulo_id = ? AND adicional_id = ?',
+            [articuloId, adicionalId]
+        );
+        if (existe.length === 0) {
+            return res.status(404).json({ success: false, message: 'Asignación no encontrada' });
+        }
+
+        await db.execute(
+            'DELETE FROM adicionales_contenido WHERE articulo_id = ? AND adicional_id = ?',
+            [articuloId, adicionalId]
+        );
+
+        return res.json({
+            success: true,
+            message: 'Adicional eliminado del artículo exitosamente',
+            data: { articulo_id: parseInt(articuloId, 10), adicional_id: parseInt(adicionalId, 10) }
+        });
+    } catch (error) {
+        console.error('❌ Error al eliminar adicional del artículo:', error);
+        return res.status(500).json({ success: false, message: 'Error al eliminar adicional del artículo' });
     }
 };
 
@@ -557,6 +761,90 @@ const eliminarArticulo = async (req, res) => {
     }
 };
 
+// =====================================================
+// PROXY DE IMÁGENES CON CACHE HTTP FUERTE (carta online)
+// =====================================================
+
+/** Solo permitir URLs de Cloudinary para evitar SSRF */
+const CLOUDINARY_HOST = 'res.cloudinary.com';
+const isValidImageUrl = (url) => {
+    if (!url || typeof url !== 'string') return false;
+    try {
+        const parsed = new URL(url);
+        return parsed.protocol === 'https:' && parsed.hostname === CLOUDINARY_HOST;
+    } catch {
+        return false;
+    }
+};
+
+/**
+ * Proxy de imagen por ID de artículo.
+ * Sirve imágenes con Cache-Control fuerte y ETag para cache del navegador.
+ * URL estable: GET /carta-publica/imagenes/:articuloId (sin query params variables)
+ */
+const proxyImagenArticulo = async (req, res) => {
+    try {
+        const { articuloId } = req.params;
+        if (!articuloId || isNaN(articuloId)) {
+            return res.status(400).json({ error: 'ID de artículo inválido' });
+        }
+
+        const [rows] = await db.execute(
+            'SELECT imagen_url FROM articulos WHERE id = ?',
+            [parseInt(articuloId, 10)]
+        );
+
+        if (rows.length === 0 || !rows[0].imagen_url) {
+            return res.status(404).json({ error: 'Imagen no encontrada' });
+        }
+
+        const imagenUrl = rows[0].imagen_url;
+        if (!isValidImageUrl(imagenUrl)) {
+            return res.status(400).json({ error: 'URL de imagen no válida' });
+        }
+
+        const etag = `"${crypto.createHash('md5').update(imagenUrl).digest('hex')}"`;
+        const clientEtag = req.headers['if-none-match'];
+
+        if (clientEtag && clientEtag.trim() === etag) {
+            res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+            res.setHeader('ETag', etag);
+            return res.status(304).end();
+        }
+
+        const response = await axios({
+            method: 'GET',
+            url: imagenUrl,
+            responseType: 'stream',
+            timeout: 15000,
+            validateStatus: (status) => status === 200
+        });
+
+        const contentType = response.headers['content-type'] || 'image/jpeg';
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        res.setHeader('ETag', etag);
+        if (response.headers['last-modified']) {
+            res.setHeader('Last-Modified', response.headers['last-modified']);
+        }
+
+        response.data.on('error', (err) => {
+            console.error('❌ Error streaming imagen:', err.message);
+            if (!res.headersSent) res.status(500).json({ error: 'Error al cargar imagen' });
+        });
+        response.data.pipe(res);
+    } catch (error) {
+        if (error.response?.status === 404) {
+            return res.status(404).json({ error: 'Imagen no encontrada' });
+        }
+        console.error('❌ Error en proxy de imagen:', error.message);
+        res.status(500).json({
+            error: 'Error al cargar imagen',
+            message: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+};
+
 module.exports = {
     obtenerArticulos,
     obtenerArticuloPorId,
@@ -564,6 +852,52 @@ module.exports = {
     crearArticulo,
     actualizarArticulo,
     eliminarArticulo,
+    obtenerAdicionalesPorArticulo,
+    asignarAdicionalesAArticulo,
+    eliminarAdicionalDeArticulo,
     uploadImagen,
-    uploadSingle // Exportar middleware de multer
+    uploadSingle,
+    proxyImagenArticulo,
+    /**
+     * Calcular costo interno de un artículo elaborado
+     * GET /articulos/:id/costo
+     */
+    calcularCostoArticuloElaborado: async (req, res) => {
+        try {
+            const { id } = req.params;
+
+            if (!id || isNaN(id)) {
+                return res.status(400).json({ error: 'ID de artículo inválido' });
+            }
+
+            const articuloId = Number(id);
+
+            const resultado = await calcularCostoArticuloElaboradoService(articuloId);
+
+            if (!resultado || resultado.status !== 'OK') {
+                if (resultado && resultado.code === COSTO_ERROR_CODES.ARTICULO_NO_ENCONTRADO) {
+                    return res.status(404).json({ error: 'Artículo no encontrado' });
+                }
+
+                if (resultado && resultado.code === COSTO_ERROR_CODES.ARTICULO_NO_ELABORADO) {
+                    return res.status(400).json({
+                        error: 'El artículo no es de tipo ELABORADO',
+                        articulo: resultado.articulo
+                    });
+                }
+
+                return res.status(500).json({
+                    error: 'Error al calcular costo del artículo'
+                });
+            }
+
+            return res.json(resultado.data);
+        } catch (error) {
+            console.error('❌ Error al calcular costo de artículo elaborado:', error);
+            return res.status(500).json({
+                error: 'Error al calcular costo del artículo',
+                message: process.env.NODE_ENV === 'development' ? error.message : undefined
+            });
+        }
+    }
 };

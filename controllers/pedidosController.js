@@ -2,6 +2,68 @@ const db = require('./dbPromise');
 const { auditarOperacion, obtenerDatosAnteriores } = require('../middlewares/auditoriaMiddleware');
 const KitchenCapacityService = require('../services/KitchenCapacityService');
 const PrintService = require('../services/PrintService');
+const TimeCalculationService = require('../services/TimeCalculationService');
+const { validarExtrasNoDobleYTriple, construirPersonalizaciones } = require('../services/PersonalizacionesService');
+const { OrderQueueEngine } = require('../services/OrderQueueEngine');
+
+const normalizarTotalesPedido = (pedido = {}) => {
+    const subtotal = parseFloat(pedido.subtotal) || 0;
+    return {
+        ...pedido,
+        subtotal,
+        iva_total: 0,
+        costo_envio: 0,
+        total: subtotal
+    };
+};
+
+const PRESENTACIONES_VALIDAS = new Set(['SIMPLE', 'DOBLE', 'TRIPLE']);
+
+const extraNormalizado = (extra = {}) => ({
+    id: extra?.id ?? extra?.adicional_id ?? null,
+    nombre: String(extra?.nombre ?? extra?.nombre_adicional ?? '').trim(),
+    precio_extra: parseFloat(extra?.precio_extra ?? extra?.precio ?? extra?.precio_adicional ?? 0) || 0
+});
+
+const inferirPresentacion = (personalizaciones, extras) => {
+    const presentacionExplicita = String(personalizaciones?.presentacion || '').trim().toUpperCase();
+    if (PRESENTACIONES_VALIDAS.has(presentacionExplicita)) {
+        return presentacionExplicita;
+    }
+
+    const nombres = extras.map((e) => String(e.nombre || '').toLowerCase());
+    if (nombres.some((n) => n.includes('triple'))) return 'TRIPLE';
+    if (nombres.some((n) => n.includes('doble'))) return 'DOBLE';
+    if (nombres.some((n) => n.includes('simple'))) return 'SIMPLE';
+    return null;
+};
+
+const normalizarItemPedidoParaDetalle = (articulo = {}) => {
+    let personalizaciones = articulo.personalizaciones;
+    if (typeof personalizaciones === 'string') {
+        try {
+            personalizaciones = JSON.parse(personalizaciones);
+        } catch (_) {
+            personalizaciones = null;
+        }
+    }
+
+    const extras = Array.isArray(personalizaciones?.extras)
+        ? personalizaciones.extras.map(extraNormalizado)
+        : [];
+
+    const extrasTotal = parseFloat(personalizaciones?.extrasTotal);
+    const extrasTotalFinal = Number.isFinite(extrasTotal)
+        ? extrasTotal
+        : extras.reduce((sum, e) => sum + e.precio_extra, 0);
+
+    return {
+        ...articulo,
+        extras,
+        extrasTotal: extrasTotalFinal,
+        presentacion: inferirPresentacion(personalizaciones, extras)
+    };
+};
 
 /**
  * Crear un nuevo pedido
@@ -13,18 +75,97 @@ const crearPedido = async (req, res) => {
         try {
             await connection.beginTransaction();
             
-            const { articulos, ...pedidoData } = req.validatedData || req.body;
+            const { articulos, items, ...pedidoData } = req.validatedData || req.body;
             const usuario = req.user || {};
+
+            // Compatibilidad: soportar formato legado `articulos` y nuevo formato `items`
+            let articulosNormalizados = Array.isArray(articulos) ? articulos : [];
+
+            // Validar y normalizar personalizaciones en articulos (formato legado)
+            if (articulosNormalizados.length > 0) {
+                for (const art of articulosNormalizados) {
+                    const extras = art.personalizaciones?.extras;
+                    if (Array.isArray(extras) && extras.length > 0) {
+                        const validacion = validarExtrasNoDobleYTriple(extras);
+                        if (!validacion.valid) {
+                            await connection.rollback();
+                            return res.status(400).json({
+                                success: false,
+                                message: validacion.message,
+                                code: 'EXTRAS_DOBLE_TRIPLE_INCOMPATIBLES'
+                            });
+                        }
+                        art.personalizaciones = construirPersonalizaciones(extras);
+                    }
+                }
+            }
+
+            if (articulosNormalizados.length === 0 && Array.isArray(items) && items.length > 0) {
+                articulosNormalizados = [];
+                for (const item of items) {
+                    const productId = parseInt(item.product_id, 10);
+                    const quantity = Math.max(1, parseInt(item.quantity, 10) || 1);
+                    const extras = Array.isArray(item.extras) ? item.extras : [];
+                    const observacionesItem = item.observaciones || null;
+
+                    const [productoRows] = await connection.execute(
+                        'SELECT id, nombre, precio FROM articulos WHERE id = ?',
+                        [productId]
+                    );
+
+                    if (productoRows.length === 0) {
+                        throw new Error(`Producto no encontrado: ${productId}`);
+                    }
+
+                    const producto = productoRows[0];
+                    const precioBase = parseFloat(producto.precio) || 0;
+
+                    const validacion = validarExtrasNoDobleYTriple(extras);
+                    if (!validacion.valid) {
+                        await connection.rollback();
+                        return res.status(400).json({
+                            success: false,
+                            message: validacion.message,
+                            code: 'EXTRAS_DOBLE_TRIPLE_INCOMPATIBLES'
+                        });
+                    }
+
+                    const personalizaciones = construirPersonalizaciones(extras);
+                    const precioExtras = personalizaciones.extrasTotal;
+                    const precioUnitario = precioBase + precioExtras;
+                    const subtotal = precioUnitario * quantity;
+
+                    articulosNormalizados.push({
+                        articulo_id: producto.id,
+                        articulo_nombre: producto.nombre,
+                        cantidad: quantity,
+                        precio: precioUnitario,
+                        subtotal,
+                        personalizaciones: extras.length > 0 ? personalizaciones : null,
+                        observaciones: observacionesItem
+                    });
+                }
+            }
+
+            if (!Array.isArray(articulosNormalizados) || articulosNormalizados.length === 0) {
+                throw new Error('El pedido debe incluir al menos un artículo');
+            }
+
+            // Si los totales no vinieron, calcularlos desde los artículos normalizados
+            const subtotalCalculado = articulosNormalizados.reduce((sum, articulo) => sum + (parseFloat(articulo.subtotal) || 0), 0);
+            const subtotalFinal = pedidoData.subtotal !== undefined ? parseFloat(pedidoData.subtotal) || 0 : subtotalCalculado;
+            const ivaFinal = 0;
+            const totalFinal = subtotalFinal;
             
             // Determinar prioridad (ALTA si no tiene horario_entrega, NORMAL si es programado)
             const prioridad = pedidoData.horario_entrega ? 'NORMAL' : 'ALTA';
             
-            // Si es pedido programado, calcular hora_inicio_preparacion
+            // Placeholder inicial: tiempo e hora_inicio se recalculan después de insertar pedidos_contenido
+            const tiempoPlaceholder = 15;
             let horaInicioPreparacion = null;
             if (pedidoData.horario_entrega) {
-                const tiempoEstimado = pedidoData.tiempo_estimado_preparacion || 15;
                 const horarioEntregaDate = new Date(pedidoData.horario_entrega);
-                horaInicioPreparacion = new Date(horarioEntregaDate.getTime() - tiempoEstimado * 60 * 1000);
+                horaInicioPreparacion = new Date(horarioEntregaDate.getTime() - tiempoPlaceholder * 60 * 1000);
             }
             
             // Insertar pedido
@@ -43,9 +184,9 @@ const crearPedido = async (req, res) => {
                 pedidoData.cliente_telefono,
                 pedidoData.cliente_email,
                 pedidoData.origen_pedido || 'MOSTRADOR',
-                pedidoData.subtotal,
-                pedidoData.iva_total,
-                pedidoData.total,
+                subtotalFinal,
+                ivaFinal,
+                totalFinal,
                 pedidoData.medio_pago,
                 pedidoData.estado_pago || 'DEBE',
                 pedidoData.modalidad,
@@ -55,7 +196,7 @@ const crearPedido = async (req, res) => {
                 usuario.id || null,
                 usuario.nombre || usuario.usuario || null,
                 prioridad,
-                pedidoData.tiempo_estimado_preparacion || 15,
+                tiempoPlaceholder,
                 horaInicioPreparacion,
                 pedidoData.transicion_automatica !== undefined ? pedidoData.transicion_automatica : true
             ];
@@ -63,7 +204,7 @@ const crearPedido = async (req, res) => {
             const [pedidoResult] = await connection.execute(pedidoQuery, pedidoValues);
             const pedidoId = pedidoResult.insertId;
             
-            // Insertar artículos del pedido
+            // Insertar artículos del pedido (debe hacerse antes de calcular tiempo por peso)
             const articuloQuery = `
                 INSERT INTO pedidos_contenido (
                     pedido_id, articulo_id, articulo_nombre, cantidad, precio, subtotal,
@@ -71,7 +212,7 @@ const crearPedido = async (req, res) => {
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             `;
             
-            for (const articulo of articulos) {
+            for (const articulo of articulosNormalizados) {
                 await connection.execute(articuloQuery, [
                     pedidoId,
                     articulo.articulo_id,
@@ -90,6 +231,18 @@ const crearPedido = async (req, res) => {
                 );
             }
             
+            // Calcular tiempo_estimado_preparacion real según peso de artículos (reemplaza el placeholder 15)
+            const tiempoEstimadoReal = await TimeCalculationService.calcularTiempoEstimadoPedido(pedidoId, { connection });
+            let horaInicioPreparacionFinal = null;
+            if (pedidoData.horario_entrega) {
+                const horarioEntregaDate = new Date(pedidoData.horario_entrega);
+                horaInicioPreparacionFinal = new Date(horarioEntregaDate.getTime() - tiempoEstimadoReal * 60 * 1000);
+            }
+            await connection.execute(
+                'UPDATE pedidos SET tiempo_estimado_preparacion = ?, hora_inicio_preparacion = ? WHERE id = ?',
+                [tiempoEstimadoReal, horaInicioPreparacionFinal, pedidoId]
+            );
+            
             await connection.commit();
             
             // Obtener pedido creado para emitir evento WebSocket
@@ -100,8 +253,8 @@ const crearPedido = async (req, res) => {
                 accion: 'INSERT',
                 tabla: 'pedidos',
                 registroId: pedidoId,
-                datosNuevos: { pedidoId, ...pedidoData, articulos: articulos.length },
-                detallesAdicionales: `Pedido creado - Cliente: ${pedidoData.cliente_nombre || 'N/A'} - Total: $${pedidoData.total}`
+                datosNuevos: { pedidoId, ...pedidoData, articulos: articulosNormalizados.length },
+                detallesAdicionales: `Pedido creado - Cliente: ${pedidoData.cliente_nombre || 'N/A'} - Total: $${totalFinal}`
             });
             
             // Emitir evento WebSocket (Fase 3)
@@ -110,7 +263,7 @@ const crearPedido = async (req, res) => {
                 const { getInstance: getSocketService } = require('../services/SocketService');
                 const socketService = getSocketService(io);
                 if (socketService) {
-                    socketService.emitPedidoCreado({ id: pedidoId, ...pedidoCreado[0] });
+                    socketService.emitPedidoCreado(normalizarTotalesPedido({ id: pedidoId, ...pedidoCreado[0] }));
                 }
             }
             
@@ -141,7 +294,13 @@ const crearPedido = async (req, res) => {
             res.status(201).json({
                 success: true,
                 message: 'Pedido creado exitosamente',
-                data: { id: pedidoId, ...pedidoData }
+                data: normalizarTotalesPedido({
+                    id: pedidoId,
+                    ...pedidoData,
+                    subtotal: subtotalFinal,
+                    iva_total: ivaFinal,
+                    total: totalFinal
+                })
             });
             
         } catch (error) {
@@ -218,10 +377,11 @@ const obtenerPedidos = async (req, res) => {
         query += ' ORDER BY fecha DESC';
         
         const [pedidos] = await db.execute(query, params);
+        const pedidosNormalizados = pedidos.map(normalizarTotalesPedido);
         
         res.json({
             success: true,
-            data: pedidos
+            data: pedidosNormalizados
         });
     } catch (error) {
         console.error('❌ Error al obtener pedidos:', error);
@@ -254,7 +414,8 @@ const obtenerPedidoPorId = async (req, res) => {
                 [id]
             );
 
-            const pedidoCompleto = { ...pedidos[0], articulos };
+            const articulosNormalizados = articulos.map(normalizarItemPedidoParaDetalle);
+            const pedidoCompleto = normalizarTotalesPedido({ ...pedidos[0], articulos: articulosNormalizados });
             res.json({
                 success: true,
                 data: pedidoCompleto
@@ -518,7 +679,7 @@ const actualizarEstadoPedido = async (req, res) => {
             // Obtener pedido completo actualizado (con articulos) para respuesta
             const [pedRows] = await connection.execute('SELECT * FROM pedidos WHERE id = ?', [id]);
             const [articulosRows] = await connection.execute('SELECT * FROM pedidos_contenido WHERE pedido_id = ?', [id]);
-            const pedidoActualizado = { ...pedRows[0], articulos: articulosRows };
+            const pedidoActualizado = normalizarTotalesPedido({ ...pedRows[0], articulos: articulosRows });
 
             // Auditoría
             await auditarOperacion(req, {
@@ -690,19 +851,19 @@ const actualizarPedido = async (req, res) => {
         const medio_pago = camposPedido.medio_pago !== undefined ? camposPedido.medio_pago : d.medio_pago;
         const observaciones = camposPedido.observaciones !== undefined ? camposPedido.observaciones : (d.observaciones || '');
 
-        // Calcular totales desde articulos si no vienen en payload
+        // Calcular totales con IVA/envío desactivados temporalmente:
+        // total siempre igual al subtotal (suma de items)
         let subtotal = camposPedido.subtotal;
-        let iva_total = camposPedido.iva_total;
-        let total = camposPedido.total;
-        if (subtotal === undefined || iva_total === undefined || total === undefined) {
-            let s = 0;
+        if (subtotal === undefined) {
+            subtotal = 0;
             for (const art of articulos) {
-                s += parseFloat(art.subtotal) || 0;
+                subtotal += parseFloat(art.subtotal) || 0;
             }
-            subtotal = camposPedido.subtotal ?? s;
-            iva_total = camposPedido.iva_total ?? subtotal * 0.21;
-            total = camposPedido.total ?? subtotal + iva_total;
+        } else {
+            subtotal = parseFloat(subtotal) || 0;
         }
+        const iva_total = 0;
+        const total = subtotal;
 
         // hora_inicio_preparacion: recalcular si es pedido programado
         let hora_inicio_preparacion = d.hora_inicio_preparacion;
@@ -743,10 +904,27 @@ const actualizarPedido = async (req, res) => {
             stockCambios.set(art.articulo_id, diff + art.cantidad);
         }
 
-        // 6. DELETE pedidos_contenido
+        // 6. Validar y normalizar personalizaciones en articulos
+        for (const art of articulos) {
+            const extras = art.personalizaciones?.extras;
+            if (Array.isArray(extras) && extras.length > 0) {
+                const validacion = validarExtrasNoDobleYTriple(extras);
+                if (!validacion.valid) {
+                    await connection.rollback();
+                    return res.status(400).json({
+                        success: false,
+                        message: validacion.message,
+                        code: 'EXTRAS_DOBLE_TRIPLE_INCOMPATIBLES'
+                    });
+                }
+                art.personalizaciones = construirPersonalizaciones(extras);
+            }
+        }
+
+        // 7. DELETE pedidos_contenido
         await connection.execute('DELETE FROM pedidos_contenido WHERE pedido_id = ?', [id]);
 
-        // 7. INSERT pedidos_contenido (siempre)
+        // 8. INSERT pedidos_contenido (siempre)
         const articuloQuery = `
             INSERT INTO pedidos_contenido (
                 pedido_id, articulo_id, articulo_nombre, cantidad, precio, subtotal,
@@ -768,7 +946,7 @@ const actualizarPedido = async (req, res) => {
             stockCambios.set(art.articulo_id, diff - art.cantidad);
         }
 
-        // 8. Ajustar stock
+        // 9. Ajustar stock
         for (const [articuloId, diferencia] of stockCambios.entries()) {
             if (diferencia !== 0) {
                 await connection.execute(
@@ -779,7 +957,7 @@ const actualizarPedido = async (req, res) => {
             }
         }
 
-        // 9. Actualizar comanda si existe
+        // 10. Actualizar comanda si existe
         const [comandas] = await connection.execute('SELECT id FROM comandas WHERE pedido_id = ?', [id]);
         if (comandas.length > 0) {
             const comandaId = comandas[0].id;
@@ -801,16 +979,16 @@ const actualizarPedido = async (req, res) => {
 
         await connection.commit();
 
-        // 10. Obtener pedido completo actualizado
+        // 11. Obtener pedido completo actualizado
         const [pedidosActualizados] = await connection.execute('SELECT * FROM pedidos WHERE id = ?', [id]);
         const [articulosActualizados] = await connection.execute(
             'SELECT * FROM pedidos_contenido WHERE pedido_id = ?',
             [id]
         );
-        const pedidoActualizado = {
+        const pedidoActualizado = normalizarTotalesPedido({
             ...pedidosActualizados[0],
             articulos: articulosActualizados
-        };
+        });
 
         // Auditoría
         await auditarOperacion(req, {
@@ -822,7 +1000,7 @@ const actualizarPedido = async (req, res) => {
             detallesAdicionales: `Pedido editado - Usuario: ${usuario.nombre || usuario.usuario || 'N/A'} - Items: ${articulos.length}`
         });
 
-        // 11. Emitir pedido:actualizado (realtime)
+        // 12. Emitir pedido:actualizado (realtime)
         const io = req.app.get('io');
         if (io) {
             const { getInstance: getSocketService } = require('../services/SocketService');
@@ -924,6 +1102,19 @@ const agregarArticulo = async (req, res) => {
         try {
             const { id } = req.validatedParams || req.params;
             const articulo = req.validatedData || req.body;
+
+            const extras = articulo.personalizaciones?.extras;
+            if (Array.isArray(extras) && extras.length > 0) {
+                const validacion = validarExtrasNoDobleYTriple(extras);
+                if (!validacion.valid) {
+                    return res.status(400).json({
+                        success: false,
+                        message: validacion.message,
+                        code: 'EXTRAS_DOBLE_TRIPLE_INCOMPATIBLES'
+                    });
+                }
+                articulo.personalizaciones = construirPersonalizaciones(extras);
+            }
             
             // Verificar que el pedido existe
             const [pedidos] = await connection.execute('SELECT * FROM pedidos WHERE id = ?', [id]);
@@ -964,15 +1155,14 @@ const agregarArticulo = async (req, res) => {
             // Recalcular totales
             const [totales] = await connection.execute(
                 `SELECT 
-                    SUM(subtotal) as subtotal_total,
-                    SUM(subtotal * 0.21) as iva_total
+                    SUM(subtotal) as subtotal_total
                 FROM pedidos_contenido WHERE pedido_id = ?`,
                 [id]
             );
             
             const subtotalTotal = parseFloat(totales[0].subtotal_total) || 0;
-            const ivaTotal = parseFloat(totales[0].iva_total) || 0;
-            const total = subtotalTotal + ivaTotal;
+            const ivaTotal = 0;
+            const total = subtotalTotal;
             
             await connection.execute(
                 'UPDATE pedidos SET subtotal = ?, iva_total = ?, total = ? WHERE id = ?',
@@ -1163,6 +1353,188 @@ const forzarEstadoPedido = async (req, res) => {
 };
 
 /**
+ * Iniciar preparación manual de un pedido (RECIBIDO → EN_PREPARACION)
+ * POST /pedidos/:id/iniciar-preparacion-manual
+ */
+const iniciarPreparacionManual = async (req, res) => {
+        const connection = await db.getConnection();
+    
+        try {
+            const { id } = req.validatedParams || req.params;
+            const usuario = req.user || {};
+
+            await connection.beginTransaction();
+
+            // Lock del pedido para evitar condiciones de carrera con el worker
+            const [rows] = await connection.execute(
+                'SELECT * FROM pedidos WHERE id = ? FOR UPDATE',
+                [id]
+            );
+
+            if (rows.length === 0) {
+                await connection.rollback();
+                return res.status(404).json({
+                    success: false,
+                    message: 'Pedido no encontrado'
+                });
+            }
+
+            const pedido = rows[0];
+            const estadoAnterior = pedido.estado;
+
+            // Validaciones de estado
+            if (pedido.estado === 'CANCELADO') {
+                await connection.rollback();
+                return res.status(409).json({
+                    success: false,
+                    message: 'No se puede iniciar la preparación de un pedido cancelado',
+                    code: 'PEDIDO_CANCELADO',
+                    estado_actual: pedido.estado
+                });
+            }
+
+            if (pedido.estado !== 'RECIBIDO') {
+                await connection.rollback();
+                return res.status(409).json({
+                    success: false,
+                    message: 'El pedido ya fue procesado y no está en estado RECIBIDO',
+                    code: 'PEDIDO_YA_PROCESADO',
+                    estado_actual: pedido.estado
+                });
+            }
+
+            // Validación de capacidad de cocina con tope manual de 20
+            const infoCapacidad = await KitchenCapacityService.obtenerInfoCapacidad();
+            const capacidadMaximaManual = 20;
+            const capacidadEfectiva = Math.min(
+                infoCapacidad.capacidadMaxima || capacidadMaximaManual,
+                capacidadMaximaManual
+            );
+            const pedidosEnPreparacion = infoCapacidad.pedidosEnPreparacion || 0;
+
+            if (pedidosEnPreparacion >= capacidadEfectiva) {
+                await connection.rollback();
+                return res.status(409).json({
+                    success: false,
+                    message: `No hay capacidad disponible. Cocina al máximo (${pedidosEnPreparacion}/${capacidadEfectiva} pedidos en preparación)`,
+                    code: 'CAPACIDAD_COCINA_LLENA',
+                    data: {
+                        pedidosEnPreparacion,
+                        capacidadMaxima: capacidadEfectiva
+                    }
+                });
+            }
+
+            const ahora = new Date();
+            const tiempoEstimado = pedido.tiempo_estimado_preparacion || 15;
+            const horaEsperadaFinalizacion = new Date(
+                ahora.getTime() + tiempoEstimado * 60 * 1000
+            );
+
+            // Actualizar pedido: solo campos específicos de la transición manual
+            await connection.execute(
+                `UPDATE pedidos 
+                 SET estado = 'EN_PREPARACION',
+                     hora_inicio_preparacion = ?,
+                     hora_esperada_finalizacion = ?,
+                     transicion_automatica = ?
+                 WHERE id = ?`,
+                [ahora, horaEsperadaFinalizacion, false, id]
+            );
+
+            console.log(
+                `⚡ [pedidosController] Transición MANUAL a EN_PREPARACION | ` +
+                `pedido_id=${id} | estado_anterior=${estadoAnterior} | estado_nuevo=EN_PREPARACION | ` +
+                `transicion_automatica_anterior=${pedido.transicion_automatica} | ` +
+                `transicion_automatica_nueva=false | ` +
+                `hora_inicio_preparacion=${ahora.toISOString()} | ` +
+                `hora_esperada_finalizacion=${horaEsperadaFinalizacion.toISOString()}`
+            );
+
+            // Crear comanda automática utilizando la misma lógica de dominio que el worker
+            try {
+                await OrderQueueEngine.crearComandaAutomatica(connection, id);
+            } catch (comandaError) {
+                console.error(
+                    `⚠️ [pedidosController] Error creando comanda en transición manual para pedido #${id}:`,
+                    comandaError
+                );
+            }
+
+            await connection.commit();
+
+            // Obtener pedido actualizado (con artículos) para respuesta y eventos
+            const [pedRows] = await db.execute('SELECT * FROM pedidos WHERE id = ?', [id]);
+            const [articulosRows] = await db.execute(
+                'SELECT * FROM pedidos_contenido WHERE pedido_id = ?',
+                [id]
+            );
+            const pedidoActualizado = normalizarTotalesPedido({
+                ...pedRows[0],
+                articulos: articulosRows
+            });
+
+            // Auditoría de transición manual
+            await auditarOperacion(req, {
+                accion: 'INICIAR_PREPARACION_MANUAL',
+                tabla: 'pedidos',
+                registroId: id,
+                datosAnteriores: { ...pedido },
+                datosNuevos: {
+                    ...pedido,
+                    estado: 'EN_PREPARACION',
+                    hora_inicio_preparacion: ahora,
+                    hora_esperada_finalizacion: horaEsperadaFinalizacion,
+                    transicion_automatica: false
+                },
+                detallesAdicionales: `Transición manual a EN_PREPARACION por ${usuario.rol || 'DESCONOCIDO'}`
+            });
+
+            // Emitir eventos WebSocket consistentes con el worker
+            const io = req.app.get('io');
+            if (io) {
+                const { getInstance: getSocketService } = require('../services/SocketService');
+                const socketService = getSocketService(io);
+                if (socketService) {
+                    // Cambio de estado de pedido
+                    socketService.emitPedidoEstadoCambiado(
+                        id,
+                        estadoAnterior,
+                        'EN_PREPARACION',
+                        pedidoActualizado
+                    );
+
+                    // Actualización de capacidad de cocina
+                    const infoCapacidadActualizada = await KitchenCapacityService.obtenerInfoCapacidad();
+                    socketService.emitCapacidadActualizada(infoCapacidadActualizada);
+                }
+            }
+
+            return res.status(200).json({
+                success: true,
+                message: 'Preparación iniciada manualmente',
+                data: {
+                    pedido: pedidoActualizado,
+                    estado: 'EN_PREPARACION',
+                    listo: false,
+                    entregado: false,
+                    transicion_automatica: false
+                }
+            });
+        } catch (error) {
+            await connection.rollback();
+            console.error('❌ Error en iniciarPreparacionManual:', error);
+            return res.status(500).json({
+                success: false,
+                message: 'Error al iniciar preparación manual del pedido',
+                error: process.env.NODE_ENV === 'development' ? error.message : undefined
+            });
+        } finally {
+            connection.release();
+        }
+};
+
+/**
  * Obtener datos para imprimir comanda
  * GET /pedidos/:id/comanda-print
  */
@@ -1199,7 +1571,8 @@ const imprimirComanda = async (req, res) => {
  * POST /pedidos/:id/cobrar
  * 
  * Reglas:
- * - El pedido debe estar en estado LISTO
+ * - Cualquier pedido puede cobrarse en cualquier momento (RECIBIDO, EN_PREPARACION, LISTO)
+ * - No se puede cobrar pedidos CANCELADOS
  * - Genera una venta asociada al pedido
  * - Marca el pedido como PAGADO
  * - Emite evento pedido:cobrado
@@ -1228,15 +1601,15 @@ const cobrarPedido = async (req, res) => {
             });
         }
 
-        const pedido = pedidos[0];
+            const pedido = normalizarTotalesPedido(pedidos[0]);
 
-        // Validar estado LISTO
-        if (pedido.estado !== 'LISTO') {
+        // Solo bloquear cobro de pedidos cancelados
+        if (pedido.estado === 'CANCELADO') {
             await connection.rollback();
             return res.status(400).json({
                 success: false,
-                message: `No se puede cobrar un pedido que no está LISTO. Estado actual: ${pedido.estado}`,
-                code: 'PEDIDO_NO_LISTO',
+                message: 'No se puede cobrar un pedido cancelado',
+                code: 'PEDIDO_CANCELADO',
                 estado_actual: pedido.estado
             });
         }
@@ -1248,7 +1621,7 @@ const cobrarPedido = async (req, res) => {
             const ventaExistente = await buscarVentaAsociada(id);
             const [ped] = await connection.execute('SELECT * FROM pedidos WHERE id = ?', [id]);
             const [arts] = await connection.execute('SELECT * FROM pedidos_contenido WHERE pedido_id = ?', [id]);
-            const pedidoCompleto = { ...ped[0], articulos: arts };
+                const pedidoCompleto = normalizarTotalesPedido({ ...ped[0], articulos: arts });
             return res.json({
                 success: true,
                 message: 'Pedido ya estaba cobrado',
@@ -1276,6 +1649,9 @@ const cobrarPedido = async (req, res) => {
         
         // ✅ Crear venta basada en el pedido
         let ventaResult;
+        const subtotalPedidoCobro = parseFloat(pedido.subtotal) || 0;
+        const ivaPedidoCobro = 0;
+        const totalPedidoCobro = subtotalPedidoCobro;
         try {
             const ventaQueryConPedido = `
                 INSERT INTO ventas (
@@ -1286,7 +1662,7 @@ const cobrarPedido = async (req, res) => {
             `;
             [ventaResult] = await connection.execute(ventaQueryConPedido, [
                 id, pedido.cliente_nombre, pedido.cliente_direccion, pedido.cliente_telefono,
-                pedido.cliente_email, pedido.subtotal, pedido.iva_total, 0, pedido.total,
+                pedido.cliente_email, subtotalPedidoCobro, ivaPedidoCobro, 0, totalPedidoCobro,
                 medio_pago || pedido.medio_pago || 'EFECTIVO', cuenta_id || null,
                 pedido.observaciones, tipo_factura || null, usuario.id || null,
                 usuario.nombre || usuario.usuario || null
@@ -1302,7 +1678,7 @@ const cobrarPedido = async (req, res) => {
                 `;
                 [ventaResult] = await connection.execute(ventaQuerySinPedido, [
                     pedido.cliente_nombre, pedido.cliente_direccion, pedido.cliente_telefono,
-                    pedido.cliente_email, pedido.subtotal, pedido.iva_total, 0, pedido.total,
+                    pedido.cliente_email, subtotalPedidoCobro, ivaPedidoCobro, 0, totalPedidoCobro,
                     medio_pago || pedido.medio_pago || 'EFECTIVO', cuenta_id || null,
                     pedido.observaciones, tipo_factura || null, usuario.id || null,
                     usuario.nombre || usuario.usuario || null
@@ -1333,7 +1709,7 @@ const cobrarPedido = async (req, res) => {
         
         // ✅ Actualizar estado_pago del pedido a PAGADO
         await connection.execute(
-            'UPDATE pedidos SET estado_pago = ?, medio_pago = ? WHERE id = ?',
+            'UPDATE pedidos SET estado_pago = ?, medio_pago = ?, iva_total = 0, total = subtotal WHERE id = ?',
             ['PAGADO', medio_pago || pedido.medio_pago || 'EFECTIVO', id]
         );
         
@@ -1346,7 +1722,7 @@ const cobrarPedido = async (req, res) => {
             
             if (saldoAnterior.length > 0) {
                 const saldoAnteriorValor = parseFloat(saldoAnterior[0].saldo) || 0;
-                const saldoNuevoValor = saldoAnteriorValor + parseFloat(pedido.total);
+                const saldoNuevoValor = saldoAnteriorValor + totalPedidoCobro;
                 
                 await connection.execute(
                     'UPDATE cuentas_fondos SET saldo = ? WHERE id = ?',
@@ -1362,7 +1738,7 @@ const cobrarPedido = async (req, res) => {
                         cuenta_id,
                         `Venta #${ventaId} (Pedido #${id})`,
                         ventaId,
-                        pedido.total,
+                        totalPedidoCobro,
                         saldoAnteriorValor,
                         saldoNuevoValor
                     ]
@@ -1378,7 +1754,7 @@ const cobrarPedido = async (req, res) => {
             'SELECT * FROM pedidos_contenido WHERE pedido_id = ?',
             [id]
         );
-        const pedidoActualizado = { ...pedRows[0], articulos: articulosRows };
+        const pedidoActualizado = normalizarTotalesPedido({ ...pedRows[0], articulos: articulosRows });
 
         // Auditoría
         await auditarOperacion(req, {
@@ -1387,7 +1763,7 @@ const cobrarPedido = async (req, res) => {
             registroId: id,
             datosAnteriores: pedido,
             datosNuevos: { ...pedido, estado_pago: 'PAGADO' },
-            detallesAdicionales: `Pedido cobrado - Venta #${ventaId} creada - Total: $${pedido.total}`
+            detallesAdicionales: `Pedido cobrado - Venta #${ventaId} creada - Total: $${totalPedidoCobro}`
         });
         
         // Emitir eventos WebSocket
@@ -1398,8 +1774,18 @@ const cobrarPedido = async (req, res) => {
             if (socketService) {
                 socketService.emitPedidoCobrado(id, ventaId, pedidoActualizado);
                 socketService.emitPedidoActualizado(id, pedidoActualizado);
-                socketService.emitVentaCreada(ventaId, { venta_id: ventaId, pedido_id: id, total: pedido.total });
+                    socketService.emitVentaCreada(ventaId, { venta_id: ventaId, pedido_id: id, total: totalPedidoCobro });
             }
+        }
+
+        // Si era WEB con pago digital, al pasar a PAGADO habilitar ingreso al flujo automático
+        try {
+            const activacion = await OrderQueueEngine.activarFlujoSiCorrespondeTrasPago(id);
+            if (activacion.activado) {
+                console.log(`💳 [pedidosController] Pedido #${id} pagado: se habilitó flujo automático (${activacion.resultado?.mensaje || 'sin cambios'})`);
+            }
+        } catch (activationError) {
+            console.error(`⚠️ [pedidosController] Error activando flujo automático post-pago para pedido #${id}:`, activationError.message);
         }
 
         res.json({
@@ -1485,6 +1871,7 @@ module.exports = {
     agregarArticulo,
     obtenerCapacidadCocina,
     forzarEstadoPedido,
+    iniciarPreparacionManual,
     cobrarPedido,
     imprimirComanda,
     imprimirTicket

@@ -89,6 +89,7 @@ const comandasRoutes = require('./routes/comandasRoutes');
 const configuracionRoutes = require('./routes/configuracionRoutes');
 const healthRoutes = require('./routes/healthRoutes');
 const metricsRoutes = require('./routes/metricsRoutes');
+const cartaPublicaRoutes = require('./routes/cartaPublicaRoutes');
 const fondosRoutes = require('./routes/fondosRoutes');
 const gastosRoutes = require('./routes/gastosRoutes');
 
@@ -122,14 +123,25 @@ emitWorkerStatus(io, Boolean(OrderQueueWorker.isRunning));
 
 // CORS configuration - Optimizado para VPS
 const allowedOrigins = [
-    'http://localhost:3000', 
-    
-    
+    'http://localhost:3000',
 ];
+
+// Origen de la carta online (chalito_carta)
+if (process.env.CARTA_FRONTEND_URL) {
+    allowedOrigins.push(process.env.CARTA_FRONTEND_URL);
+}
+
+// Orígenes adicionales desde env (separados por coma)
+if (process.env.ALLOWED_ORIGINS) {
+    process.env.ALLOWED_ORIGINS.split(',').forEach(origin => {
+        const trimmed = origin.trim();
+        if (trimmed) allowedOrigins.push(trimmed);
+    });
+}
 
 // En desarrollo, permitir cualquier origen localhost
 if (process.env.NODE_ENV === 'development') {
-    allowedOrigins.push(/^http:\/\/localhost:\d+$/);    
+    allowedOrigins.push(/^http:\/\/localhost:\d+$/);
     allowedOrigins.push(/^http:\/\/127\.0\.0\.1:\d+$/);
 }
 
@@ -224,6 +236,7 @@ app.use('/comandas', comandasRoutes);
 app.use('/configuracion-sistema', configuracionRoutes);
 app.use('/health', healthRoutes);
 app.use('/metrics', metricsRoutes);
+app.use('/carta-publica', cartaPublicaRoutes);
 app.use('/fondos', fondosRoutes);
 app.use('/gastos', gastosRoutes);
 

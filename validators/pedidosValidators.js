@@ -15,6 +15,18 @@ const pedidoContenidoSchema = z.object({
     observaciones: z.string().max(255).optional().nullable()
 });
 
+// Formato simplificado para frontend nuevo: items
+const pedidoItemSchema = z.object({
+    product_id: z.number().int().positive('El ID del producto debe ser un número positivo'),
+    quantity: z.number().int().positive('La cantidad debe ser mayor a 0'),
+    extras: z.array(z.object({
+        id: z.any().optional().nullable(),
+        nombre: z.string().optional(),
+        precio: z.number().nonnegative().optional().default(0)
+    })).optional().default([]),
+    observaciones: z.string().max(255).optional().nullable()
+});
+
 // Schema para crear un nuevo pedido
 const crearPedidoSchema = z.object({
     cliente_nombre: z.string().min(1, 'El nombre del cliente es requerido').max(150).optional().nullable(),
@@ -26,7 +38,7 @@ const crearPedidoSchema = z.object({
     }).default('MOSTRADOR'),
     subtotal: z.number().nonnegative('El subtotal debe ser mayor o igual a 0').default(0),
     iva_total: z.number().nonnegative('El IVA debe ser mayor o igual a 0').default(0),
-    total: z.number().nonnegative('El total debe ser mayor o igual a 0'),
+    total: z.number().nonnegative('El total debe ser mayor o igual a 0').optional(),
     medio_pago: z.string().max(50).optional().nullable(),
     estado_pago: z.enum(['DEBE', 'PAGADO'], {
         errorMap: () => ({ message: 'Estado de pago inválido. Los valores permitidos son: DEBE, PAGADO' })
@@ -39,7 +51,16 @@ const crearPedidoSchema = z.object({
         errorMap: () => ({ message: 'Estado inválido. Los estados permitidos son: RECIBIDO, EN_PREPARACION, LISTO, ENTREGADO, CANCELADO' })
     }).default('RECIBIDO'),
     observaciones: z.string().max(255).optional().nullable(),
-    articulos: z.array(pedidoContenidoSchema).min(1, 'Debe incluir al menos un artículo')
+    articulos: z.array(pedidoContenidoSchema).min(1, 'Debe incluir al menos un artículo').optional(),
+    items: z.array(pedidoItemSchema).min(1, 'Debe incluir al menos un item').optional()
+}).superRefine((data, ctx) => {
+    if ((!data.articulos || data.articulos.length === 0) && (!data.items || data.items.length === 0)) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['items'],
+            message: 'Debe incluir al menos un artículo/item'
+        });
+    }
 });
 
 // Schema para actualizar estado de pedido

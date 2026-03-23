@@ -11,6 +11,7 @@ const {
     agregarArticulo,
     obtenerCapacidadCocina,
     forzarEstadoPedido,
+    iniciarPreparacionManual,
     cobrarPedido,
     imprimirComanda,
     imprimirTicket
@@ -57,7 +58,17 @@ router.put('/:id/estado', apiRateLimiter, authenticateToken, validateParams(idPa
 // Forzar estado de pedido (bypass manual - solo ADMIN/GERENTE)
 router.post('/:id/forzar-estado', apiRateLimiter, authenticateToken, validateParams(idParamSchema), validate(actualizarEstadoPedidoSchema), forzarEstadoPedido);
 
-// Cobrar pedido (solo en estado LISTO)
+// Iniciar preparación manual (RECIBIDO → EN_PREPARACION) - solo ADMIN/GERENTE
+router.post(
+    '/:id/iniciar-preparacion-manual',
+    apiRateLimiter,
+    authenticateToken,
+    authorizeRole(['ADMIN', 'GERENTE']),
+    validateParams(idParamSchema),
+    iniciarPreparacionManual
+);
+
+// Cobrar pedido (cualquier estado excepto CANCELADO)
 router.post('/:id/cobrar', apiRateLimiter, authenticateToken, validateParams(idParamSchema), cobrarPedido);
 
 // Actualizar observaciones de pedido

@@ -339,10 +339,11 @@ const obtenerDatosTicket = async (pedidoId) => {
             items: items,
             
             // Totales
-            subtotal: parseFloat(venta.subtotal),
-            iva_total: parseFloat(venta.iva_total),
+            subtotal: parseFloat(venta.subtotal) || 0,
+            iva_total: 0,
+            costo_envio: 0,
             descuento: parseFloat(venta.descuento || 0),
-            total: parseFloat(venta.total),
+            total: parseFloat(venta.subtotal) || 0,
             
             // Método de pago
             medio_pago: venta.medio_pago || 'EFECTIVO',

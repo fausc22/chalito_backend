@@ -9,79 +9,22 @@ const { authenticateToken, authorizeRole } = require('../middlewares/authMiddlew
 const soloAdminGerente = [authenticateToken, authorizeRole(['ADMIN', 'GERENTE'])];
 
 // =====================================================
-// RUTAS DE ARTÍCULOS
+// DEPRECACIÓN RUTAS LEGACY DE ARTÍCULOS
 // =====================================================
+// Migración cerrada: todo lo de artículos vive en /articulos.
+const responderRutaArticulosDeprecada = (req, res) => {
+    return res.status(410).json({
+        success: false,
+        code: 'ARTICULOS_RUTA_DEPRECADA',
+        message: 'Las rutas /inventario/articulos fueron deprecadas. Utilice /articulos.'
+    });
+};
 
-/**
- * GET /inventario/articulos
- * Listar y filtrar artículos con paginación
- * Query params: nombre, categoria_id, tipo, stock_bajo, activo, limite, pagina
- */
-router.get('/articulos', 
-    ...soloAdminGerente,
-    middlewareAuditoria({ 
-        accion: 'VIEW_ARTICULOS', 
-        tabla: 'articulos',
-        incluirQuery: true 
-    }),
-    inventarioController.filtrarArticulos
-);
-
-/**
- * GET /inventario/articulos/:id
- * Obtener artículo específico con contenido si es elaborado
- */
-router.get('/articulos/:id', 
-    ...soloAdminGerente,
-    middlewareAuditoria({ 
-        accion: 'VIEW_ARTICULO', 
-        tabla: 'articulos' 
-    }),
-    inventarioController.obtenerArticulo
-);
-
-/**
- * POST /inventario/articulos
- * Crear nuevo artículo
- * Body: categoria_id, nombre, descripcion, precio, stock_actual, stock_minimo, tipo, codigo_barra, imagen_url, ingredientes[]
- */
-router.post('/articulos', 
-    ...soloAdminGerente,
-    middlewareAuditoria({ 
-        accion: 'CREATE_ARTICULO', 
-        tabla: 'articulos',
-        incluirBody: true 
-    }),
-    inventarioController.crearArticulo
-);
-
-/**
- * PUT /inventario/articulos/:id
- * Editar artículo existente
- * Body: campos a actualizar
- */
-router.put('/articulos/:id', 
-    ...soloAdminGerente,
-    middlewareAuditoria({ 
-        accion: 'UPDATE_ARTICULO', 
-        tabla: 'articulos',
-        incluirBody: true 
-    }),
-    inventarioController.editarArticulo
-);
-
-/**
- * DELETE /inventario/articulos/:id
- * Eliminar artículo (soft delete)
- */
-router.delete('/articulos/:id',
-    ...soloAdminGerente,
-    middlewareAuditoria({
-        accion: 'DELETE_ARTICULO',
-        tabla: 'articulos'
-    }),
-    inventarioController.eliminarArticulo
-);
+router.get('/articulos', ...soloAdminGerente, responderRutaArticulosDeprecada);
+router.get('/articulos/:id', ...soloAdminGerente, responderRutaArticulosDeprecada);
+router.post('/articulos', ...soloAdminGerente, responderRutaArticulosDeprecada);
+router.put('/articulos/:id', ...soloAdminGerente, responderRutaArticulosDeprecada);
+router.delete('/articulos/:id', ...soloAdminGerente, responderRutaArticulosDeprecada);
 
 // =====================================================
 // RUTAS DE INGREDIENTES
@@ -118,7 +61,7 @@ router.get('/ingredientes/:id',
 /**
  * POST /inventario/ingredientes
  * Crear nuevo ingrediente
- * Body: nombre, descripcion, precio_extra, disponible
+ * Body: nombre, descripcion, disponible, unidad_base, costo_unitario_base
  */
 router.post('/ingredientes',
     ...soloAdminGerente,
@@ -157,65 +100,11 @@ router.delete('/ingredientes/:id',
     inventarioController.eliminarIngrediente
 );
 
-// =====================================================
-// RUTAS DE CONTENIDO DE ARTÍCULOS ELABORADOS
-// =====================================================
-
-/**
- * GET /inventario/articulos/:id/contenido
- * Obtener ingredientes de un artículo elaborado
- */
-router.get('/articulos/:id/contenido', 
-    ...soloAdminGerente,
-    middlewareAuditoria({ 
-        accion: 'VIEW_CONTENIDO_ARTICULO', 
-        tabla: 'articulo_contenido' 
-    }),
-    inventarioController.obtenerContenidoArticulo
-);
-
-/**
- * POST /inventario/articulos/:id/contenido
- * Agregar ingrediente a artículo elaborado
- * Body: ingrediente_id, unidad_medida, cantidad
- */
-router.post('/articulos/:id/contenido', 
-    ...soloAdminGerente,
-    middlewareAuditoria({ 
-        accion: 'ADD_INGREDIENTE_ARTICULO', 
-        tabla: 'articulo_contenido',
-        incluirBody: true 
-    }),
-    inventarioController.agregarIngredienteAArticulo
-);
-
-/**
- * PUT /inventario/articulos/:id/contenido/:ingrediente_id
- * Editar cantidad/unidad de ingrediente en artículo elaborado
- * Body: unidad_medida, cantidad
- */
-router.put('/articulos/:id/contenido/:ingrediente_id', 
-    ...soloAdminGerente,
-    middlewareAuditoria({ 
-        accion: 'UPDATE_CONTENIDO_ARTICULO', 
-        tabla: 'articulo_contenido',
-        incluirBody: true 
-    }),
-    inventarioController.editarContenidoArticulo
-);
-
-/**
- * DELETE /inventario/articulos/:id/contenido/:ingrediente_id
- * Eliminar ingrediente de artículo elaborado
- */
-router.delete('/articulos/:id/contenido/:ingrediente_id', 
-    ...soloAdminGerente,
-    middlewareAuditoria({ 
-        accion: 'DELETE_INGREDIENTE_ARTICULO', 
-        tabla: 'articulo_contenido' 
-    }),
-    inventarioController.eliminarIngredienteDeArticulo
-);
+// Contenido de elaborados ahora se gestiona vía /articulos (controlador dedicado)
+router.get('/articulos/:id/contenido', ...soloAdminGerente, responderRutaArticulosDeprecada);
+router.post('/articulos/:id/contenido', ...soloAdminGerente, responderRutaArticulosDeprecada);
+router.put('/articulos/:id/contenido/:ingrediente_id', ...soloAdminGerente, responderRutaArticulosDeprecada);
+router.delete('/articulos/:id/contenido/:ingrediente_id', ...soloAdminGerente, responderRutaArticulosDeprecada);
 
 // =====================================================
 // RUTAS DE CATEGORÍAS
@@ -379,76 +268,17 @@ router.delete('/adicionales/:id',
     inventarioController.eliminarAdicional
 );
 
-/**
- * GET /inventario/articulos/:id/adicionales
- * Obtener adicionales asignados a un artículo
- */
-router.get('/articulos/:id/adicionales',
-    ...soloAdminGerente,
-    middlewareAuditoria({
-        accion: 'VIEW_ADICIONALES_ARTICULO',
-        tabla: 'adicionales_contenido'
-    }),
-    inventarioController.obtenerAdicionalesPorArticulo
-);
-
-/**
- * POST /inventario/articulos/:id/adicionales
- * Asignar adicionales a un artículo
- * Body: { adicionales: [id1, id2, ...] }
- */
-router.post('/articulos/:id/adicionales',
-    ...soloAdminGerente,
-    middlewareAuditoria({
-        accion: 'ASIGNAR_ADICIONALES_ARTICULO',
-        tabla: 'adicionales_contenido',
-        incluirBody: true
-    }),
-    inventarioController.asignarAdicionalesAArticulo
-);
-
-/**
- * DELETE /inventario/articulos/:id/adicionales/:adicionalId
- * Eliminar adicional de un artículo
- */
-router.delete('/articulos/:id/adicionales/:adicionalId',
-    ...soloAdminGerente,
-    middlewareAuditoria({
-        accion: 'ELIMINAR_ADICIONAL_ARTICULO',
-        tabla: 'adicionales_contenido'
-    }),
-    inventarioController.eliminarAdicionalDeArticulo
-);
+// Adicionales por artículo migrados a /articulos/:id/adicionales
+router.get('/articulos/:id/adicionales', ...soloAdminGerente, responderRutaArticulosDeprecada);
+router.post('/articulos/:id/adicionales', ...soloAdminGerente, responderRutaArticulosDeprecada);
+router.delete('/articulos/:id/adicionales/:adicionalId', ...soloAdminGerente, responderRutaArticulosDeprecada);
 
 // =====================================================
 // RUTAS AUXILIARES
 // =====================================================
 
-/**
- * GET /inventario/stock-bajo
- * Obtener artículos con stock bajo para alertas
- */
-router.get('/stock-bajo', 
-    ...soloAdminGerente,
-    middlewareAuditoria({ 
-        accion: 'VIEW_STOCK_BAJO', 
-        tabla: 'articulos' 
-    }),
-    inventarioController.obtenerStockBajo
-);
-
-/**
- * GET /inventario/articulos/:id/costo
- * Calcular costo de ingredientes de un artículo elaborado
- */
-router.get('/articulos/:id/costo', 
-    ...soloAdminGerente,
-    middlewareAuditoria({ 
-        accion: 'CALC_COSTO_ELABORADO', 
-        tabla: 'articulos' 
-    }),
-    inventarioController.calcularCostoElaborado
-);
+router.get('/stock-bajo', ...soloAdminGerente, responderRutaArticulosDeprecada);
+router.get('/articulos/:id/costo', ...soloAdminGerente, responderRutaArticulosDeprecada);
 
 
 

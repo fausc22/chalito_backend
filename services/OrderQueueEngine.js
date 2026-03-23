@@ -12,6 +12,57 @@ const getGlobalIo = () => globalIo;
  * Motor de reglas para gestionar la cola de pedidos automáticamente
  */
 class OrderQueueEngine {
+    static DIGITAL_WEB_PAYMENT_METHODS = new Set(['TRANSFERENCIA', 'MERCADOPAGO']);
+
+    static normalizarMedioPago(medioPago) {
+        return String(medioPago || '').trim().toUpperCase();
+    }
+
+    static esPedidoWebPagoDigital(pedido) {
+        if (!pedido) return false;
+        const origen = String(pedido.origen_pedido || '').trim().toUpperCase();
+        const medioPago = this.normalizarMedioPago(pedido.medio_pago);
+        return origen === 'WEB' && this.DIGITAL_WEB_PAYMENT_METHODS.has(medioPago);
+    }
+
+    static esPedidoWebPagoDigitalPendiente(pedido) {
+        if (!this.esPedidoWebPagoDigital(pedido)) return false;
+        const estadoPago = String(pedido.estado_pago || 'DEBE').trim().toUpperCase();
+        return estadoPago !== 'PAGADO';
+    }
+
+    /**
+     * Cuando un pedido WEB con pago digital pasa a PAGADO,
+     * vuelve a evaluar la cola para que ingrese al flujo normal si corresponde.
+     */
+    static async activarFlujoSiCorrespondeTrasPago(pedidoId) {
+        const [rows] = await db.execute(
+            'SELECT id, estado, origen_pedido, medio_pago, estado_pago FROM pedidos WHERE id = ?',
+            [pedidoId]
+        );
+
+        if (rows.length === 0) {
+            return { activado: false, reason: 'pedido_no_encontrado' };
+        }
+
+        const pedido = rows[0];
+        const estado = String(pedido.estado || '').trim().toUpperCase();
+        const estadoPago = String(pedido.estado_pago || '').trim().toUpperCase();
+
+        if (!this.esPedidoWebPagoDigital(pedido)) {
+            return { activado: false, reason: 'no_es_web_pago_digital' };
+        }
+        if (estadoPago !== 'PAGADO') {
+            return { activado: false, reason: 'aun_no_pagado' };
+        }
+        if (!['RECIBIDO', 'PROGRAMADO'].includes(estado)) {
+            return { activado: false, reason: `estado_no_elegible_${estado || 'desconocido'}` };
+        }
+
+        const resultado = await this.evaluarColaPedidos();
+        return { activado: true, resultado };
+    }
+
     /**
      * Evaluar cola y mover pedidos de RECIBIDO a EN_PREPARACION si hay capacidad
      */
@@ -30,7 +81,29 @@ class OrderQueueEngine {
             const espaciosDisponibles = infoCapacidad.espaciosDisponibles;
             console.log(`✅ [OrderQueueEngine] ${espaciosDisponibles} espacio(s) disponible(s)`);
             
-            // 2. Obtener pedidos RECIBIDOS pendientes del día actual, ordenados por prioridad y fecha
+            // 2. Auditoría rápida de candidatos vs pedidos excluidos por transición manual
+            try {
+                const [stats] = await db.execute(
+                    `SELECT 
+                        COUNT(*) AS total_pendientes,
+                        SUM(CASE WHEN transicion_automatica = TRUE THEN 1 ELSE 0 END) AS pendientes_automaticos,
+                        SUM(CASE WHEN transicion_automatica = FALSE THEN 1 ELSE 0 END) AS pendientes_manuales
+                     FROM pedidos
+                     WHERE DATE(fecha) = CURDATE()
+                       AND estado IN ('RECIBIDO', 'PROGRAMADO', 'programado')`
+                );
+                const row = stats[0] || {};
+                console.log(
+                    `ℹ️ [OrderQueueEngine] Pendientes hoy (RECIBIDO/PROGRAMADO): ` +
+                    `${row.total_pendientes || 0} total | ` +
+                    `${row.pendientes_automaticos || 0} automáticos (transicion_automatica=TRUE) | ` +
+                    `${row.pendientes_manuales || 0} excluidos por transición manual (transicion_automatica=FALSE)`
+                );
+            } catch (statsError) {
+                console.warn('⚠️ [OrderQueueEngine] No se pudo obtener estadísticas de pendientes:', statsError.message);
+            }
+            
+            // 3. Obtener pedidos RECIBIDOS/PROGRAMADOS pendientes del día actual, ordenados por prioridad y fecha
             // Prioridad: ALTA primero, luego NORMAL
             // Dentro de cada prioridad, más antiguos primero
             // Solo considerar pedidos del día actual para mantener limpieza del sistema
@@ -48,11 +121,38 @@ class OrderQueueEngine {
                 await connection.beginTransaction();
                 
                 const [pedidosPendientes] = await connection.execute(
-                    `SELECT id, horario_entrega, tiempo_estimado_preparacion, prioridad, transicion_automatica
+                    `SELECT 
+                        id,
+                        estado,
+                        horario_entrega,
+                        tiempo_estimado_preparacion,
+                        prioridad,
+                        transicion_automatica,
+                        CASE
+                          WHEN horario_entrega IS NOT NULL AND tiempo_estimado_preparacion > 0
+                            THEN DATE_SUB(horario_entrega, INTERVAL tiempo_estimado_preparacion MINUTE)
+                          ELSE NULL
+                        END AS inicio_preparacion_calculado
                      FROM pedidos 
-                     WHERE estado = 'RECIBIDO' 
-                       AND transicion_automatica = TRUE
+                     WHERE estado IN ('RECIBIDO', 'PROGRAMADO', 'programado')
+                       AND transicion_automatica = TRUE -- Solo pedidos gestionados por el flujo automático (excluye adelantados manualmente)
                        AND DATE(fecha) = CURDATE()
+                       AND NOT (
+                            UPPER(COALESCE(origen_pedido, '')) = 'WEB'
+                            AND UPPER(COALESCE(medio_pago, '')) IN ('TRANSFERENCIA', 'MERCADOPAGO')
+                            AND UPPER(COALESCE(estado_pago, 'DEBE')) <> 'PAGADO'
+                       )
+                       AND (
+                            -- Pedidos "cuanto antes": procesar cuando haya capacidad
+                            horario_entrega IS NULL
+                            OR
+                            -- Pedidos programados: iniciar según tiempo_estimado_preparacion del pedido
+                            (
+                                horario_entrega IS NOT NULL
+                                AND tiempo_estimado_preparacion > 0
+                                AND NOW() >= DATE_SUB(horario_entrega, INTERVAL tiempo_estimado_preparacion MINUTE)
+                            )
+                       )
                      ORDER BY 
                        CASE prioridad 
                          WHEN 'ALTA' THEN 1 
@@ -77,17 +177,19 @@ class OrderQueueEngine {
                 let procesados = 0;
                 
                 for (const pedido of pedidosPendientes) {
-                    // Verificar si es pedido programado y si ya es hora
                     if (pedido.horario_entrega) {
-                        const debeIniciar = await TimeCalculationService.verificarSiDebeIniciarPreparacion(pedido.id);
-                        if (!debeIniciar) {
-                            console.log(`⏰ [OrderQueueEngine] Pedido #${pedido.id} programado, aún no es hora de iniciar`);
-                            continue;
-                        }
+                        // Log temporal para auditar transición automática de programados.
+                        // La comparación ya se resolvió en SQL para evitar múltiples queries por pedido.
+                        console.log(
+                            `⏰ [OrderQueueEngine] Pedido #${pedido.id} movido automáticamente` +
+                            ` | hora_entrega=${new Date(pedido.horario_entrega).toISOString()}` +
+                            ` | tiempo_estimado=${pedido.tiempo_estimado_preparacion}min` +
+                            ` | inicio_calculado=${pedido.inicio_preparacion_calculado ? new Date(pedido.inicio_preparacion_calculado).toISOString() : 'N/A'}`
+                        );
                     }
-                    
+
                     // Mover a EN_PREPARACION
-                    await this.moverPedidoAPreparacion(connection, pedido.id, pedido.tiempo_estimado_preparacion);
+                    await this.moverPedidoAPreparacion(connection, pedido.id);
                     procesados++;
                     
                     // Verificar si ya llenamos la capacidad
@@ -109,7 +211,12 @@ class OrderQueueEngine {
                     for (const pedido of pedidosPendientes.slice(0, procesados)) {
                         const [pedidoActualizado] = await db.execute('SELECT * FROM pedidos WHERE id = ?', [pedido.id]);
                         if (pedidoActualizado.length > 0) {
-                            socketService.emitPedidoEstadoCambiado(pedido.id, 'RECIBIDO', 'EN_PREPARACION', pedidoActualizado[0]);
+                            socketService.emitPedidoEstadoCambiado(
+                                pedido.id,
+                                pedido.estado || 'RECIBIDO',
+                                'EN_PREPARACION',
+                                pedidoActualizado[0]
+                            );
                         }
                     }
                     
@@ -136,14 +243,13 @@ class OrderQueueEngine {
     /**
      * Mover pedido a EN_PREPARACION con timestamps
      */
-    static async moverPedidoAPreparacion(connection, pedidoId, tiempoEstimado = null) {
+    static async moverPedidoAPreparacion(connection, pedidoId) {
         try {
             const ahora = new Date();
-            
-            // Obtener tiempo estimado si no se proporciona
-            if (!tiempoEstimado) {
-                tiempoEstimado = await TimeCalculationService.obtenerTiempoEstimado(pedidoId);
-            }
+
+            // Calcular tiempo dinámico al momento de entrar a EN_PREPARACION.
+            // Se ejecuta dentro de la misma transacción para mantener consistencia.
+            const tiempoEstimado = await TimeCalculationService.calcularTiempoEstimadoPedido(pedidoId, { connection });
             
             // Calcular hora_esperada_finalizacion
             const horaEsperadaFinalizacion = TimeCalculationService.calcularHoraEsperadaFinalizacion(
@@ -156,9 +262,10 @@ class OrderQueueEngine {
                 `UPDATE pedidos 
                  SET estado = 'EN_PREPARACION',
                      hora_inicio_preparacion = ?,
+                     tiempo_estimado_preparacion = ?,
                      hora_esperada_finalizacion = ?
                  WHERE id = ?`,
-                [ahora, horaEsperadaFinalizacion, pedidoId]
+                [ahora, tiempoEstimado, horaEsperadaFinalizacion, pedidoId]
             );
             
             console.log(`✅ [OrderQueueEngine] Pedido #${pedidoId} movido a EN_PREPARACION (esperado listo: ${horaEsperadaFinalizacion.toLocaleString()})`);

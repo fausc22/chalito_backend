@@ -31,7 +31,7 @@ CREATE TABLE `adicionales` (
   `fecha_creacion` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `nombre_UNIQUE` (`nombre`)
-) ENGINE=InnoDB AUTO_INCREMENT=9 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=11 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -71,6 +71,7 @@ CREATE TABLE `articulos` (
   `activo` tinyint(1) NOT NULL DEFAULT '1',
   `fecha_creacion` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   `fecha_modificacion` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `peso` int NOT NULL DEFAULT '1',
   PRIMARY KEY (`id`),
   UNIQUE KEY `codigo_barra_unique` (`codigo_barra`),
   KEY `idx_categoria_id` (`categoria_id`),
@@ -80,7 +81,7 @@ CREATE TABLE `articulos` (
   KEY `idx_stock_minimo` (`stock_actual`,`stock_minimo`),
   CONSTRAINT `articulos_categoria_fk` FOREIGN KEY (`categoria_id`) REFERENCES `categorias` (`id`) ON DELETE RESTRICT,
   CONSTRAINT `articulos_chk_precio` CHECK ((`precio` >= 0))
-) ENGINE=InnoDB AUTO_INCREMENT=72 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=73 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -102,7 +103,7 @@ CREATE TABLE `articulos_contenido` (
   CONSTRAINT `articulo_contenido_articulo_fk` FOREIGN KEY (`articulo_id`) REFERENCES `articulos` (`id`) ON DELETE CASCADE,
   CONSTRAINT `articulo_contenido_ingrediente_fk` FOREIGN KEY (`ingrediente_id`) REFERENCES `ingredientes` (`id`) ON DELETE CASCADE,
   CONSTRAINT `articulos_contenido_chk_cantidad` CHECK ((`cantidad` > 0))
-) ENGINE=InnoDB AUTO_INCREMENT=255 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=300 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -137,7 +138,7 @@ CREATE TABLE `auditorias` (
   KEY `idx_estado` (`estado`),
   KEY `idx_registro_tabla` (`tabla_afectada`,`registro_id`),
   CONSTRAINT `auditorias_usuario_fk` FOREIGN KEY (`usuario_id`) REFERENCES `usuarios` (`id`) ON DELETE SET NULL
-) ENGINE=InnoDB AUTO_INCREMENT=36006 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=41462 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -155,7 +156,7 @@ CREATE TABLE `categoria_gastos` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `nombre_unique` (`nombre`),
   KEY `idx_activa` (`activa`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=2 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -206,7 +207,7 @@ CREATE TABLE `comandas` (
   KEY `idx_horario_entrega` (`horario_entrega`),
   CONSTRAINT `comandas_pedido_fk` FOREIGN KEY (`pedido_id`) REFERENCES `pedidos` (`id`) ON DELETE CASCADE,
   CONSTRAINT `comandas_usuario_fk` FOREIGN KEY (`usuario_id`) REFERENCES `usuarios` (`id`) ON DELETE SET NULL
-) ENGINE=InnoDB AUTO_INCREMENT=38 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=156 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -230,7 +231,7 @@ CREATE TABLE `comandas_contenido` (
   CONSTRAINT `comandas_contenido_articulo_fk` FOREIGN KEY (`articulo_id`) REFERENCES `articulos` (`id`) ON DELETE RESTRICT,
   CONSTRAINT `comandas_contenido_comanda_fk` FOREIGN KEY (`comanda_id`) REFERENCES `comandas` (`id`) ON DELETE CASCADE,
   CONSTRAINT `comandas_contenido_chk_cantidad` CHECK ((`cantidad` > 0))
-) ENGINE=InnoDB AUTO_INCREMENT=87 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=332 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -301,7 +302,7 @@ CREATE TABLE `gastos` (
   CONSTRAINT `gastos_cuenta_fk` FOREIGN KEY (`cuenta_id`) REFERENCES `cuentas_fondos` (`id`) ON DELETE RESTRICT,
   CONSTRAINT `gastos_usuario_fk` FOREIGN KEY (`usuario_id`) REFERENCES `usuarios` (`id`) ON DELETE SET NULL,
   CONSTRAINT `gastos_chk_monto` CHECK ((`monto` > 0))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=2 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -315,13 +316,13 @@ CREATE TABLE `ingredientes` (
   `id` int NOT NULL AUTO_INCREMENT,
   `nombre` varchar(100) NOT NULL,
   `descripcion` varchar(255) DEFAULT NULL,
-  `precio_extra` decimal(8,2) NOT NULL DEFAULT '0.00',
   `disponible` tinyint(1) NOT NULL DEFAULT '1',
+  `unidad_base` enum('GRAMOS','KILOS','LITROS','UNIDADES') NOT NULL DEFAULT 'UNIDADES',
+  `costo_unitario_base` decimal(10,2) NOT NULL DEFAULT '0.00',
   `fecha_creacion` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `nombre_unique` (`nombre`),
-  KEY `idx_disponible` (`disponible`),
-  CONSTRAINT `ingredientes_chk_precio` CHECK ((`precio_extra` >= 0))
+  KEY `idx_disponible` (`disponible`)
 ) ENGINE=InnoDB AUTO_INCREMENT=43 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -350,7 +351,7 @@ CREATE TABLE `movimientos_fondos` (
   KEY `idx_origen_referencia` (`origen`,`referencia_id`),
   CONSTRAINT `movimientos_fondos_cuenta_fk` FOREIGN KEY (`cuenta_id`) REFERENCES `cuentas_fondos` (`id`) ON DELETE CASCADE,
   CONSTRAINT `movimientos_fondos_chk_monto` CHECK ((`monto` <> 0))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=6 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -365,6 +366,7 @@ CREATE TABLE `pedidos` (
   `fecha` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   `cliente_nombre` varchar(150) DEFAULT NULL,
   `cliente_direccion` varchar(255) DEFAULT NULL,
+  `observaciones` varchar(255) DEFAULT NULL,
   `cliente_telefono` varchar(50) DEFAULT NULL,
   `cliente_email` varchar(100) DEFAULT NULL,
   `subtotal` decimal(10,2) NOT NULL DEFAULT '0.00',
@@ -376,7 +378,6 @@ CREATE TABLE `pedidos` (
   `origen_pedido` enum('MOSTRADOR','TELEFONO','WHATSAPP','WEB') NOT NULL DEFAULT 'MOSTRADOR',
   `horario_entrega` timestamp NULL DEFAULT NULL,
   `estado` enum('RECIBIDO','EN_PREPARACION','LISTO','ENTREGADO','CANCELADO') NOT NULL DEFAULT 'RECIBIDO',
-  `observaciones` varchar(255) DEFAULT NULL,
   `usuario_id` int DEFAULT NULL,
   `usuario_nombre` varchar(100) DEFAULT NULL,
   `fecha_modificacion` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -386,6 +387,7 @@ CREATE TABLE `pedidos` (
   `hora_listo` timestamp NULL DEFAULT NULL COMMENT 'Timestamp cuando el pedido pasa a estado LISTO',
   `prioridad` enum('NORMAL','ALTA') NOT NULL DEFAULT 'NORMAL' COMMENT 'ALTA para pedidos "cuanto antes", NORMAL para programados',
   `transicion_automatica` tinyint(1) NOT NULL DEFAULT '1' COMMENT 'Si FALSE, requiere intervención manual',
+  `monto_con_cuanto_abona` decimal(10,2) DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `idx_fecha` (`fecha`),
   KEY `idx_estado` (`estado`),
@@ -401,7 +403,7 @@ CREATE TABLE `pedidos` (
   KEY `idx_estado_hora_listo` (`estado`,`hora_listo`),
   CONSTRAINT `pedidos_usuario_fk` FOREIGN KEY (`usuario_id`) REFERENCES `usuarios` (`id`) ON DELETE SET NULL,
   CONSTRAINT `pedidos_chk_totales` CHECK (((`subtotal` >= 0) and (`iva_total` >= 0) and (`total` >= 0)))
-) ENGINE=InnoDB AUTO_INCREMENT=43 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=180 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -428,7 +430,7 @@ CREATE TABLE `pedidos_contenido` (
   CONSTRAINT `pedidos_contenido_pedido_fk` FOREIGN KEY (`pedido_id`) REFERENCES `pedidos` (`id`) ON DELETE CASCADE,
   CONSTRAINT `pedidos_contenido_chk_cantidad` CHECK ((`cantidad` > 0)),
   CONSTRAINT `pedidos_contenido_chk_precio` CHECK (((`precio` >= 0) and (`subtotal` >= 0)))
-) ENGINE=InnoDB AUTO_INCREMENT=94 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=365 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -495,7 +497,7 @@ CREATE TABLE `ventas` (
   CONSTRAINT `ventas_cuenta_fk` FOREIGN KEY (`cuenta_id`) REFERENCES `cuentas_fondos` (`id`) ON DELETE SET NULL,
   CONSTRAINT `ventas_usuario_fk` FOREIGN KEY (`usuario_id`) REFERENCES `usuarios` (`id`) ON DELETE SET NULL,
   CONSTRAINT `ventas_chk_totales` CHECK (((`subtotal` >= 0) and (`iva_total` >= 0) and (`descuento` >= 0) and (`total` >= 0)))
-) ENGINE=InnoDB AUTO_INCREMENT=98 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=175 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -520,7 +522,7 @@ CREATE TABLE `ventas_contenido` (
   CONSTRAINT `ventas_contenido_venta_fk` FOREIGN KEY (`venta_id`) REFERENCES `ventas` (`id`) ON DELETE CASCADE,
   CONSTRAINT `ventas_contenido_chk_cantidad` CHECK ((`cantidad` > 0)),
   CONSTRAINT `ventas_contenido_chk_precio` CHECK (((`precio` >= 0) and (`subtotal` >= 0)))
-) ENGINE=InnoDB AUTO_INCREMENT=173 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=344 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 /*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
 
@@ -532,4 +534,4 @@ CREATE TABLE `ventas_contenido` (
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- Dump completed on 2026-02-18 15:15:48
+-- Dump completed on 2026-03-13 13:17:41

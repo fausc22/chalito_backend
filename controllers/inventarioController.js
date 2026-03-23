@@ -2,6 +2,51 @@
 const db = require('./dbPromise');
 const { auditarOperacion, obtenerDatosAnteriores, limpiarDatosSensibles } = require('../middlewares/auditoriaMiddleware');
 
+const normalizarPeso = (peso, { requerido = false } = {}) => {
+    if (peso === undefined || peso === null || peso === '') {
+        if (requerido) {
+            return { valido: false, mensaje: 'El peso es obligatorio' };
+        }
+        return { valido: true, valor: undefined };
+    }
+
+    const pesoNumero = Number(peso);
+    if (!Number.isInteger(pesoNumero)) {
+        return { valido: false, mensaje: 'El peso debe ser un número entero' };
+    }
+
+    if (pesoNumero < 1 || pesoNumero > 4) {
+        return { valido: false, mensaje: 'El peso debe estar entre 1 y 4' };
+    }
+
+    return { valido: true, valor: pesoNumero };
+};
+
+/**
+ * Convierte cantidad desde unidad_medida a unidad_base y calcula costo de línea.
+ * Usado para costo de ingredientes en artículos elaborados (costo_unitario_base).
+ * @param {number} cantidad
+ * @param {string} unidadMedida - UNIDADES | GRAMOS | KILOS | LITROS
+ * @param {string} unidadBase - UNIDADES | GRAMOS | KILOS | LITROS
+ * @param {number} costoUnitarioBase
+ * @returns {number}
+ */
+const costoLineaIngrediente = (cantidad, unidadMedida, unidadBase, costoUnitarioBase) => {
+    const q = parseFloat(cantidad) || 0;
+    const c = parseFloat(costoUnitarioBase) || 0;
+    if (q <= 0 || c < 0) return 0;
+    const um = (unidadMedida || 'UNIDADES').toUpperCase();
+    const ub = (unidadBase || 'UNIDADES').toUpperCase();
+    let factor = 1;
+    if (um !== ub) {
+        if (um === 'GRAMOS' && ub === 'KILOS') factor = 1 / 1000;
+        else if (um === 'KILOS' && ub === 'GRAMOS') factor = 1000;
+        else if (um === 'LITROS' && ub === 'LITROS') factor = 1;
+        // mismo tipo de unidad o incompatibles: 1:1
+    }
+    return (q * factor) * c;
+};
+
 // =====================================================
 // GESTIÓN DE ARTÍCULOS
 // =====================================================
@@ -23,8 +68,18 @@ const crearArticulo = async (req, res) => {
             stock_minimo = 0,
             tipo = 'OTRO',
             imagen_url,
+            peso,
             ingredientes = [] // Para artículos elaborados
         } = req.body;
+
+        const pesoConFallback = peso ?? 1;
+
+        console.log('[inventario][createArticulo] Payload recibido', {
+            nombre,
+            categoria_id,
+            peso_recibido: req.body?.peso,
+            peso_usado: pesoConFallback
+        });
 
         // Validaciones básicas
         if (!categoria_id || !nombre || !precio) {
@@ -38,6 +93,14 @@ const crearArticulo = async (req, res) => {
             return res.status(400).json({
                 success: false,
                 message: 'Los valores numéricos no pueden ser negativos'
+            });
+        }
+
+        const pesoValidacion = normalizarPeso(pesoConFallback, { requerido: true });
+        if (!pesoValidacion.valido) {
+            return res.status(400).json({
+                success: false,
+                message: pesoValidacion.mensaje
             });
         }
 
@@ -91,14 +154,19 @@ const crearArticulo = async (req, res) => {
             const queryArticulo = `
                 INSERT INTO articulos (
                     categoria_id, codigo_barra, nombre, descripcion, precio, 
-                    stock_actual, stock_minimo, tipo, imagen_url, activo
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                    stock_actual, stock_minimo, tipo, imagen_url, activo, peso
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
             `;
 
             const [resultArticulo] = await connection.execute(queryArticulo, [
                 categoria_id, codigo_barra || null, nombre.toUpperCase(), descripcion || null, precio,
-                stock_actual, stock_minimo, tipo, imagen_url || null
+                stock_actual, stock_minimo, tipo, imagen_url || null, pesoValidacion.valor
             ]);
+
+            console.log('[inventario][createArticulo] Query ejecutado', {
+                articulo_id: resultArticulo.insertId,
+                peso_enviado_query: pesoValidacion.valor
+            });
 
             const articuloId = resultArticulo.insertId;
 
@@ -218,7 +286,8 @@ const obtenerArticulo = async (req, res) => {
                 SELECT
                     ac.id, ac.unidad_medida, ac.cantidad,
                     i.id as ingrediente_id, i.nombre,
-                    i.descripcion as ingrediente_descripcion, i.precio_extra
+                    i.descripcion as ingrediente_descripcion,
+                    i.unidad_base, i.costo_unitario_base
                 FROM articulos_contenido ac
                 INNER JOIN ingredientes i ON ac.ingrediente_id = i.id
                 WHERE ac.articulo_id = ?
@@ -379,8 +448,14 @@ const editarArticulo = async (req, res) => {
             tipo,
             imagen_url,
             activo,
+            peso,
             ingredientes = [] // Para artículos elaborados
         } = req.body;
+
+        console.log('[inventario][editarArticulo] Payload recibido', {
+            articulo_id: id,
+            peso_recibido: req.body?.peso
+        });
 
         if (!id || isNaN(parseInt(id))) {
             return res.status(400).json({
@@ -410,6 +485,14 @@ const editarArticulo = async (req, res) => {
             return res.status(400).json({
                 success: false,
                 message: 'El stock actual no puede ser negativo'
+            });
+        }
+
+        const pesoValidacion = normalizarPeso(peso, { requerido: false });
+        if (!pesoValidacion.valido) {
+            return res.status(400).json({
+                success: false,
+                message: pesoValidacion.mensaje
             });
         }
 
@@ -487,6 +570,10 @@ const editarArticulo = async (req, res) => {
             camposActualizar.push('activo = ?');
             valoresActualizar.push(activo ? 1 : 0);
         }
+        if (peso !== undefined && peso !== null && peso !== '') {
+            camposActualizar.push('peso = ?');
+            valoresActualizar.push(pesoValidacion.valor);
+        }
 
         if (camposActualizar.length === 0) {
             return res.status(400).json({
@@ -498,6 +585,12 @@ const editarArticulo = async (req, res) => {
         // Actualizar artículo
         const query = `UPDATE articulos SET ${camposActualizar.join(', ')} WHERE id = ?`;
         valoresActualizar.push(id);
+
+        console.log('[inventario][editarArticulo] Query UPDATE', {
+            articulo_id: id,
+            incluye_peso: camposActualizar.includes('peso = ?'),
+            peso_enviado_query: (peso !== undefined && peso !== null && peso !== '') ? pesoValidacion.valor : '(sin cambio)'
+        });
 
         await db.execute(query, valoresActualizar);
 
@@ -683,6 +776,8 @@ const eliminarArticulo = async (req, res) => {
 // GESTIÓN DE INGREDIENTES
 // =====================================================
 
+const UNIDADES_INGREDIENTE_VALIDAS = new Set(['GRAMOS', 'KILOS', 'LITROS', 'UNIDADES']);
+
 /**
  * Crear nuevo ingrediente
  */
@@ -690,7 +785,13 @@ const crearIngrediente = async (req, res) => {
     try {
         console.log('🧄 Creando nuevo ingrediente...');
 
-        const { nombre, descripcion, precio_extra = 0, disponible = true } = req.body;
+        const {
+            nombre,
+            descripcion,
+            disponible = true,
+            unidad_base,
+            costo_unitario_base
+        } = req.body;
 
         // Validaciones
         if (!nombre || nombre.trim() === '') {
@@ -700,10 +801,25 @@ const crearIngrediente = async (req, res) => {
             });
         }
 
-        if (precio_extra < 0) {
+        const unidadBaseFinal = unidad_base && typeof unidad_base === 'string'
+            ? unidad_base.toUpperCase()
+            : 'UNIDADES';
+
+        if (!UNIDADES_INGREDIENTE_VALIDAS.has(unidadBaseFinal)) {
             return res.status(400).json({
                 success: false,
-                message: 'El precio extra no puede ser negativo'
+                message: 'unidad_base inválida. Valores permitidos: GRAMOS, KILOS, LITROS, UNIDADES'
+            });
+        }
+
+        const costoUnitarioFinal = costo_unitario_base !== undefined && costo_unitario_base !== null
+            ? Number(costo_unitario_base)
+            : 0;
+
+        if (!Number.isFinite(costoUnitarioFinal) || costoUnitarioFinal < 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'costo_unitario_base debe ser un número mayor o igual a 0'
             });
         }
 
@@ -722,15 +838,16 @@ const crearIngrediente = async (req, res) => {
 
         // Insertar ingrediente
         const query = `
-            INSERT INTO ingredientes (nombre, descripcion, precio_extra, disponible)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO ingredientes (nombre, descripcion, disponible, unidad_base, costo_unitario_base)
+            VALUES (?, ?, ?, ?, ?)
         `;
 
         const [result] = await db.execute(query, [
             nombre.trim(),
             descripcion?.trim() || null,
-            parseFloat(precio_extra),
-            disponible ? 1 : 0
+            disponible ? 1 : 0,
+            unidadBaseFinal,
+            costoUnitarioFinal
         ]);
 
         // Auditar creación
@@ -738,7 +855,13 @@ const crearIngrediente = async (req, res) => {
             accion: 'CREATE_INGREDIENTE',
             tabla: 'ingredientes',
             registroId: result.insertId,
-            datosNuevos: limpiarDatosSensibles({ nombre, descripcion, precio_extra, disponible }),
+            datosNuevos: limpiarDatosSensibles({
+                nombre,
+                descripcion,
+                disponible,
+                unidad_base: unidadBaseFinal,
+                costo_unitario_base: costoUnitarioFinal
+            }),
             detallesAdicionales: `Ingrediente creado: ${nombre}`
         });
 
@@ -751,8 +874,9 @@ const crearIngrediente = async (req, res) => {
                 id: result.insertId,
                 nombre,
                 descripcion,
-                precio_extra,
-                disponible
+                disponible,
+                unidad_base: unidadBaseFinal,
+                costo_unitario_base: costoUnitarioFinal
             }
         });
 
@@ -781,7 +905,7 @@ const obtenerIngrediente = async (req, res) => {
         }
 
         const query = `
-            SELECT id, nombre, descripcion, precio_extra, disponible, fecha_creacion
+            SELECT id, nombre, descripcion, disponible, unidad_base, costo_unitario_base, fecha_creacion
             FROM ingredientes
             WHERE id = ?
         `;
@@ -856,7 +980,7 @@ const filtrarIngredientes = async (req, res) => {
 
         // Query principal
         let query = `
-            SELECT id, nombre, descripcion, precio_extra, disponible, fecha_creacion
+            SELECT id, nombre, descripcion, disponible, unidad_base, costo_unitario_base, fecha_creacion
             FROM ingredientes
             WHERE ${whereClause}
             ORDER BY nombre ASC
@@ -906,7 +1030,13 @@ const filtrarIngredientes = async (req, res) => {
 const editarIngrediente = async (req, res) => {
     try {
         const { id } = req.params;
-        const { nombre, descripcion, precio_extra, disponible } = req.body;
+        const {
+            nombre,
+            descripcion,
+            disponible,
+            unidad_base,
+            costo_unitario_base
+        } = req.body;
 
         console.log(`✏️ Editando ingrediente: ID ${id}`);
 
@@ -926,12 +1056,31 @@ const editarIngrediente = async (req, res) => {
             });
         }
 
-        // Validar precio_extra
-        if (precio_extra !== undefined && precio_extra < 0) {
-            return res.status(400).json({
-                success: false,
-                message: 'El precio extra no puede ser negativo'
-            });
+        let unidadBaseFinal;
+        if (unidad_base !== undefined) {
+            const unidadNormalizada = typeof unidad_base === 'string'
+                ? unidad_base.toUpperCase()
+                : unidad_base;
+
+            if (!UNIDADES_INGREDIENTE_VALIDAS.has(unidadNormalizada)) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'unidad_base inválida. Valores permitidos: GRAMOS, KILOS, LITROS, UNIDADES'
+                });
+            }
+            unidadBaseFinal = unidadNormalizada;
+        }
+
+        let costoUnitarioFinal;
+        if (costo_unitario_base !== undefined) {
+            const valor = Number(costo_unitario_base);
+            if (!Number.isFinite(valor) || valor < 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'costo_unitario_base debe ser un número mayor o igual a 0'
+                });
+            }
+            costoUnitarioFinal = valor;
         }
 
         // Verificar nombre único si se está cambiando
@@ -961,13 +1110,17 @@ const editarIngrediente = async (req, res) => {
             camposActualizar.push('descripcion = ?');
             valoresActualizar.push(descripcion?.trim() || null);
         }
-        if (precio_extra !== undefined) {
-            camposActualizar.push('precio_extra = ?');
-            valoresActualizar.push(parseFloat(precio_extra));
-        }
         if (disponible !== undefined) {
             camposActualizar.push('disponible = ?');
             valoresActualizar.push(disponible ? 1 : 0);
+        }
+        if (unidadBaseFinal !== undefined) {
+            camposActualizar.push('unidad_base = ?');
+            valoresActualizar.push(unidadBaseFinal);
+        }
+        if (costoUnitarioFinal !== undefined) {
+            camposActualizar.push('costo_unitario_base = ?');
+            valoresActualizar.push(costoUnitarioFinal);
         }
 
         if (camposActualizar.length === 0) {
@@ -1120,8 +1273,8 @@ const obtenerContenidoArticulo = async (req, res) => {
             SELECT 
                 ac.id, ac.unidad_medida, ac.cantidad,
                 i.id as ingrediente_id, i.nombre as ingrediente_nombre,
-                i.descripcion as ingrediente_descripcion, i.precio_extra,
-                i.disponible
+                i.descripcion as ingrediente_descripcion,
+                i.unidad_base, i.costo_unitario_base, i.disponible
             FROM articulos_contenido ac
             INNER JOIN ingredientes i ON ac.ingrediente_id = i.id
             WHERE ac.articulo_id = ?
@@ -1130,8 +1283,13 @@ const obtenerContenidoArticulo = async (req, res) => {
 
         const [contenido] = await db.execute(queryContenido, [id]);
 
-        // Calcular costo total de ingredientes
-        const costoTotal = contenido.reduce((sum, item) => sum + parseFloat(item.precio_extra), 0);
+        // Calcular costo total con costo_unitario_base y conversión de unidades
+        const costoTotal = contenido.reduce((sum, item) => sum + costoLineaIngrediente(
+            item.cantidad,
+            item.unidad_medida,
+            item.unidad_base,
+            item.costo_unitario_base
+        ), 0);
 
         console.log(`✅ Contenido obtenido para artículo: ${articulo[0].nombre}`);
 
@@ -1905,20 +2063,22 @@ const calcularCostoElaborado = async (req, res) => {
             });
         }
 
-        // Calcular costo
+        // Calcular costo con costo_unitario_base y conversión de unidades (en aplicación)
         const query = `
             SELECT 
-                SUM(i.precio_extra * ac.cantidad) as costo_total,
-                COUNT(*) as total_ingredientes
+                ac.cantidad, ac.unidad_medida,
+                i.unidad_base, i.costo_unitario_base
             FROM articulos_contenido ac
             INNER JOIN ingredientes i ON ac.ingrediente_id = i.id
             WHERE ac.articulo_id = ?
         `;
 
-        const [resultado] = await db.execute(query, [id]);
+        const [filas] = await db.execute(query, [id]);
 
-        const costoTotal = parseFloat(resultado[0].costo_total || 0);
-        const totalIngredientes = parseInt(resultado[0].total_ingredientes || 0);
+        const costoTotal = filas.reduce((sum, row) => sum + costoLineaIngrediente(
+            row.cantidad, row.unidad_medida, row.unidad_base, row.costo_unitario_base
+        ), 0);
+        const totalIngredientes = filas.length;
 
         res.json({
             success: true,

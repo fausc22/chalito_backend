@@ -1,6 +1,30 @@
 // controllers/ventasController.js - Sistema Chalito - Módulo de Ventas
 const db = require('./dbPromise');
 const { auditarOperacion, obtenerDatosAnteriores, limpiarDatosSensibles } = require('../middlewares/auditoriaMiddleware');
+const { OrderQueueEngine } = require('../services/OrderQueueEngine');
+
+const normalizarTotalesVenta = (venta = {}) => {
+    const subtotal = parseFloat(venta.subtotal) || 0;
+    return {
+        ...venta,
+        subtotal,
+        iva_total: 0,
+        costo_envio: 0,
+        total: subtotal
+    };
+};
+
+const calcularSubtotalDesdeArticulos = (articulos = []) => {
+    if (!Array.isArray(articulos) || articulos.length === 0) return 0;
+    return articulos.reduce((sum, articulo) => {
+        const subtotalItem = parseFloat(articulo.subtotal);
+        if (Number.isFinite(subtotalItem)) return sum + subtotalItem;
+
+        const cantidad = parseFloat(articulo.cantidad) || 0;
+        const precio = parseFloat(articulo.precio) || 0;
+        return sum + (cantidad * precio);
+    }, 0);
+};
 
 // =====================================================
 // GESTIÓN DE VENTAS
@@ -21,6 +45,10 @@ const crearVenta = async (req, res) => {
         const { articulos, ...ventaData } = req.validatedData || req.body;
         const usuario = req.user || {};
         const pedidoId = ventaData.pedido_id ? parseInt(ventaData.pedido_id, 10) : null;
+        const subtotalFinal = calcularSubtotalDesdeArticulos(articulos);
+        const ivaTotalFinal = 0;
+        const descuentoFinal = 0;
+        const totalFinal = subtotalFinal;
 
         // Si la venta viene asociada a pedido, validar existencia y unicidad 1:1
         if (pedidoId) {
@@ -72,10 +100,10 @@ const crearVenta = async (req, res) => {
             ventaData.cliente_direccion || null,
             ventaData.cliente_telefono || null,
             ventaData.cliente_email || null,
-            ventaData.subtotal,
-            ventaData.iva_total || 0,
-            ventaData.descuento || 0,
-            ventaData.total,
+            subtotalFinal,
+            ivaTotalFinal,
+            descuentoFinal,
+            totalFinal,
             ventaData.medio_pago || 'EFECTIVO',
             ventaData.cuenta_id || null,
             ventaData.estado || 'FACTURADA',
@@ -120,7 +148,7 @@ const crearVenta = async (req, res) => {
             );
             
             const saldoAnteriorValor = parseFloat(saldoAnterior[0]?.saldo) || 0;
-            const saldoNuevoValor = saldoAnteriorValor + parseFloat(ventaData.total);
+            const saldoNuevoValor = saldoAnteriorValor + totalFinal;
             
             // Actualizar saldo
             await connection.execute(
@@ -138,7 +166,7 @@ const crearVenta = async (req, res) => {
                     ventaData.cuenta_id,
                     `Venta #${ventaId}`,
                     ventaId,
-                    ventaData.total,
+                    totalFinal,
                     saldoAnteriorValor,
                     saldoNuevoValor,
                     `Venta - Cliente: ${ventaData.cliente_nombre || 'Consumidor Final'}`
@@ -150,14 +178,14 @@ const crearVenta = async (req, res) => {
         if (pedidoId) {
             try {
                 await connection.execute(
-                    'UPDATE pedidos SET estado_pago = ?, medio_pago = ? WHERE id = ?',
+                    'UPDATE pedidos SET estado_pago = ?, medio_pago = ?, iva_total = 0, total = subtotal WHERE id = ?',
                     ['PAGADO', ventaData.medio_pago || 'EFECTIVO', pedidoId]
                 );
             } catch (pedidoUpdateError) {
                 if (pedidoUpdateError.code === 'ER_BAD_FIELD_ERROR' && pedidoUpdateError.message?.includes('estado_pago')) {
                     // Compatibilidad con esquemas antiguos sin columna estado_pago
                     await connection.execute(
-                        'UPDATE pedidos SET medio_pago = ? WHERE id = ?',
+                        'UPDATE pedidos SET medio_pago = ?, iva_total = 0, total = subtotal WHERE id = ?',
                         [ventaData.medio_pago || 'EFECTIVO', pedidoId]
                     );
                 } else {
@@ -167,6 +195,18 @@ const crearVenta = async (req, res) => {
         }
         
         await connection.commit();
+
+        // Si la venta cobró un pedido WEB con pago digital, habilitar su automatización.
+        if (pedidoId) {
+            try {
+                const activacion = await OrderQueueEngine.activarFlujoSiCorrespondeTrasPago(pedidoId);
+                if (activacion.activado) {
+                    console.log(`💳 [ventasController] Pedido #${pedidoId} pagado por venta #${ventaId}: flujo automático habilitado`);
+                }
+            } catch (activationError) {
+                console.error(`⚠️ [ventasController] Error activando flujo automático post-pago para pedido #${pedidoId}:`, activationError.message);
+            }
+        }
         
         // Auditar creación
         await auditarOperacion(req, {
@@ -177,18 +217,26 @@ const crearVenta = async (req, res) => {
                 ventaId,
                 pedido_id: pedidoId,
                 cliente: ventaData.cliente_nombre,
-                total: ventaData.total,
+                total: totalFinal,
                 articulos: articulos.length
             }),
-            detallesAdicionales: `Venta creada - Cliente: ${ventaData.cliente_nombre || 'Consumidor Final'} - Total: $${ventaData.total}`
+            detallesAdicionales: `Venta creada - Cliente: ${ventaData.cliente_nombre || 'Consumidor Final'} - Total: $${totalFinal}`
         });
         
-        console.log(`✅ Venta creada: ID ${ventaId} - $${ventaData.total}`);
+        console.log(`✅ Venta creada: ID ${ventaId} - $${totalFinal}`);
         
         res.status(201).json({
             success: true,
             message: 'Venta creada exitosamente',
-            data: { id: ventaId, pedido_id: pedidoId, ...ventaData }
+            data: normalizarTotalesVenta({
+                id: ventaId,
+                pedido_id: pedidoId,
+                ...ventaData,
+                subtotal: subtotalFinal,
+                iva_total: 0,
+                descuento: descuentoFinal,
+                total: totalFinal
+            })
         });
         
     } catch (error) {
@@ -332,6 +380,7 @@ const obtenerVentas = async (req, res) => {
         query += ` LIMIT ${limiteNum} OFFSET ${offset}`;
         
         const [ventas] = await db.execute(query, queryParams);
+        const ventasNormalizadas = ventas.map(normalizarTotalesVenta);
         
         // Query de conteo total
         const queryCount = `
@@ -345,9 +394,9 @@ const obtenerVentas = async (req, res) => {
         // Query de suma total de montos
         const querySum = `
             SELECT 
-                COALESCE(SUM(total), 0) as total_monto,
-                COALESCE(SUM(CASE WHEN estado = 'FACTURADA' THEN total ELSE 0 END), 0) as total_facturado,
-                COALESCE(SUM(CASE WHEN estado = 'ANULADA' THEN total ELSE 0 END), 0) as total_anulado
+                COALESCE(SUM(subtotal), 0) as total_monto,
+                COALESCE(SUM(CASE WHEN estado = 'FACTURADA' THEN subtotal ELSE 0 END), 0) as total_facturado,
+                COALESCE(SUM(CASE WHEN estado = 'ANULADA' THEN subtotal ELSE 0 END), 0) as total_anulado
             FROM ventas v
             WHERE ${whereClause}
         `;
@@ -358,7 +407,7 @@ const obtenerVentas = async (req, res) => {
         
         res.json({
             success: true,
-            data: ventas,
+            data: ventasNormalizadas,
             meta: {
                 pagina_actual: paginaNum,
                 total_registros: total,
@@ -432,10 +481,11 @@ const obtenerVentaPorId = async (req, res) => {
         
         console.log(`✅ Venta encontrada: ID ${id} con ${articulos.length} artículos`);
         
+        const ventaNormalizada = normalizarTotalesVenta(ventas[0]);
         res.json({
             success: true,
             data: {
-                venta: ventas[0],
+                venta: ventaNormalizada,
                 articulos
             }
         });
@@ -514,7 +564,7 @@ const anularVenta = async (req, res) => {
             );
             
             const saldoAnteriorValor = parseFloat(saldoActual[0]?.saldo) || 0;
-            const montoVenta = parseFloat(datosAnteriores.total);
+            const montoVenta = parseFloat(datosAnteriores.subtotal) || parseFloat(datosAnteriores.total) || 0;
             const saldoNuevoValor = saldoAnteriorValor - montoVenta;
             
             // Actualizar saldo (restar el ingreso)
@@ -553,7 +603,7 @@ const anularVenta = async (req, res) => {
             detallesAdicionales: `Venta anulada - Total: $${datosAnteriores.total}${motivo ? ` - Motivo: ${motivo}` : ''}`
         });
         
-        console.log(`✅ Venta anulada: ID ${id} - $${datosAnteriores.total}`);
+        console.log(`✅ Venta anulada: ID ${id} - $${montoVenta}`);
         
         res.json({
             success: true,
@@ -561,7 +611,7 @@ const anularVenta = async (req, res) => {
             data: {
                 id: parseInt(id),
                 estado: 'ANULADA',
-                total_revertido: parseFloat(datosAnteriores.total),
+                total_revertido: montoVenta,
                 articulos_restaurados: articulos.length
             }
         });
@@ -616,9 +666,9 @@ const obtenerResumenVentas = async (req, res) => {
                 COUNT(*) as total_ventas,
                 SUM(CASE WHEN estado = 'FACTURADA' THEN 1 ELSE 0 END) as ventas_facturadas,
                 SUM(CASE WHEN estado = 'ANULADA' THEN 1 ELSE 0 END) as ventas_anuladas,
-                COALESCE(SUM(CASE WHEN estado = 'FACTURADA' THEN total ELSE 0 END), 0) as monto_facturado,
-                COALESCE(SUM(CASE WHEN estado = 'ANULADA' THEN total ELSE 0 END), 0) as monto_anulado,
-                COALESCE(AVG(CASE WHEN estado = 'FACTURADA' THEN total ELSE NULL END), 0) as ticket_promedio
+                COALESCE(SUM(CASE WHEN estado = 'FACTURADA' THEN subtotal ELSE 0 END), 0) as monto_facturado,
+                COALESCE(SUM(CASE WHEN estado = 'ANULADA' THEN subtotal ELSE 0 END), 0) as monto_anulado,
+                COALESCE(AVG(CASE WHEN estado = 'FACTURADA' THEN subtotal ELSE NULL END), 0) as ticket_promedio
             FROM ventas v
             WHERE ${whereClause}
         `;
@@ -630,7 +680,7 @@ const obtenerResumenVentas = async (req, res) => {
             SELECT 
                 v.medio_pago,
                 COUNT(*) as cantidad,
-                SUM(v.total) as monto_total
+                SUM(v.subtotal) as monto_total
             FROM ventas v
             WHERE ${whereClause} AND v.estado = 'FACTURADA'
             GROUP BY v.medio_pago
@@ -644,7 +694,7 @@ const obtenerResumenVentas = async (req, res) => {
             SELECT 
                 DATE(v.fecha) as fecha,
                 COUNT(*) as cantidad,
-                SUM(v.total) as monto_total
+                SUM(v.subtotal) as monto_total
             FROM ventas v
             WHERE ${whereClause} AND v.estado = 'FACTURADA'
             GROUP BY DATE(v.fecha)

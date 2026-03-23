@@ -7,8 +7,12 @@ const {
     crearArticulo,
     actualizarArticulo,
     eliminarArticulo,
+    obtenerAdicionalesPorArticulo,
+    asignarAdicionalesAArticulo,
+    eliminarAdicionalDeArticulo,
     uploadImagen,
-    uploadSingle
+    uploadSingle,
+    calcularCostoArticuloElaborado
 } = require('../controllers/articulosController');
 
 const { authenticateToken } = require('../middlewares/authMiddleware');
@@ -44,6 +48,9 @@ router.get('/', apiRateLimiter, authenticateToken, obtenerArticulos);
 // Obtener un artículo por ID
 router.get('/:id', apiRateLimiter, authenticateToken, obtenerArticuloPorId);
 
+// Calcular costo interno de un artículo elaborado
+router.get('/:id/costo', apiRateLimiter, authenticateToken, calcularCostoArticuloElaborado);
+
 // Crear nuevo artículo
 router.post('/', apiRateLimiter, authenticateToken, crearArticulo);
 
@@ -52,5 +59,10 @@ router.put('/:id', apiRateLimiter, authenticateToken, actualizarArticulo);
 
 // Eliminar artículo (soft delete)
 router.delete('/:id', apiRateLimiter, authenticateToken, eliminarArticulo);
+
+// Adicionales vinculados a artículo
+router.get('/:id/adicionales', apiRateLimiter, authenticateToken, obtenerAdicionalesPorArticulo);
+router.post('/:id/adicionales', apiRateLimiter, authenticateToken, asignarAdicionalesAArticulo);
+router.delete('/:id/adicionales/:adicionalId', apiRateLimiter, authenticateToken, eliminarAdicionalDeArticulo);
 
 module.exports = router;
