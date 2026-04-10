@@ -14,8 +14,17 @@ const {
   proxyImagenArticulo,
 } = require('../controllers/articulosController');
 const { crearPedidoCarta } = require('../controllers/cartaPublicaPedidosController');
+const {
+  crearCheckoutMercadoPagoController,
+  obtenerEstadoPagoPedidoController,
+  webhookMercadoPagoController
+} = require('../controllers/cartaPublicaCheckoutController');
 const { apiRateLimiter } = require('../middlewares/rateLimitMiddleware');
-const { crearPedidoCartaSchema, validate } = require('../validators/cartaPublicaPedidosValidators');
+const {
+  crearPedidoCartaSchema,
+  checkoutMercadoPagoSchema,
+  validate
+} = require('../validators/cartaPublicaPedidosValidators');
 
 /** Añade imagen_url_cacheable (URL estable para cache) a artículos */
 const addCacheableImageUrl = (articulo) => ({
@@ -54,5 +63,14 @@ router.get('/articulos/:id', apiRateLimiter, async (req, res) => {
 
 // POST /carta-publica/pedidos - Crear pedido desde carta online (público)
 router.post('/pedidos', apiRateLimiter, validate(crearPedidoCartaSchema), crearPedidoCarta);
+
+// GET /carta-publica/pedidos/:pedidoId/estado-pago - Estado de pago post-checkout (público, solo pedidos WEB)
+router.get('/pedidos/:pedidoId/estado-pago', apiRateLimiter, obtenerEstadoPagoPedidoController);
+
+// POST /carta-publica/checkout/mercadopago - Crear pedido + preferencia Checkout Pro
+router.post('/checkout/mercadopago', apiRateLimiter, validate(checkoutMercadoPagoSchema), crearCheckoutMercadoPagoController);
+
+// POST /carta-publica/checkout/mercadopago/webhook - Webhook de Mercado Pago
+router.post('/checkout/mercadopago/webhook', webhookMercadoPagoController);
 
 module.exports = router;

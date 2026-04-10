@@ -59,6 +59,11 @@ DB_PORT=3306
 
 JWT_SECRET=tu_secret
 PORT=3001
+
+# Carta online + Mercado Pago
+CARTA_FRONTEND_URL=http://localhost:3000
+BACKEND_URL=http://localhost:3001
+MP_ACCESS_TOKEN=TEST-xxxxxxxxxxxxxxxxxxxx
 ```
 
 > Recomendacion: no subir secretos ni credenciales reales al repositorio.
@@ -192,6 +197,16 @@ http://localhost:3001
 - `GET /pedidos/:id/comanda-print`
 - `GET /pedidos/:id/ticket-print`
 - `GET /pedidos/capacidad`
+
+**Carta publica (`/carta-publica` y `/api/carta-publica`)**
+
+- `GET /carta-publica/categorias`
+- `GET /carta-publica/articulos`
+- `GET /carta-publica/articulos/:id`
+- `GET /carta-publica/articulos/:id/adicionales`
+- `POST /carta-publica/pedidos`
+- `POST /api/carta-publica/checkout/mercadopago`
+- `POST /api/carta-publica/checkout/mercadopago/webhook`
 
 **Comandas (`/comandas`)**
 

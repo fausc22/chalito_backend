@@ -12,22 +12,14 @@ const db = require('./dbPromise');
 const TimeCalculationService = require('../services/TimeCalculationService');
 const KitchenCapacityService = require('../services/KitchenCapacityService');
 const { OrderQueueEngine } = require('../services/OrderQueueEngine');
+const { pedidoEstaHabilitadoOperativamente } = require('../services/pedidoOperativoHelper');
+const { validateMontoConCuantoAbonaEfectivo } = require('../services/montoConCuantoAbonaRules');
 const { validarExtrasNoDobleYTriple, construirPersonalizaciones } = require('../services/PersonalizacionesService');
 const { parseScheduledTime } = require('../services/ScheduledTimeParser');
 const { isStoreOpen, isValidScheduledDateTime, getNowInStoreTimezone } = require('../services/storeScheduleService');
 const { isStoreHoursValidationEnabled } = require('../config/storeHoursConfig');
-const { OrderQueueEngine: QueueEngine } = require('../services/OrderQueueEngine');
-
-const normalizarTotalesPedido = (pedido = {}) => {
-    const subtotal = parseFloat(pedido.subtotal) || 0;
-    return {
-        ...pedido,
-        subtotal,
-        iva_total: 0,
-        costo_envio: 0,
-        total: subtotal
-    };
-};
+const { enrichPedidoRealtime, buildPedidoSnapshotById } = require('../services/pedidoRealtimeSerializer');
+const { calcularTotalesDesdePrecioFinal } = require('../services/totalesPrecioFinal');
 
 function parseMontoConCuantoAbona(value) {
     if (value === null || value === undefined) return null;
@@ -240,9 +232,20 @@ const crearPedidoCarta = async (req, res) => {
             });
         }
 
-        const subtotalPedido = articulosNormalizados.reduce((sum, a) => sum + a.subtotal, 0);
-        const ivaTotal = 0;
-        const total = subtotalPedido;
+        const totalBase = articulosNormalizados.reduce((sum, a) => sum + a.subtotal, 0);
+        const { subtotal: subtotalPedido, iva_total: ivaTotal, total } = calcularTotalesDesdePrecioFinal(totalBase);
+
+        if (medioPagoNormalizado === 'EFECTIVO') {
+            const validacionMonto = validateMontoConCuantoAbonaEfectivo(montoConCuantoAbona, total);
+            if (!validacionMonto.ok) {
+                await connection.rollback();
+                return res.status(400).json({
+                    success: false,
+                    message: validacionMonto.message,
+                    code: validacionMonto.code
+                });
+            }
+        }
 
         const tiempoPlaceholder = 15;
         let horaInicioPreparacion = null;
@@ -257,7 +260,7 @@ const crearPedidoCarta = async (req, res) => {
                 origen_pedido, subtotal, iva_total, total, medio_pago, estado_pago, modalidad, horario_entrega,
                 estado, observaciones, monto_con_cuanto_abona, usuario_id, usuario_nombre,
                 prioridad, tiempo_estimado_preparacion, hora_inicio_preparacion, transicion_automatica
-            ) VALUES (NOW(), ?, ?, ?, ?, 'WEB', ?, ?, ?, ?, 'DEBE', ?, ?, 'RECIBIDO', ?, ?, NULL, NULL, ?, ?, ?, ?)
+            ) VALUES (NOW(), ?, ?, ?, ?, 'WEB', ?, ?, ?, ?, 'PENDIENTE', ?, ?, 'RECIBIDO', ?, ?, NULL, NULL, ?, ?, ?, ?)
         `;
 
         const pedidoValues = [
@@ -326,19 +329,19 @@ const crearPedidoCarta = async (req, res) => {
         let estadoFinal = 'RECIBIDO';
         let enPreparacionAuto = false;
 
-        const pedidoRecienCreado = {
-            origen_pedido: 'WEB',
-            medio_pago: paymentMethod,
-            estado_pago: 'DEBE'
-        };
-        const bloquearAutomatizacionPorPagoPendiente = QueueEngine.esPedidoWebPagoDigitalPendiente(pedidoRecienCreado);
+        const [filasOperativo] = await db.execute(
+            'SELECT origen_pedido, medio_pago, estado_pago FROM pedidos WHERE id = ?',
+            [pedidoId]
+        );
+        const puedeEntrarACocinaAutomatico = filasOperativo.length > 0
+            && pedidoEstaHabilitadoOperativamente(filasOperativo[0]);
 
-        if (!esHoraProgramada && !bloquearAutomatizacionPorPagoPendiente) {
+        if (!esHoraProgramada && puedeEntrarACocinaAutomatico) {
             try {
                 const hayCapacidad = await KitchenCapacityService.hayCapacidadDisponible();
                 if (hayCapacidad) {
                     await connection.beginTransaction();
-                    OrderQueueEngine.moverPedidoAPreparacion(connection, pedidoId);
+                    await OrderQueueEngine.moverPedidoAPreparacion(connection, pedidoId);
                     await connection.commit();
                     estadoFinal = 'EN_PREPARACION';
                     enPreparacionAuto = true;
@@ -357,8 +360,8 @@ const crearPedidoCarta = async (req, res) => {
                 try { await connection.rollback(); } catch (_) { /* ignorar */ }
                 console.error('⚠️ [cartaPublica] Error al evaluar EN_PREPARACION automático (pedido queda RECIBIDO, worker lo procesará):', err.message);
             }
-        } else if (bloquearAutomatizacionPorPagoPendiente) {
-            console.log(`💳 [cartaPublica] Pedido #${pedidoId} WEB con pago digital pendiente: se bloquea automatización hasta estado_pago=PAGADO`);
+        } else if (!puedeEntrarACocinaAutomatico) {
+            console.log(`💳 [cartaPublica] Pedido #${pedidoId}: bloqueado para cocina automática hasta pago acreditado (MP / transferencia web).`);
         }
 
         // Emitir evento WebSocket para admin (estado final)
@@ -370,13 +373,18 @@ const crearPedidoCarta = async (req, res) => {
                     const { getInstance: getSocketService } = require('../services/SocketService');
                     const socketService = getSocketService(io);
                     if (socketService) {
-                        socketService.emitPedidoCreado(normalizarTotalesPedido({ id: pedidoId, ...pedidoCreado[0] }));
+                        const snapshot = await buildPedidoSnapshotById({
+                            pedidoId,
+                            connection: db,
+                            includeArticulos: true
+                        });
+                        socketService.emitPedidoCreado(snapshot || enrichPedidoRealtime({ id: pedidoId, ...pedidoCreado[0] }));
                         if (enPreparacionAuto) {
                             socketService.emitPedidoEstadoCambiado(
                                 pedidoId,
                                 'RECIBIDO',
                                 'EN_PREPARACION',
-                                normalizarTotalesPedido(pedidoCreado[0])
+                                snapshot || enrichPedidoRealtime(pedidoCreado[0])
                             );
                             const infoCapacidad = await KitchenCapacityService.obtenerInfoCapacidad();
                             socketService.emitCapacidadActualizada(infoCapacidad);
@@ -393,8 +401,7 @@ const crearPedidoCarta = async (req, res) => {
             pedidoId,
             estadoFinal,
             subtotal: parseFloat(subtotalPedido),
-            iva_total: 0,
-            costo_envio: 0,
+            iva_total: parseFloat(ivaTotal),
             total: parseFloat(total),
             enPreparacionAuto,
             modalidadEntrega: esHoraProgramada ? 'HORA_PROGRAMADA' : 'CUANTO_ANTES'

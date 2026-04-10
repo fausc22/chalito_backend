@@ -2,6 +2,11 @@ const db = require('../controllers/dbPromise');
 const KitchenCapacityService = require('./KitchenCapacityService');
 const TimeCalculationService = require('./TimeCalculationService');
 const TimeLearningService = require('./TimeLearningService');
+const {
+    pedidoEstaHabilitadoOperativamente,
+    SQL_AND_PEDIDO_HABILITADO_OPERATIVAMENTE
+} = require('./pedidoOperativoHelper');
+const { buildPedidoSnapshotById } = require('./pedidoRealtimeSerializer');
 
 // Variable global para acceso a io desde el worker
 let globalIo = null;
@@ -27,8 +32,7 @@ class OrderQueueEngine {
 
     static esPedidoWebPagoDigitalPendiente(pedido) {
         if (!this.esPedidoWebPagoDigital(pedido)) return false;
-        const estadoPago = String(pedido.estado_pago || 'DEBE').trim().toUpperCase();
-        return estadoPago !== 'PAGADO';
+        return !pedidoEstaHabilitadoOperativamente(pedido);
     }
 
     /**
@@ -90,7 +94,8 @@ class OrderQueueEngine {
                         SUM(CASE WHEN transicion_automatica = FALSE THEN 1 ELSE 0 END) AS pendientes_manuales
                      FROM pedidos
                      WHERE DATE(fecha) = CURDATE()
-                       AND estado IN ('RECIBIDO', 'PROGRAMADO', 'programado')`
+                       AND estado IN ('RECIBIDO', 'PROGRAMADO', 'programado')
+                       ${SQL_AND_PEDIDO_HABILITADO_OPERATIVAMENTE}`
                 );
                 const row = stats[0] || {};
                 console.log(
@@ -137,11 +142,7 @@ class OrderQueueEngine {
                      WHERE estado IN ('RECIBIDO', 'PROGRAMADO', 'programado')
                        AND transicion_automatica = TRUE -- Solo pedidos gestionados por el flujo automático (excluye adelantados manualmente)
                        AND DATE(fecha) = CURDATE()
-                       AND NOT (
-                            UPPER(COALESCE(origen_pedido, '')) = 'WEB'
-                            AND UPPER(COALESCE(medio_pago, '')) IN ('TRANSFERENCIA', 'MERCADOPAGO')
-                            AND UPPER(COALESCE(estado_pago, 'DEBE')) <> 'PAGADO'
-                       )
+                       ${SQL_AND_PEDIDO_HABILITADO_OPERATIVAMENTE}
                        AND (
                             -- Pedidos "cuanto antes": procesar cuando haya capacidad
                             horario_entrega IS NULL
@@ -209,13 +210,17 @@ class OrderQueueEngine {
                     // Obtener pedidos actualizados para emitir eventos
                     // Nota: Usamos db.execute directamente ya que la transacción se cerró
                     for (const pedido of pedidosPendientes.slice(0, procesados)) {
-                        const [pedidoActualizado] = await db.execute('SELECT * FROM pedidos WHERE id = ?', [pedido.id]);
-                        if (pedidoActualizado.length > 0) {
+                        const pedidoActualizado = await buildPedidoSnapshotById({
+                            pedidoId: pedido.id,
+                            connection: db,
+                            includeArticulos: true
+                        });
+                        if (pedidoActualizado) {
                             socketService.emitPedidoEstadoCambiado(
                                 pedido.id,
                                 pedido.estado || 'RECIBIDO',
                                 'EN_PREPARACION',
-                                pedidoActualizado[0]
+                                pedidoActualizado
                             );
                         }
                     }
@@ -245,6 +250,17 @@ class OrderQueueEngine {
      */
     static async moverPedidoAPreparacion(connection, pedidoId) {
         try {
+            const [pedidoGate] = await connection.execute(
+                'SELECT medio_pago, estado_pago, origen_pedido FROM pedidos WHERE id = ?',
+                [pedidoId]
+            );
+            if (pedidoGate.length === 0) {
+                throw new Error(`Pedido #${pedidoId} no encontrado`);
+            }
+            if (!pedidoEstaHabilitadoOperativamente(pedidoGate[0])) {
+                throw new Error(`Pedido #${pedidoId} no habilitado para cocina (pago pendiente)`);
+            }
+
             const ahora = new Date();
 
             // Calcular tiempo dinámico al momento de entrar a EN_PREPARACION.
@@ -258,15 +274,22 @@ class OrderQueueEngine {
             );
             
             // Actualizar pedido
-            await connection.execute(
+            const [updateResult] = await connection.execute(
                 `UPDATE pedidos 
                  SET estado = 'EN_PREPARACION',
                      hora_inicio_preparacion = ?,
                      tiempo_estimado_preparacion = ?,
-                     hora_esperada_finalizacion = ?
-                 WHERE id = ?`,
+                     hora_esperada_finalizacion = ?,
+                     fecha_modificacion = NOW()
+                 WHERE id = ?
+                   AND estado IN ('RECIBIDO', 'PROGRAMADO', 'programado')`,
                 [ahora, tiempoEstimado, horaEsperadaFinalizacion, pedidoId]
             );
+
+            if (!updateResult || updateResult.affectedRows === 0) {
+                console.log(`ℹ️ [OrderQueueEngine] Pedido #${pedidoId} no se movió (estado cambió antes de aplicar worker)`);
+                return;
+            }
             
             console.log(`✅ [OrderQueueEngine] Pedido #${pedidoId} movido a EN_PREPARACION (esperado listo: ${horaEsperadaFinalizacion.toLocaleString()})`);
             

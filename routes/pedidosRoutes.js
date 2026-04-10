@@ -25,6 +25,7 @@ const {
     actualizarObservacionesSchema,
     agregarArticuloSchema,
     editarPedidoCompletoSchema,
+    cobrarPedidoSchema,
     validate,
     validateParams,
     idParamSchema
@@ -69,7 +70,7 @@ router.post(
 );
 
 // Cobrar pedido (cualquier estado excepto CANCELADO)
-router.post('/:id/cobrar', apiRateLimiter, authenticateToken, validateParams(idParamSchema), cobrarPedido);
+router.post('/:id/cobrar', apiRateLimiter, authenticateToken, validateParams(idParamSchema), validate(cobrarPedidoSchema), cobrarPedido);
 
 // Actualizar observaciones de pedido
 router.put('/:id/observaciones', apiRateLimiter, authenticateToken, validateParams(idParamSchema), validate(actualizarObservacionesSchema), actualizarObservaciones);

@@ -71,6 +71,45 @@ const crearPedidoCartaSchema = z.object({
     }
 });
 
+const checkoutMercadoPagoSchema = z.object({
+    cliente: z.object({
+        nombre: z.string().trim().min(1, 'cliente.nombre es requerido').max(150),
+        telefono: z.string().trim().min(1, 'cliente.telefono es requerido').max(50),
+        email: z.string().email('cliente.email inválido').max(100).optional().nullable(),
+        direccion: z.string().trim().max(255).optional().nullable()
+    }),
+    pedido: z.object({
+        modalidad: z.enum(['DELIVERY', 'RETIRO'], {
+            errorMap: () => ({ message: 'pedido.modalidad debe ser DELIVERY o RETIRO' })
+        }),
+        observaciones: z.string().max(255).optional().nullable(),
+        horario_entrega: z.string().optional().nullable(),
+        prioridad: z.enum(['NORMAL', 'ALTA']).optional().default('ALTA'),
+        medio_pago: z.literal('MERCADOPAGO', {
+            errorMap: () => ({ message: 'pedido.medio_pago debe ser MERCADOPAGO' })
+        })
+    }),
+    items: z.array(z.object({
+        articulo_id: z.coerce.number().int().positive('items.articulo_id debe ser un número positivo'),
+        cantidad: z.coerce.number().int().positive('items.cantidad debe ser mayor a 0'),
+        observaciones: z.string().max(255).optional().nullable(),
+        extras: z.array(z.object({
+            id: z.coerce.number().int().positive('extras.id debe ser un número positivo')
+        })).optional().default([])
+    })).min(1, 'Debe incluir al menos un item')
+}).superRefine((data, ctx) => {
+    const modalidad = String(data?.pedido?.modalidad || '').toUpperCase();
+    const direccion = data?.cliente?.direccion;
+
+    if (modalidad === 'DELIVERY' && (!direccion || !String(direccion).trim())) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['cliente', 'direccion'],
+            message: 'cliente.direccion es obligatoria cuando pedido.modalidad es DELIVERY'
+        });
+    }
+});
+
 const validate = (schema) => (req, res, next) => {
     try {
         const parsed = schema.parse(req.body);
@@ -91,5 +130,6 @@ const validate = (schema) => (req, res, next) => {
 
 module.exports = {
     crearPedidoCartaSchema,
+    checkoutMercadoPagoSchema,
     validate
 };

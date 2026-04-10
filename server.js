@@ -237,6 +237,7 @@ app.use('/configuracion-sistema', configuracionRoutes);
 app.use('/health', healthRoutes);
 app.use('/metrics', metricsRoutes);
 app.use('/carta-publica', cartaPublicaRoutes);
+app.use('/api/carta-publica', cartaPublicaRoutes);
 app.use('/fondos', fondosRoutes);
 app.use('/gastos', gastosRoutes);
 

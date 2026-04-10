@@ -1,5 +1,17 @@
 const { z } = require('zod');
 
+const ESTADOS_PAGO_PEDIDO = ['PENDIENTE', 'PAGADO', 'RECHAZADO', 'CANCELADO'];
+const estadoPagoPedidoSchema = z
+    .union([
+        z.enum(ESTADOS_PAGO_PEDIDO, {
+            errorMap: () => ({
+                message: 'Estado de pago inválido. Valores: PENDIENTE, PAGADO, RECHAZADO, CANCELADO'
+            })
+        }),
+        z.literal('DEBE')
+    ])
+    .transform((v) => (v === 'DEBE' ? 'PENDIENTE' : v));
+
 // Schema para personalizaciones (JSON)
 // Acepta objeto, null o undefined
 const personalizacionesSchema = z.record(z.any()).optional().nullable();
@@ -36,13 +48,8 @@ const crearPedidoSchema = z.object({
     origen_pedido: z.enum(['MOSTRADOR', 'TELEFONO', 'WHATSAPP', 'WEB'], {
         errorMap: () => ({ message: 'Origen de pedido inválido. Los valores permitidos son: MOSTRADOR, TELEFONO, WHATSAPP, WEB' })
     }).default('MOSTRADOR'),
-    subtotal: z.number().nonnegative('El subtotal debe ser mayor o igual a 0').default(0),
-    iva_total: z.number().nonnegative('El IVA debe ser mayor o igual a 0').default(0),
-    total: z.number().nonnegative('El total debe ser mayor o igual a 0').optional(),
     medio_pago: z.string().max(50).optional().nullable(),
-    estado_pago: z.enum(['DEBE', 'PAGADO'], {
-        errorMap: () => ({ message: 'Estado de pago inválido. Los valores permitidos son: DEBE, PAGADO' })
-    }).default('DEBE'),
+    estado_pago: estadoPagoPedidoSchema.default('PENDIENTE'),
     modalidad: z.enum(['DELIVERY', 'RETIRO'], {
         errorMap: () => ({ message: 'La modalidad debe ser DELIVERY o RETIRO' })
     }),
@@ -103,16 +110,18 @@ const editarPedidoCompletoSchema = z.object({
         errorMap: () => ({ message: 'Modalidad debe ser DELIVERY o RETIRO' })
     }).optional(),
     horario_entrega: z.string().datetime().optional().nullable(),
-    estado_pago: z.enum(['DEBE', 'PAGADO'], {
-        errorMap: () => ({ message: 'Estado de pago inválido. Valores: DEBE, PAGADO' })
-    }).optional(),
+    estado_pago: estadoPagoPedidoSchema.optional(),
     medio_pago: z.string().max(50).optional().nullable(),
     observaciones: z.string().max(255).optional().nullable(),
-    subtotal: z.number().nonnegative().optional(),
-    iva_total: z.number().nonnegative().optional(),
-    total: z.number().nonnegative().optional(),
     // Items OBLIGATORIOS (siempre se reemplaza pedidos_contenido)
     articulos: z.array(pedidoContenidoSchema).min(1, 'Debe incluir al menos un artículo')
+});
+
+const cobrarPedidoSchema = z.object({
+    medio_pago: z.string().max(50).optional().nullable(),
+    cuenta_id: z.number().int().positive('cuenta_id debe ser un número positivo').optional().nullable(),
+    tipo_factura: z.string().length(1).optional().nullable(),
+    descuento: z.number().nonnegative('El descuento debe ser mayor o igual a 0').optional().default(0)
 });
 
 // Middleware de validación genérico
@@ -173,6 +182,7 @@ module.exports = {
     agregarArticuloSchema,
     actualizarArticuloPedidoSchema,
     editarPedidoCompletoSchema,
+    cobrarPedidoSchema,
     pedidoContenidoSchema,
     idParamSchema,
     validate,

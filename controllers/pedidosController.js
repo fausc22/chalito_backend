@@ -5,17 +5,15 @@ const PrintService = require('../services/PrintService');
 const TimeCalculationService = require('../services/TimeCalculationService');
 const { validarExtrasNoDobleYTriple, construirPersonalizaciones } = require('../services/PersonalizacionesService');
 const { OrderQueueEngine } = require('../services/OrderQueueEngine');
-
-const normalizarTotalesPedido = (pedido = {}) => {
-    const subtotal = parseFloat(pedido.subtotal) || 0;
-    return {
-        ...pedido,
-        subtotal,
-        iva_total: 0,
-        costo_envio: 0,
-        total: subtotal
-    };
-};
+const {
+    pedidoEstaHabilitadoOperativamente,
+    esEstadoAvanceOperativoCocina
+} = require('../services/pedidoOperativoHelper');
+const {
+    enrichPedidoRealtime,
+    buildPedidoSnapshotById
+} = require('../services/pedidoRealtimeSerializer');
+const { calcularTotalesDesdePrecioFinal, obtenerTotalFinalDesdeRegistro } = require('../services/totalesPrecioFinal');
 
 const PRESENTACIONES_VALIDAS = new Set(['SIMPLE', 'DOBLE', 'TRIPLE']);
 
@@ -151,11 +149,8 @@ const crearPedido = async (req, res) => {
                 throw new Error('El pedido debe incluir al menos un artículo');
             }
 
-            // Si los totales no vinieron, calcularlos desde los artículos normalizados
-            const subtotalCalculado = articulosNormalizados.reduce((sum, articulo) => sum + (parseFloat(articulo.subtotal) || 0), 0);
-            const subtotalFinal = pedidoData.subtotal !== undefined ? parseFloat(pedidoData.subtotal) || 0 : subtotalCalculado;
-            const ivaFinal = 0;
-            const totalFinal = subtotalFinal;
+            const totalBase = articulosNormalizados.reduce((sum, articulo) => sum + (parseFloat(articulo.subtotal) || 0), 0);
+            const { subtotal: subtotalFinal, iva_total: ivaFinal, total: totalFinal } = calcularTotalesDesdePrecioFinal(totalBase);
             
             // Determinar prioridad (ALTA si no tiene horario_entrega, NORMAL si es programado)
             const prioridad = pedidoData.horario_entrega ? 'NORMAL' : 'ALTA';
@@ -188,7 +183,7 @@ const crearPedido = async (req, res) => {
                 ivaFinal,
                 totalFinal,
                 pedidoData.medio_pago,
-                pedidoData.estado_pago || 'DEBE',
+                pedidoData.estado_pago || 'PENDIENTE',
                 pedidoData.modalidad,
                 pedidoData.horario_entrega ? new Date(pedidoData.horario_entrega) : null,
                 pedidoData.estado || 'RECIBIDO',
@@ -245,8 +240,12 @@ const crearPedido = async (req, res) => {
             
             await connection.commit();
             
-            // Obtener pedido creado para emitir evento WebSocket
-            const [pedidoCreado] = await connection.execute('SELECT * FROM pedidos WHERE id = ?', [pedidoId]);
+            // Snapshot consistente post-commit para respuesta y sockets
+            const pedidoCreado = await buildPedidoSnapshotById({
+                pedidoId,
+                connection,
+                includeArticulos: true
+            });
             
             // Auditoría
             await auditarOperacion(req, {
@@ -259,11 +258,11 @@ const crearPedido = async (req, res) => {
             
             // Emitir evento WebSocket (Fase 3)
             const io = req.app.get('io');
-            if (io && pedidoCreado.length > 0) {
+            if (io && pedidoCreado) {
                 const { getInstance: getSocketService } = require('../services/SocketService');
                 const socketService = getSocketService(io);
                 if (socketService) {
-                    socketService.emitPedidoCreado(normalizarTotalesPedido({ id: pedidoId, ...pedidoCreado[0] }));
+                    socketService.emitPedidoCreado(pedidoCreado);
                 }
             }
             
@@ -294,7 +293,7 @@ const crearPedido = async (req, res) => {
             res.status(201).json({
                 success: true,
                 message: 'Pedido creado exitosamente',
-                data: normalizarTotalesPedido({
+                data: pedidoCreado || enrichPedidoRealtime({
                     id: pedidoId,
                     ...pedidoData,
                     subtotal: subtotalFinal,
@@ -338,24 +337,24 @@ const obtenerPedidos = async (req, res) => {
         if (estado) {
             query += ' AND estado = ?';
             params.push(estado);
-            
-            // EN_PREPARACION: solo del día (flujo operativo diario)
-            // LISTO: últimos 7 días (estado operativo, NO cierre; puede estar pendiente cobro/entregar)
-            if (estado === 'EN_PREPARACION') {
-                query += ' AND DATE(fecha) = CURDATE()';
-            } else if (estado === 'LISTO') {
+
+            // Los estados activos deben permanecer visibles de manera estable:
+            // no se restringen por día para evitar "limbos" durante transiciones.
+            if (estado === 'LISTO') {
                 query += ' AND DATE(fecha) >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)';
+            } else if (estado === 'ENTREGADO' || estado === 'CANCELADO') {
+                query += ' AND DATE(COALESCE(fecha_modificacion, fecha)) >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)';
             }
         } else {
             // Regla: LISTO es solo estado operativo de cocina, NO cierre del pedido.
             // El pedido solo se considera finalizado cuando estado=ENTREGADO (y estado_pago=PAGADO).
-            // - RECIBIDO, EN_PREPARACION: flujo del día actual
+            // - RECIBIDO, EN_PREPARACION: siempre visibles mientras estén activos
             // - LISTO: visible últimos 7 días (pendiente cobro o pendiente entregar)
             // - ENTREGADO, CANCELADO: finalizados, últimos 7 días
             query += ` AND (
-                (estado IN ('RECIBIDO', 'EN_PREPARACION') AND DATE(fecha) = CURDATE())
+                (estado IN ('RECIBIDO', 'EN_PREPARACION', 'PROGRAMADO', 'programado'))
                 OR (estado = 'LISTO' AND DATE(fecha) >= DATE_SUB(CURDATE(), INTERVAL 7 DAY))
-                OR (estado IN ('ENTREGADO', 'CANCELADO') AND DATE(fecha) >= DATE_SUB(CURDATE(), INTERVAL 7 DAY))
+                OR (estado IN ('ENTREGADO', 'CANCELADO') AND DATE(COALESCE(fecha_modificacion, fecha)) >= DATE_SUB(CURDATE(), INTERVAL 7 DAY))
             )`;
         }
         
@@ -377,7 +376,7 @@ const obtenerPedidos = async (req, res) => {
         query += ' ORDER BY fecha DESC';
         
         const [pedidos] = await db.execute(query, params);
-        const pedidosNormalizados = pedidos.map(normalizarTotalesPedido);
+        const pedidosNormalizados = pedidos.map(enrichPedidoRealtime);
         
         res.json({
             success: true,
@@ -415,7 +414,7 @@ const obtenerPedidoPorId = async (req, res) => {
             );
 
             const articulosNormalizados = articulos.map(normalizarItemPedidoParaDetalle);
-            const pedidoCompleto = normalizarTotalesPedido({ ...pedidos[0], articulos: articulosNormalizados });
+            const pedidoCompleto = enrichPedidoRealtime({ ...pedidos[0], articulos: articulosNormalizados });
             res.json({
                 success: true,
                 data: pedidoCompleto
@@ -447,6 +446,18 @@ const actualizarEstadoPedido = async (req, res) => {
                 return res.status(404).json({
                     success: false,
                     message: 'Pedido no encontrado'
+                });
+            }
+
+            if (estado !== datosAnteriores.estado
+                && esEstadoAvanceOperativoCocina(estado)
+                && !pedidoEstaHabilitadoOperativamente(datosAnteriores)) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'El pedido tiene el pago pendiente (Mercado Pago o transferencia web sin acreditar). No puede avanzar en cocina hasta estar PAGADO.',
+                    code: 'PEDIDO_BLOQUEADO_POR_PAGO',
+                    medio_pago: datosAnteriores.medio_pago,
+                    estado_pago: datosAnteriores.estado_pago
                 });
             }
             
@@ -524,7 +535,7 @@ const actualizarEstadoPedido = async (req, res) => {
             }
             
             // Actualizar estado
-            let updateQuery = 'UPDATE pedidos SET estado = ?';
+            let updateQuery = 'UPDATE pedidos SET estado = ?, fecha_modificacion = NOW()';
             const updateParams = [estado];
             
             // ✅ Si el estado cambia a LISTO, registrar hora_listo
@@ -551,7 +562,7 @@ const actualizarEstadoPedido = async (req, res) => {
                 // Registrar hora_inicio_preparacion si no está ya registrada
                 const ahora = new Date();
                 await connection.execute(
-                    'UPDATE pedidos SET hora_inicio_preparacion = ? WHERE id = ? AND hora_inicio_preparacion IS NULL',
+                    'UPDATE pedidos SET hora_inicio_preparacion = ?, fecha_modificacion = NOW() WHERE id = ? AND hora_inicio_preparacion IS NULL',
                     [ahora, id]
                 );
                 
@@ -566,7 +577,7 @@ const actualizarEstadoPedido = async (req, res) => {
                     const horaEsperadaFinalizacion = new Date(ahora.getTime() + tiempoEstimado * 60 * 1000);
                     
                     await connection.execute(
-                        'UPDATE pedidos SET hora_esperada_finalizacion = ? WHERE id = ?',
+                        'UPDATE pedidos SET hora_esperada_finalizacion = ?, fecha_modificacion = NOW() WHERE id = ?',
                         [horaEsperadaFinalizacion, id]
                     );
                 }
@@ -675,11 +686,13 @@ const actualizarEstadoPedido = async (req, res) => {
             }
             
             await connection.commit();
-            
-            // Obtener pedido completo actualizado (con articulos) para respuesta
-            const [pedRows] = await connection.execute('SELECT * FROM pedidos WHERE id = ?', [id]);
-            const [articulosRows] = await connection.execute('SELECT * FROM pedidos_contenido WHERE pedido_id = ?', [id]);
-            const pedidoActualizado = normalizarTotalesPedido({ ...pedRows[0], articulos: articulosRows });
+
+            // Obtener snapshot consistente post-commit para respuesta y eventos
+            const pedidoActualizado = await buildPedidoSnapshotById({
+                pedidoId: id,
+                connection,
+                includeArticulos: true
+            });
 
             // Auditoría
             await auditarOperacion(req, {
@@ -792,8 +805,8 @@ const actualizarObservaciones = async (req, res) => {
  *   - origen_pedido: 'MOSTRADOR'|'TELEFONO'|'WHATSAPP'|'WEB'
  *   - modalidad: 'DELIVERY'|'RETIRO'
  *   - horario_entrega: ISO datetime o null (pedido programado vs cuanto antes)
- *   - estado_pago: 'DEBE'|'PAGADO', medio_pago: string, observaciones: string
- *   - subtotal, iva_total, total: number (opcionales, se calculan desde articulos si faltan)
+ *   - estado_pago: 'PENDIENTE'|'PAGADO'|'RECHAZADO'|'CANCELADO', medio_pago: string, observaciones: string
+ *   - subtotal/iva_total/total: se calculan siempre en backend desde el precio final de los items
  *
  * @response { success: true, message, data: { ...pedido, articulos: [...] } }
  * @realtime Emite pedido:actualizado con pedido completo (pedido + articulos)
@@ -847,23 +860,15 @@ const actualizarPedido = async (req, res) => {
             horario_entrega = d.horario_entrega;
         }
 
-        const estado_pago = camposPedido.estado_pago !== undefined ? camposPedido.estado_pago : (d.estado_pago || 'DEBE');
+        const estado_pago = camposPedido.estado_pago !== undefined ? camposPedido.estado_pago : (d.estado_pago || 'PENDIENTE');
         const medio_pago = camposPedido.medio_pago !== undefined ? camposPedido.medio_pago : d.medio_pago;
         const observaciones = camposPedido.observaciones !== undefined ? camposPedido.observaciones : (d.observaciones || '');
 
-        // Calcular totales con IVA/envío desactivados temporalmente:
-        // total siempre igual al subtotal (suma de items)
-        let subtotal = camposPedido.subtotal;
-        if (subtotal === undefined) {
-            subtotal = 0;
-            for (const art of articulos) {
-                subtotal += parseFloat(art.subtotal) || 0;
-            }
-        } else {
-            subtotal = parseFloat(subtotal) || 0;
+        let totalBase = 0;
+        for (const art of articulos) {
+            totalBase += parseFloat(art.subtotal) || 0;
         }
-        const iva_total = 0;
-        const total = subtotal;
+        const { subtotal, iva_total, total } = calcularTotalesDesdePrecioFinal(totalBase);
 
         // hora_inicio_preparacion: recalcular si es pedido programado
         let hora_inicio_preparacion = d.hora_inicio_preparacion;
@@ -980,14 +985,10 @@ const actualizarPedido = async (req, res) => {
         await connection.commit();
 
         // 11. Obtener pedido completo actualizado
-        const [pedidosActualizados] = await connection.execute('SELECT * FROM pedidos WHERE id = ?', [id]);
-        const [articulosActualizados] = await connection.execute(
-            'SELECT * FROM pedidos_contenido WHERE pedido_id = ?',
-            [id]
-        );
-        const pedidoActualizado = normalizarTotalesPedido({
-            ...pedidosActualizados[0],
-            articulos: articulosActualizados
+        const pedidoActualizado = await buildPedidoSnapshotById({
+            pedidoId: id,
+            connection,
+            includeArticulos: true
         });
 
         // Auditoría
@@ -996,7 +997,7 @@ const actualizarPedido = async (req, res) => {
             tabla: 'pedidos',
             registroId: id,
             datosAnteriores: datosAnteriores,
-            datosNuevos: pedidosActualizados[0],
+            datosNuevos: pedidoActualizado,
             detallesAdicionales: `Pedido editado - Usuario: ${usuario.nombre || usuario.usuario || 'N/A'} - Items: ${articulos.length}`
         });
 
@@ -1160,9 +1161,8 @@ const agregarArticulo = async (req, res) => {
                 [id]
             );
             
-            const subtotalTotal = parseFloat(totales[0].subtotal_total) || 0;
-            const ivaTotal = 0;
-            const total = subtotalTotal;
+            const totalBase = parseFloat(totales[0].subtotal_total) || 0;
+            const { subtotal: subtotalTotal, iva_total: ivaTotal, total } = calcularTotalesDesdePrecioFinal(totalBase);
             
             await connection.execute(
                 'UPDATE pedidos SET subtotal = ?, iva_total = ?, total = ? WHERE id = ?',
@@ -1237,12 +1237,23 @@ const forzarEstadoPedido = async (req, res) => {
                 message: 'Pedido no encontrado'
             });
         }
+
+        if (esEstadoAvanceOperativoCocina(estado)
+            && !pedidoEstaHabilitadoOperativamente(datosAnteriores)) {
+            return res.status(400).json({
+                success: false,
+                message: 'El pedido tiene el pago pendiente (Mercado Pago o transferencia web sin acreditar). No puede forzar avance en cocina hasta estar PAGADO.',
+                code: 'PEDIDO_BLOQUEADO_POR_PAGO',
+                medio_pago: datosAnteriores.medio_pago,
+                estado_pago: datosAnteriores.estado_pago
+            });
+        }
         
         await connection.beginTransaction();
         
         // Actualizar estado sin validar capacidad (bypass)
         await connection.execute(
-            'UPDATE pedidos SET estado = ? WHERE id = ?',
+            'UPDATE pedidos SET estado = ?, fecha_modificacion = NOW() WHERE id = ?',
             [estado, id]
         );
         
@@ -1250,7 +1261,7 @@ const forzarEstadoPedido = async (req, res) => {
         if (estado === 'EN_PREPARACION' && datosAnteriores.estado !== 'EN_PREPARACION') {
             const ahora = new Date();
             await connection.execute(
-                'UPDATE pedidos SET hora_inicio_preparacion = ? WHERE id = ? AND hora_inicio_preparacion IS NULL',
+                'UPDATE pedidos SET hora_inicio_preparacion = ?, fecha_modificacion = NOW() WHERE id = ? AND hora_inicio_preparacion IS NULL',
                 [ahora, id]
             );
             
@@ -1264,7 +1275,7 @@ const forzarEstadoPedido = async (req, res) => {
                 const horaEsperadaFinalizacion = new Date(ahora.getTime() + tiempoEstimado * 60 * 1000);
                 
                 await connection.execute(
-                    'UPDATE pedidos SET hora_esperada_finalizacion = ? WHERE id = ?',
+                    'UPDATE pedidos SET hora_esperada_finalizacion = ?, fecha_modificacion = NOW() WHERE id = ?',
                     [horaEsperadaFinalizacion, id]
                 );
             }
@@ -1324,6 +1335,11 @@ const forzarEstadoPedido = async (req, res) => {
         }
         
         await connection.commit();
+        const pedidoActualizado = await buildPedidoSnapshotById({
+            pedidoId: id,
+            connection,
+            includeArticulos: true
+        });
         
         // Auditoría especial para bypass
         await auditarOperacion(req, {
@@ -1334,10 +1350,33 @@ const forzarEstadoPedido = async (req, res) => {
             datosNuevos: { ...datosAnteriores, estado },
             detallesAdicionales: `BYPASS MANUAL: Estado forzado de "${datosAnteriores.estado}" a "${estado}" por ${usuario.rol}`
         });
+
+        // Emitir eventos socket consistentes con /:id/estado
+        const io = req.app.get('io');
+        if (io && pedidoActualizado) {
+            const { getInstance: getSocketService } = require('../services/SocketService');
+            const socketService = getSocketService(io);
+            if (socketService) {
+                socketService.emitPedidoEstadoCambiado(id, datosAnteriores.estado, estado, pedidoActualizado);
+                if (estado === 'ENTREGADO' && datosAnteriores.estado !== 'ENTREGADO') {
+                    socketService.emitPedidoEntregado(id, pedidoActualizado);
+                }
+                if (datosAnteriores.estado === 'EN_PREPARACION' || estado === 'EN_PREPARACION') {
+                    const infoCapacidad = await KitchenCapacityService.obtenerInfoCapacidad();
+                    socketService.emitCapacidadActualizada(infoCapacidad);
+                }
+            }
+        }
         
         res.json({
             success: true,
-            message: 'Estado forzado correctamente (bypass manual)'
+            message: 'Estado forzado correctamente (bypass manual)',
+            data: {
+                pedido: pedidoActualizado,
+                estado,
+                listo: estado === 'LISTO',
+                entregado: estado === 'ENTREGADO'
+            }
         });
         
     } catch (error) {
@@ -1403,6 +1442,17 @@ const iniciarPreparacionManual = async (req, res) => {
                 });
             }
 
+            if (!pedidoEstaHabilitadoOperativamente(pedido)) {
+                await connection.rollback();
+                return res.status(409).json({
+                    success: false,
+                    message: 'El pedido tiene el pago pendiente (Mercado Pago o transferencia web sin acreditar). No puede iniciarse en cocina hasta estar PAGADO.',
+                    code: 'PEDIDO_BLOQUEADO_POR_PAGO',
+                    medio_pago: pedido.medio_pago,
+                    estado_pago: pedido.estado_pago
+                });
+            }
+
             // Validación de capacidad de cocina con tope manual de 20
             const infoCapacidad = await KitchenCapacityService.obtenerInfoCapacidad();
             const capacidadMaximaManual = 20;
@@ -1437,7 +1487,8 @@ const iniciarPreparacionManual = async (req, res) => {
                  SET estado = 'EN_PREPARACION',
                      hora_inicio_preparacion = ?,
                      hora_esperada_finalizacion = ?,
-                     transicion_automatica = ?
+                     transicion_automatica = ?,
+                     fecha_modificacion = NOW()
                  WHERE id = ?`,
                 [ahora, horaEsperadaFinalizacion, false, id]
             );
@@ -1464,14 +1515,10 @@ const iniciarPreparacionManual = async (req, res) => {
             await connection.commit();
 
             // Obtener pedido actualizado (con artículos) para respuesta y eventos
-            const [pedRows] = await db.execute('SELECT * FROM pedidos WHERE id = ?', [id]);
-            const [articulosRows] = await db.execute(
-                'SELECT * FROM pedidos_contenido WHERE pedido_id = ?',
-                [id]
-            );
-            const pedidoActualizado = normalizarTotalesPedido({
-                ...pedRows[0],
-                articulos: articulosRows
+            const pedidoActualizado = await buildPedidoSnapshotById({
+                pedidoId: id,
+                connection: db,
+                includeArticulos: true
             });
 
             // Auditoría de transición manual
@@ -1582,7 +1629,9 @@ const cobrarPedido = async (req, res) => {
 
     try {
         const { id } = req.validatedParams || req.params;
-        const { medio_pago, cuenta_id, tipo_factura } = req.body || {};
+        const { medio_pago, cuenta_id, tipo_factura, descuento: descuentoValidated = 0 } = req.validatedData || req.body || {};
+        const descuentoRaw = descuentoValidated;
+        const descuentoAplicado = parseFloat(descuentoRaw) || 0;
         const usuario = req.user || {};
 
         await connection.beginTransaction();
@@ -1601,7 +1650,7 @@ const cobrarPedido = async (req, res) => {
             });
         }
 
-            const pedido = normalizarTotalesPedido(pedidos[0]);
+            const pedido = enrichPedidoRealtime(pedidos[0]);
 
         // Solo bloquear cobro de pedidos cancelados
         if (pedido.estado === 'CANCELADO') {
@@ -1621,7 +1670,7 @@ const cobrarPedido = async (req, res) => {
             const ventaExistente = await buscarVentaAsociada(id);
             const [ped] = await connection.execute('SELECT * FROM pedidos WHERE id = ?', [id]);
             const [arts] = await connection.execute('SELECT * FROM pedidos_contenido WHERE pedido_id = ?', [id]);
-                const pedidoCompleto = normalizarTotalesPedido({ ...ped[0], articulos: arts });
+                const pedidoCompleto = enrichPedidoRealtime({ ...ped[0], articulos: arts });
             return res.json({
                 success: true,
                 message: 'Pedido ya estaba cobrado',
@@ -1647,11 +1696,40 @@ const cobrarPedido = async (req, res) => {
             });
         }
         
+        const totalPedidoCobro = obtenerTotalFinalDesdeRegistro(pedido);
+
+        if (descuentoAplicado < 0) {
+            await connection.rollback();
+            return res.status(400).json({
+                success: false,
+                message: 'El descuento debe ser mayor o igual a 0',
+                code: 'DESCUENTO_INVALIDO'
+            });
+        }
+
+        if (descuentoAplicado > totalPedidoCobro) {
+            await connection.rollback();
+            return res.status(400).json({
+                success: false,
+                message: 'El descuento no puede ser mayor al total del pedido',
+                code: 'DESCUENTO_SUPERA_TOTAL_PEDIDO'
+            });
+        }
+
+        const totalFinalVentaBase = totalPedidoCobro - descuentoAplicado;
+        if (totalFinalVentaBase < 0) {
+            await connection.rollback();
+            return res.status(400).json({
+                success: false,
+                message: 'El total final no puede ser negativo',
+                code: 'TOTAL_FINAL_NEGATIVO'
+            });
+        }
+
+        const totalesVenta = calcularTotalesDesdePrecioFinal(totalFinalVentaBase);
+
         // ✅ Crear venta basada en el pedido
         let ventaResult;
-        const subtotalPedidoCobro = parseFloat(pedido.subtotal) || 0;
-        const ivaPedidoCobro = 0;
-        const totalPedidoCobro = subtotalPedidoCobro;
         try {
             const ventaQueryConPedido = `
                 INSERT INTO ventas (
@@ -1662,7 +1740,7 @@ const cobrarPedido = async (req, res) => {
             `;
             [ventaResult] = await connection.execute(ventaQueryConPedido, [
                 id, pedido.cliente_nombre, pedido.cliente_direccion, pedido.cliente_telefono,
-                pedido.cliente_email, subtotalPedidoCobro, ivaPedidoCobro, 0, totalPedidoCobro,
+                pedido.cliente_email, totalesVenta.subtotal, totalesVenta.iva_total, descuentoAplicado, totalesVenta.total,
                 medio_pago || pedido.medio_pago || 'EFECTIVO', cuenta_id || null,
                 pedido.observaciones, tipo_factura || null, usuario.id || null,
                 usuario.nombre || usuario.usuario || null
@@ -1678,7 +1756,7 @@ const cobrarPedido = async (req, res) => {
                 `;
                 [ventaResult] = await connection.execute(ventaQuerySinPedido, [
                     pedido.cliente_nombre, pedido.cliente_direccion, pedido.cliente_telefono,
-                    pedido.cliente_email, subtotalPedidoCobro, ivaPedidoCobro, 0, totalPedidoCobro,
+                    pedido.cliente_email, totalesVenta.subtotal, totalesVenta.iva_total, descuentoAplicado, totalesVenta.total,
                     medio_pago || pedido.medio_pago || 'EFECTIVO', cuenta_id || null,
                     pedido.observaciones, tipo_factura || null, usuario.id || null,
                     usuario.nombre || usuario.usuario || null
@@ -1708,9 +1786,17 @@ const cobrarPedido = async (req, res) => {
         }
         
         // ✅ Actualizar estado_pago del pedido a PAGADO
+        const totalesPedidoNormalizados = calcularTotalesDesdePrecioFinal(totalPedidoCobro);
         await connection.execute(
-            'UPDATE pedidos SET estado_pago = ?, medio_pago = ?, iva_total = 0, total = subtotal WHERE id = ?',
-            ['PAGADO', medio_pago || pedido.medio_pago || 'EFECTIVO', id]
+            'UPDATE pedidos SET estado_pago = ?, medio_pago = ?, subtotal = ?, iva_total = ?, total = ?, fecha_modificacion = NOW() WHERE id = ?',
+            [
+                'PAGADO',
+                medio_pago || pedido.medio_pago || 'EFECTIVO',
+                totalesPedidoNormalizados.subtotal,
+                totalesPedidoNormalizados.iva_total,
+                totalesPedidoNormalizados.total,
+                id
+            ]
         );
         
         // Si hay cuenta_id, actualizar saldo
@@ -1722,7 +1808,7 @@ const cobrarPedido = async (req, res) => {
             
             if (saldoAnterior.length > 0) {
                 const saldoAnteriorValor = parseFloat(saldoAnterior[0].saldo) || 0;
-                const saldoNuevoValor = saldoAnteriorValor + totalPedidoCobro;
+                const saldoNuevoValor = saldoAnteriorValor + totalesVenta.total;
                 
                 await connection.execute(
                     'UPDATE cuentas_fondos SET saldo = ? WHERE id = ?',
@@ -1738,7 +1824,7 @@ const cobrarPedido = async (req, res) => {
                         cuenta_id,
                         `Venta #${ventaId} (Pedido #${id})`,
                         ventaId,
-                        totalPedidoCobro,
+                        totalesVenta.total,
                         saldoAnteriorValor,
                         saldoNuevoValor
                     ]
@@ -1749,12 +1835,11 @@ const cobrarPedido = async (req, res) => {
         await connection.commit();
 
         // Obtener pedido completo (con articulos) para respuesta consistente
-        const [pedRows] = await connection.execute('SELECT * FROM pedidos WHERE id = ?', [id]);
-        const [articulosRows] = await connection.execute(
-            'SELECT * FROM pedidos_contenido WHERE pedido_id = ?',
-            [id]
-        );
-        const pedidoActualizado = normalizarTotalesPedido({ ...pedRows[0], articulos: articulosRows });
+        const pedidoActualizado = await buildPedidoSnapshotById({
+            pedidoId: id,
+            connection,
+            includeArticulos: true
+        });
 
         // Auditoría
         await auditarOperacion(req, {
@@ -1763,7 +1848,7 @@ const cobrarPedido = async (req, res) => {
             registroId: id,
             datosAnteriores: pedido,
             datosNuevos: { ...pedido, estado_pago: 'PAGADO' },
-            detallesAdicionales: `Pedido cobrado - Venta #${ventaId} creada - Total: $${totalPedidoCobro}`
+            detallesAdicionales: `Pedido cobrado - Venta #${ventaId} creada - Total: $${totalesVenta.total}`
         });
         
         // Emitir eventos WebSocket
@@ -1774,7 +1859,7 @@ const cobrarPedido = async (req, res) => {
             if (socketService) {
                 socketService.emitPedidoCobrado(id, ventaId, pedidoActualizado);
                 socketService.emitPedidoActualizado(id, pedidoActualizado);
-                    socketService.emitVentaCreada(ventaId, { venta_id: ventaId, pedido_id: id, total: totalPedidoCobro });
+                    socketService.emitVentaCreada(ventaId, { venta_id: ventaId, pedido_id: id, total: totalesVenta.total });
             }
         }
 

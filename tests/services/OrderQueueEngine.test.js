@@ -19,7 +19,13 @@ describe('OrderQueueEngine.moverPedidoAPreparacion', () => {
         const horaEsperadaMock = new Date('2026-02-26T21:35:00.000Z');
 
         const connection = {
-            execute: jest.fn().mockResolvedValue([{}])
+            execute: jest.fn()
+                .mockResolvedValueOnce([[{
+                    medio_pago: 'EFECTIVO',
+                    estado_pago: 'PENDIENTE',
+                    origen_pedido: 'MOSTRADOR'
+                }]])
+                .mockResolvedValueOnce([{}])
         };
 
         jest.spyOn(TimeCalculationService, 'calcularTiempoEstimadoPedido').mockResolvedValue(tiempoCalculado);
@@ -29,9 +35,9 @@ describe('OrderQueueEngine.moverPedidoAPreparacion', () => {
         await OrderQueueEngine.moverPedidoAPreparacion(connection, pedidoId);
 
         expect(TimeCalculationService.calcularTiempoEstimadoPedido).toHaveBeenCalledWith(pedidoId, { connection });
-        expect(connection.execute).toHaveBeenCalledTimes(1);
+        expect(connection.execute).toHaveBeenCalledTimes(2);
 
-        const updateCall = connection.execute.mock.calls[0];
+        const updateCall = connection.execute.mock.calls[1];
         expect(updateCall[0]).toContain("estado = 'EN_PREPARACION'");
         expect(updateCall[0]).toContain('tiempo_estimado_preparacion = ?');
         expect(updateCall[1][1]).toBe(tiempoCalculado);
@@ -82,6 +88,7 @@ describe('OrderQueueEngine.evaluarColaPedidos', () => {
         expect(connection.execute).toHaveBeenCalledTimes(1);
         const query = connection.execute.mock.calls[0][0];
         expect(query).toContain("WHERE estado IN ('RECIBIDO', 'PROGRAMADO', 'programado')");
+        expect(query).toContain('MERCADOPAGO');
         expect(query).toContain('NOW() >= DATE_SUB(horario_entrega, INTERVAL tiempo_estimado_preparacion MINUTE)');
         expect(query).toContain('tiempo_estimado_preparacion > 0');
         expect(OrderQueueEngine.moverPedidoAPreparacion).toHaveBeenCalledWith(connection, 3001);

@@ -9,6 +9,39 @@
  */
 
 const db = require('../controllers/dbPromise');
+const { calcularTotalesDesdePrecioFinal } = require('./totalesPrecioFinal');
+
+const formatHora = (value) => {
+    const fecha = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(fecha.getTime())) return '--:--';
+    return fecha.toLocaleTimeString('es-AR', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+    });
+};
+
+const parsePersonalizaciones = (personalizaciones) => {
+    if (!personalizaciones) return null;
+    if (typeof personalizaciones === 'string') {
+        try {
+            return JSON.parse(personalizaciones);
+        } catch (_) {
+            return null;
+        }
+    }
+    return typeof personalizaciones === 'object' ? personalizaciones : null;
+};
+
+const mapExtras = (articulo = {}) => {
+    const personalizaciones = parsePersonalizaciones(articulo.personalizaciones);
+    if (!Array.isArray(personalizaciones?.extras)) return [];
+
+    return personalizaciones.extras.map((extra = {}) => ({
+        nombre: extra.nombre || extra.nombre_adicional || null,
+        precio: parseFloat(extra.precio_extra ?? 0) || 0
+    }));
+};
 
 /**
  * Obtener datos para imprimir comanda
@@ -31,14 +64,6 @@ const obtenerDatosComanda = async (pedidoId) => {
 
         const pedido = pedidos[0];
 
-        // Obtener comanda asociada (si existe)
-        const [comandas] = await db.execute(
-            'SELECT * FROM comandas WHERE pedido_id = ?',
-            [pedidoId]
-        );
-
-        const comanda = comandas.length > 0 ? comandas[0] : null;
-
         // Obtener artículos del pedido
         const [articulos] = await db.execute(
             'SELECT * FROM pedidos_contenido WHERE pedido_id = ? ORDER BY id',
@@ -49,83 +74,22 @@ const obtenerDatosComanda = async (pedidoId) => {
             throw new Error(`El pedido ${pedidoId} no tiene artículos`);
         }
 
-        // Calcular tiempo de entrega
-        let tiempoTexto = null;
-        let tiempoAtrasoMinutos = null;
-        
-        if (pedido.horario_entrega) {
-            // Pedido programado
-            const horarioEntrega = new Date(pedido.horario_entrega);
-            const ahora = new Date();
-            
-            if (horarioEntrega < ahora) {
-                // Atrasado
-                tiempoAtrasoMinutos = Math.floor((ahora - horarioEntrega) / (1000 * 60));
-                tiempoTexto = `ATRASADO ${tiempoAtrasoMinutos}m`;
-            } else {
-                // Programado (aún no llegó la hora)
-                const horas = horarioEntrega.getHours().toString().padStart(2, '0');
-                const minutos = horarioEntrega.getMinutes().toString().padStart(2, '0');
-                tiempoTexto = `Para ${horas}:${minutos}`;
-            }
-        } else {
-            // Pedido "cuanto antes"
-            // Verificar si está atrasado basado en hora_inicio_preparacion y tiempo_estimado
-            if (pedido.hora_inicio_preparacion && pedido.tiempo_estimado_preparacion) {
-                const horaInicio = new Date(pedido.hora_inicio_preparacion);
-                const horaEsperada = new Date(horaInicio.getTime() + (pedido.tiempo_estimado_preparacion * 60 * 1000));
-                const ahora = new Date();
-                
-                if (ahora > horaEsperada) {
-                    tiempoAtrasoMinutos = Math.floor((ahora - horaEsperada) / (1000 * 60));
-                    tiempoTexto = `ATRASADO ${tiempoAtrasoMinutos}m`;
-                } else {
-                    tiempoTexto = 'CUANTO ANTES';
-                }
-            } else {
-                tiempoTexto = 'CUANTO ANTES';
-            }
+        const pedidoCompleto = {
+            ...pedido,
+            articulos
+        };
+
+        // Calcular tiempo usando campos reales del pedido
+        let tiempoTexto = 'CUANTO ANTES';
+        if (pedidoCompleto.horario_entrega) {
+            tiempoTexto = `Para ${formatHora(pedidoCompleto.horario_entrega)}`;
+        } else if (pedidoCompleto.hora_esperada_finalizacion) {
+            tiempoTexto = `Para ${formatHora(pedidoCompleto.hora_esperada_finalizacion)}`;
         }
 
-        // Formatear artículos con personalizaciones
-        const items = articulos.map(articulo => {
-            let extras = [];
-            
-            if (articulo.personalizaciones) {
-                try {
-                    const personalizaciones = typeof articulo.personalizaciones === 'string'
-                        ? JSON.parse(articulo.personalizaciones)
-                        : articulo.personalizaciones;
-                    
-                    if (personalizaciones && typeof personalizaciones === 'object') {
-                        // Si tiene estructura { extras: [...] }
-                        if (personalizaciones.extras && Array.isArray(personalizaciones.extras)) {
-                            extras = personalizaciones.extras.map(extra => ({
-                                nombre: extra.nombre || extra.nombre_adicional || extra.id,
-                                precio: parseFloat(extra.precio || extra.precio_adicional || 0)
-                            }));
-                        } else {
-                            // Formato legacy: object plano
-                            for (const [key, value] of Object.entries(personalizaciones)) {
-                                if (value && typeof value === 'object' && value.nombre) {
-                                    extras.push({
-                                        nombre: value.nombre || key,
-                                        precio: parseFloat(value.precio || 0)
-                                    });
-                                } else if (value) {
-                                    extras.push({
-                                        nombre: key,
-                                        precio: 0
-                                    });
-                                }
-                            }
-                        }
-                    }
-                } catch (e) {
-                    console.warn('Error parseando personalizaciones:', e);
-                }
-            }
-
+        // Formatear items completos desde pedido.articulos
+        const items = pedidoCompleto.articulos.map(articulo => {
+            const extras = mapExtras(articulo);
             return {
                 articulo_id: articulo.articulo_id,
                 nombre: articulo.articulo_nombre || articulo.nombre,
@@ -134,6 +98,12 @@ const obtenerDatosComanda = async (pedidoId) => {
                 observaciones: articulo.observaciones || null
             };
         });
+
+        const totalPedido = parseFloat(pedidoCompleto.total);
+        const subtotalPedido = parseFloat(pedidoCompleto.subtotal);
+        const totalNormalizado = Number.isFinite(totalPedido)
+            ? totalPedido
+            : (Number.isFinite(subtotalPedido) ? subtotalPedido : 0);
 
         // Preparar datos para impresión
         const datosComanda = {
@@ -146,38 +116,46 @@ const obtenerDatosComanda = async (pedidoId) => {
             
             // Datos del pedido/comanda
             pedido: {
-                numero: pedido.id,
-                fecha: pedido.fecha,
-                hora: new Date(pedido.fecha).toLocaleTimeString('es-AR', { 
+                id: pedidoCompleto.id,
+                numero: pedidoCompleto.id,
+                fecha: pedidoCompleto.fecha,
+                hora: new Date(pedidoCompleto.fecha).toLocaleTimeString('es-AR', {
                     hour: '2-digit', 
                     minute: '2-digit' 
-                })
+                }),
+                horario_entrega: pedidoCompleto.horario_entrega || null,
+                hora_entrega: pedidoCompleto.hora_entrega || null,
+                hora_programada: pedidoCompleto.hora_programada || null,
+                hora_esperada_finalizacion: pedidoCompleto.hora_esperada_finalizacion || null,
+                subtotal: Number.isFinite(subtotalPedido) ? subtotalPedido : 0,
+                total: totalNormalizado,
+                total_final: totalNormalizado
             },
             
             // Datos del cliente
             cliente: {
-                nombre: pedido.cliente_nombre || 'MOSTRADOR',
-                direccion: pedido.cliente_direccion || null,
-                telefono: pedido.cliente_telefono || null,
-                email: pedido.cliente_email || null
+                nombre: pedidoCompleto.cliente_nombre || 'MOSTRADOR',
+                direccion: pedidoCompleto.cliente_direccion || null,
+                telefono: pedidoCompleto.cliente_telefono || null,
+                email: pedidoCompleto.cliente_email || null
             },
             
             // Tipo y tiempo
-            tipo: pedido.modalidad, // DELIVERY o RETIRO
+            tipo: pedidoCompleto.modalidad, // DELIVERY o RETIRO
             tiempo: tiempoTexto,
-            tiempo_atraso_minutos: tiempoAtrasoMinutos,
+            total: totalNormalizado,
             
             // Items
             items: items,
             
             // Estado de pago
-            estado_pago: pedido.estado_pago || 'DEBE',
+            estado_pago: pedidoCompleto.estado_pago || 'DEBE',
             
             // Estado del pedido (la comanda no tiene estado propio)
-            estado_pedido: pedido.estado,
+            estado_pedido: pedidoCompleto.estado,
             
             // Observaciones
-            observaciones: pedido.observaciones || null
+            observaciones: pedidoCompleto.observaciones || null
         };
 
         return datosComanda;
@@ -299,6 +277,13 @@ const obtenerDatosTicket = async (pedidoId) => {
             subtotal: parseFloat(articulo.subtotal)
         }));
 
+        const totalVentaBase = parseFloat(venta.total);
+        const subtotalVentaBase = parseFloat(venta.subtotal);
+        const totalFinalVenta = Number.isFinite(totalVentaBase)
+            ? totalVentaBase
+            : (Number.isFinite(subtotalVentaBase) ? subtotalVentaBase : 0);
+        const totalesVenta = calcularTotalesDesdePrecioFinal(totalFinalVenta);
+
         // Preparar datos para impresión
         const datosTicket = {
             // Datos del negocio
@@ -339,11 +324,10 @@ const obtenerDatosTicket = async (pedidoId) => {
             items: items,
             
             // Totales
-            subtotal: parseFloat(venta.subtotal) || 0,
-            iva_total: 0,
-            costo_envio: 0,
+            subtotal: totalesVenta.subtotal,
+            iva_total: totalesVenta.iva_total,
             descuento: parseFloat(venta.descuento || 0),
-            total: parseFloat(venta.subtotal) || 0,
+            total: totalesVenta.total,
             
             // Método de pago
             medio_pago: venta.medio_pago || 'EFECTIVO',
