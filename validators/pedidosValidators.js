@@ -121,7 +121,7 @@ const cobrarPedidoSchema = z.object({
     medio_pago: z.string().max(50).optional().nullable(),
     cuenta_id: z.number().int().positive('cuenta_id debe ser un número positivo').optional().nullable(),
     tipo_factura: z.string().length(1).optional().nullable(),
-    descuento: z.number().nonnegative('El descuento debe ser mayor o igual a 0').optional().default(0)
+    descuento_porcentaje: z.coerce.number().min(0, 'El descuento porcentual no puede ser menor a 0').max(100, 'El descuento porcentual no puede ser mayor a 100').optional().default(0)
 });
 
 // Middleware de validación genérico

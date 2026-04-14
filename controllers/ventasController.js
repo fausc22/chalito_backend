@@ -2,7 +2,11 @@
 const db = require('./dbPromise');
 const { auditarOperacion, obtenerDatosAnteriores, limpiarDatosSensibles } = require('../middlewares/auditoriaMiddleware');
 const { OrderQueueEngine } = require('../services/OrderQueueEngine');
-const { calcularTotalesDesdePrecioFinal, obtenerTotalFinalDesdeRegistro } = require('../services/totalesPrecioFinal');
+const {
+    calcularTotalesDesdePrecioFinal,
+    obtenerTotalFinalDesdeRegistro,
+    calcularTotalesConDescuentoPorcentaje
+} = require('../services/totalesPrecioFinal');
 
 const normalizarTotalesVenta = (venta = {}) => {
     const totales = calcularTotalesDesdePrecioFinal(obtenerTotalFinalDesdeRegistro(venta));
@@ -41,18 +45,27 @@ const crearVenta = async (req, res) => {
         
         console.log('💳 Creando nueva venta...');
         
-        const { articulos, ...ventaData } = req.validatedData || req.body;
-        const usuario = req.user || {};
-        const pedidoId = ventaData.pedido_id ? parseInt(ventaData.pedido_id, 10) : null;
-        const descuentoFinal = parseFloat(ventaData.descuento) || 0;
-        let totalPedidoBase = calcularSubtotalDesdeArticulos(articulos);
-
-        if (descuentoFinal < 0) {
+        if (req.body?.descuento !== undefined && req.body?.descuento_porcentaje === undefined) {
             await connection.rollback();
             return res.status(400).json({
                 success: false,
-                message: 'El descuento debe ser mayor o igual a 0',
-                code: 'DESCUENTO_INVALIDO'
+                message: 'El campo descuento (monto) ya no está soportado. Use descuento_porcentaje.',
+                code: 'DESCUENTO_LEGACY_NO_SOPORTADO'
+            });
+        }
+
+        const { articulos, ...ventaData } = req.validatedData || req.body;
+        const usuario = req.user || {};
+        const pedidoId = ventaData.pedido_id ? parseInt(ventaData.pedido_id, 10) : null;
+        const descuentoPorcentaje = Number(ventaData.descuento_porcentaje ?? 0);
+        let totalPedidoBase = calcularSubtotalDesdeArticulos(articulos);
+
+        if (!Number.isFinite(descuentoPorcentaje) || descuentoPorcentaje < 0 || descuentoPorcentaje > 100) {
+            await connection.rollback();
+            return res.status(400).json({
+                success: false,
+                message: 'El descuento_porcentaje debe estar entre 0 y 100',
+                code: 'DESCUENTO_PORCENTAJE_INVALIDO'
             });
         }
 
@@ -96,17 +109,8 @@ const crearVenta = async (req, res) => {
                 : (Number.isFinite(subtotalPedido) ? subtotalPedido : totalPedidoBase);
         }
 
-        if (descuentoFinal > totalPedidoBase) {
-            await connection.rollback();
-            return res.status(400).json({
-                success: false,
-                message: 'El descuento no puede ser mayor al total del pedido',
-                code: 'DESCUENTO_SUPERA_TOTAL_PEDIDO'
-            });
-        }
-
-        const totalFinalBase = totalPedidoBase - descuentoFinal;
-        if (totalFinalBase < 0) {
+        const totalesConDescuento = calcularTotalesConDescuentoPorcentaje(totalPedidoBase, descuentoPorcentaje);
+        if (totalesConDescuento.total < 0) {
             await connection.rollback();
             return res.status(400).json({
                 success: false,
@@ -115,7 +119,12 @@ const crearVenta = async (req, res) => {
             });
         }
 
-        const { subtotal: subtotalFinal, iva_total: ivaTotalFinal, total: totalFinal } = calcularTotalesDesdePrecioFinal(totalFinalBase);
+        const {
+            subtotal: subtotalFinal,
+            iva_total: ivaTotalFinal,
+            total: totalFinal,
+            descuento: descuentoFinal
+        } = totalesConDescuento;
         const totalesPedidoAsociado = calcularTotalesDesdePrecioFinal(totalPedidoBase);
         
         // Insertar venta

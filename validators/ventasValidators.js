@@ -15,7 +15,7 @@ const crearVentaSchema = z.object({
     cliente_direccion: z.string().max(255).optional().nullable(),
     cliente_telefono: z.string().max(50).optional().nullable(),
     cliente_email: z.string().email('Email inválido').max(100).optional().nullable(),
-    descuento: z.number().nonnegative('El descuento debe ser mayor o igual a 0').default(0),
+    descuento_porcentaje: z.coerce.number().min(0, 'El descuento porcentual no puede ser menor a 0').max(100, 'El descuento porcentual no puede ser mayor a 100').optional().default(0),
     medio_pago: z.string().max(50).default('EFECTIVO'),
     cuenta_id: z.number().int().positive().optional().nullable(),
     pedido_id: z.number().int().positive().optional().nullable(),

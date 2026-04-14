@@ -13,7 +13,11 @@ const {
     enrichPedidoRealtime,
     buildPedidoSnapshotById
 } = require('../services/pedidoRealtimeSerializer');
-const { calcularTotalesDesdePrecioFinal, obtenerTotalFinalDesdeRegistro } = require('../services/totalesPrecioFinal');
+const {
+    calcularTotalesDesdePrecioFinal,
+    obtenerTotalFinalDesdeRegistro,
+    calcularTotalesConDescuentoPorcentaje
+} = require('../services/totalesPrecioFinal');
 
 const PRESENTACIONES_VALIDAS = new Set(['SIMPLE', 'DOBLE', 'TRIPLE']);
 
@@ -1629,9 +1633,15 @@ const cobrarPedido = async (req, res) => {
 
     try {
         const { id } = req.validatedParams || req.params;
-        const { medio_pago, cuenta_id, tipo_factura, descuento: descuentoValidated = 0 } = req.validatedData || req.body || {};
-        const descuentoRaw = descuentoValidated;
-        const descuentoAplicado = parseFloat(descuentoRaw) || 0;
+        if (req.body?.descuento !== undefined && req.body?.descuento_porcentaje === undefined) {
+            return res.status(400).json({
+                success: false,
+                message: 'El campo descuento (monto) ya no está soportado. Use descuento_porcentaje.',
+                code: 'DESCUENTO_LEGACY_NO_SOPORTADO'
+            });
+        }
+
+        const { medio_pago, cuenta_id, tipo_factura, descuento_porcentaje = 0 } = req.validatedData || req.body || {};
         const usuario = req.user || {};
 
         await connection.beginTransaction();
@@ -1698,26 +1708,18 @@ const cobrarPedido = async (req, res) => {
         
         const totalPedidoCobro = obtenerTotalFinalDesdeRegistro(pedido);
 
-        if (descuentoAplicado < 0) {
+        const porcentajeNormalizado = Number(descuento_porcentaje);
+        if (!Number.isFinite(porcentajeNormalizado) || porcentajeNormalizado < 0 || porcentajeNormalizado > 100) {
             await connection.rollback();
             return res.status(400).json({
                 success: false,
-                message: 'El descuento debe ser mayor o igual a 0',
-                code: 'DESCUENTO_INVALIDO'
+                message: 'El descuento_porcentaje debe estar entre 0 y 100',
+                code: 'DESCUENTO_PORCENTAJE_INVALIDO'
             });
         }
 
-        if (descuentoAplicado > totalPedidoCobro) {
-            await connection.rollback();
-            return res.status(400).json({
-                success: false,
-                message: 'El descuento no puede ser mayor al total del pedido',
-                code: 'DESCUENTO_SUPERA_TOTAL_PEDIDO'
-            });
-        }
-
-        const totalFinalVentaBase = totalPedidoCobro - descuentoAplicado;
-        if (totalFinalVentaBase < 0) {
+        const totalesVenta = calcularTotalesConDescuentoPorcentaje(totalPedidoCobro, porcentajeNormalizado);
+        if (totalesVenta.total < 0) {
             await connection.rollback();
             return res.status(400).json({
                 success: false,
@@ -1725,8 +1727,6 @@ const cobrarPedido = async (req, res) => {
                 code: 'TOTAL_FINAL_NEGATIVO'
             });
         }
-
-        const totalesVenta = calcularTotalesDesdePrecioFinal(totalFinalVentaBase);
 
         // ✅ Crear venta basada en el pedido
         let ventaResult;
@@ -1740,7 +1740,7 @@ const cobrarPedido = async (req, res) => {
             `;
             [ventaResult] = await connection.execute(ventaQueryConPedido, [
                 id, pedido.cliente_nombre, pedido.cliente_direccion, pedido.cliente_telefono,
-                pedido.cliente_email, totalesVenta.subtotal, totalesVenta.iva_total, descuentoAplicado, totalesVenta.total,
+                pedido.cliente_email, totalesVenta.subtotal, totalesVenta.iva_total, totalesVenta.descuento, totalesVenta.total,
                 medio_pago || pedido.medio_pago || 'EFECTIVO', cuenta_id || null,
                 pedido.observaciones, tipo_factura || null, usuario.id || null,
                 usuario.nombre || usuario.usuario || null
@@ -1756,7 +1756,7 @@ const cobrarPedido = async (req, res) => {
                 `;
                 [ventaResult] = await connection.execute(ventaQuerySinPedido, [
                     pedido.cliente_nombre, pedido.cliente_direccion, pedido.cliente_telefono,
-                    pedido.cliente_email, totalesVenta.subtotal, totalesVenta.iva_total, descuentoAplicado, totalesVenta.total,
+                    pedido.cliente_email, totalesVenta.subtotal, totalesVenta.iva_total, totalesVenta.descuento, totalesVenta.total,
                     medio_pago || pedido.medio_pago || 'EFECTIVO', cuenta_id || null,
                     pedido.observaciones, tipo_factura || null, usuario.id || null,
                     usuario.nombre || usuario.usuario || null

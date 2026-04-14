@@ -29,7 +29,24 @@ function obtenerTotalFinalDesdeRegistro(registro = {}) {
     return 0;
 }
 
+function calcularTotalesConDescuentoPorcentaje(totalOriginal, descuentoPorcentaje = 0) {
+    const totalBase = round2(Math.max(0, toSafeNumber(totalOriginal)));
+    const porcentaje = Math.max(0, Math.min(100, toSafeNumber(descuentoPorcentaje)));
+    const descuento = round2(totalBase * (porcentaje / 100));
+    const totalFinal = round2(totalBase - descuento);
+    const { subtotal, iva_total, total } = calcularTotalesDesdePrecioFinal(totalFinal);
+
+    return {
+        descuento_porcentaje: porcentaje,
+        descuento,
+        subtotal,
+        iva_total,
+        total
+    };
+}
+
 module.exports = {
     calcularTotalesDesdePrecioFinal,
-    obtenerTotalFinalDesdeRegistro
+    obtenerTotalFinalDesdeRegistro,
+    calcularTotalesConDescuentoPorcentaje
 };
