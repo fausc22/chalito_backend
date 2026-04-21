@@ -178,7 +178,7 @@ const crearVenta = async (req, res) => {
             
             // Actualizar stock del artículo
             await connection.execute(
-                'UPDATE articulos SET stock_actual = stock_actual - ? WHERE id = ?',
+                'UPDATE articulos SET stock_actual = stock_actual - ? WHERE id = ? AND controla_stock = 1',
                 [articulo.cantidad, articulo.articulo_id]
             );
         }
@@ -607,7 +607,7 @@ const anularVenta = async (req, res) => {
         // Restaurar stock de cada artículo
         for (const articulo of articulos) {
             await connection.execute(
-                'UPDATE articulos SET stock_actual = stock_actual + ? WHERE id = ?',
+                'UPDATE articulos SET stock_actual = stock_actual + ? WHERE id = ? AND controla_stock = 1',
                 [articulo.cantidad, articulo.articulo_id]
             );
         }

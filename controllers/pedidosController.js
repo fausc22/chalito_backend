@@ -111,7 +111,7 @@ const crearPedido = async (req, res) => {
                     const observacionesItem = item.observaciones || null;
 
                     const [productoRows] = await connection.execute(
-                        'SELECT id, nombre, precio FROM articulos WHERE id = ?',
+                        'SELECT id, nombre, precio, controla_stock FROM articulos WHERE id = ?',
                         [productId]
                     );
 
@@ -225,7 +225,7 @@ const crearPedido = async (req, res) => {
                 
                 // Actualizar stock del artículo
                 await connection.execute(
-                    'UPDATE articulos SET stock_actual = stock_actual - ? WHERE id = ?',
+                    'UPDATE articulos SET stock_actual = stock_actual - ? WHERE id = ? AND controla_stock = 1',
                     [articulo.cantidad, articulo.articulo_id]
                 );
             }
@@ -683,7 +683,7 @@ const actualizarEstadoPedido = async (req, res) => {
                 
                 for (const articulo of articulos) {
                     await connection.execute(
-                        'UPDATE articulos SET stock_actual = stock_actual + ? WHERE id = ?',
+                        'UPDATE articulos SET stock_actual = stock_actual + ? WHERE id = ? AND controla_stock = 1',
                         [articulo.cantidad, articulo.articulo_id]
                     );
                 }
@@ -959,7 +959,7 @@ const actualizarPedido = async (req, res) => {
         for (const [articuloId, diferencia] of stockCambios.entries()) {
             if (diferencia !== 0) {
                 await connection.execute(
-                    'UPDATE articulos SET stock_actual = stock_actual + ? WHERE id = ?',
+                    'UPDATE articulos SET stock_actual = stock_actual + ? WHERE id = ? AND controla_stock = 1',
                     [diferencia, articuloId]
                 );
                 console.log(`📦 [actualizarPedido] Stock ajustado artículo #${articuloId}: ${diferencia > 0 ? '+' : ''}${diferencia}`);
@@ -1064,7 +1064,7 @@ const eliminarPedido = async (req, res) => {
             // Restaurar stock
             for (const articulo of articulos) {
                 await connection.execute(
-                    'UPDATE articulos SET stock_actual = stock_actual + ? WHERE id = ?',
+                    'UPDATE articulos SET stock_actual = stock_actual + ? WHERE id = ? AND controla_stock = 1',
                     [articulo.cantidad, articulo.articulo_id]
                 );
             }
@@ -1153,7 +1153,7 @@ const agregarArticulo = async (req, res) => {
             
             // Actualizar stock
             await connection.execute(
-                'UPDATE articulos SET stock_actual = stock_actual - ? WHERE id = ?',
+                'UPDATE articulos SET stock_actual = stock_actual - ? WHERE id = ? AND controla_stock = 1',
                 [articulo.cantidad, articulo.articulo_id]
             );
             

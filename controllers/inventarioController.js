@@ -260,7 +260,7 @@ const obtenerArticulo = async (req, res) => {
         const queryArticulo = `
             SELECT
                 a.id, a.codigo_barra, a.nombre, a.descripcion, a.precio,
-                a.stock_actual, a.stock_minimo, a.tipo, a.imagen_url,
+                a.stock_actual, a.stock_minimo, a.tipo, a.controla_stock, a.imagen_url,
                 a.activo, a.fecha_creacion, a.fecha_modificacion,
                 c.id as categoria_id, c.nombre as categoria
             FROM articulos a
@@ -359,6 +359,7 @@ const filtrarArticulos = async (req, res) => {
 
         // Filtro por stock bajo
         if (stock_bajo === 'true') {
+            whereConditions.push('a.controla_stock = 1');
             whereConditions.push('a.stock_actual <= a.stock_minimo');
         }
 
@@ -374,11 +375,11 @@ const filtrarArticulos = async (req, res) => {
         let query = `
             SELECT
                 a.id, a.codigo_barra, a.nombre, a.descripcion, a.precio,
-                a.stock_actual, a.stock_minimo, a.tipo, a.imagen_url, a.activo,
+                a.stock_actual, a.stock_minimo, a.tipo, a.controla_stock, a.imagen_url, a.activo,
                 a.fecha_creacion, a.fecha_modificacion,
                 c.id as categoria_id, c.nombre as categoria,
                 CASE
-                    WHEN a.stock_actual <= a.stock_minimo THEN 1
+                    WHEN a.controla_stock = 1 AND a.stock_actual <= a.stock_minimo THEN 1
                     ELSE 0
                 END as stock_bajo
             FROM articulos a
@@ -1608,11 +1609,12 @@ const obtenerStockBajo = async (req, res) => {
         const query = `
             SELECT
                 a.id, a.nombre, a.stock_actual, a.stock_minimo,
-                a.precio, a.tipo,
+                a.precio, a.tipo, a.controla_stock,
                 c.nombre as categoria
             FROM articulos a
             INNER JOIN categorias c ON a.categoria_id = c.id
-            WHERE a.stock_actual <= a.stock_minimo
+            WHERE a.controla_stock = 1
+            AND a.stock_actual <= a.stock_minimo
             AND a.activo = 1
             ORDER BY a.stock_actual ASC, a.nombre
         `;

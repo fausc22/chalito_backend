@@ -51,7 +51,8 @@ describe('articulosController - peso en create/update', () => {
 
         const insertCall = connection.execute.mock.calls[1];
         expect(insertCall[0]).toContain('INSERT INTO articulos');
-        expect(insertCall[1][10]).toBe(1);
+        expect(insertCall[1][8]).toBe(1);
+        expect(insertCall[1][11]).toBe(1);
         expect(res.status).toHaveBeenCalledWith(201);
     });
 

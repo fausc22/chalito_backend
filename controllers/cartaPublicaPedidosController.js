@@ -160,7 +160,7 @@ const crearPedidoCarta = async (req, res) => {
 
             // 1. Validar artículo existe y traer precio
             const [articuloRows] = await connection.execute(
-                'SELECT id, nombre, precio FROM articulos WHERE id = ? AND activo = 1',
+                'SELECT id, nombre, precio, controla_stock FROM articulos WHERE id = ? AND activo = 1',
                 [productId]
             );
 
@@ -306,7 +306,7 @@ const crearPedidoCarta = async (req, res) => {
             ]);
 
             await connection.execute(
-                'UPDATE articulos SET stock_actual = stock_actual - ? WHERE id = ?',
+                'UPDATE articulos SET stock_actual = stock_actual - ? WHERE id = ? AND controla_stock = 1',
                 [art.cantidad, art.articulo_id]
             );
         }

@@ -92,6 +92,7 @@ const metricsRoutes = require('./routes/metricsRoutes');
 const cartaPublicaRoutes = require('./routes/cartaPublicaRoutes');
 const fondosRoutes = require('./routes/fondosRoutes');
 const gastosRoutes = require('./routes/gastosRoutes');
+const empleadosRoutes = require('./routes/empleadosRoutes');
 
 // Importar worker de cola de pedidos
 const OrderQueueWorker = require('./workers/OrderQueueWorker');
@@ -167,7 +168,7 @@ const corsOptions = {
             callback(new Error('No permitido por CORS'));
         }
     },
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
     credentials: true,
     optionsSuccessStatus: 200 // Para navegadores legacy
@@ -240,6 +241,7 @@ app.use('/carta-publica', cartaPublicaRoutes);
 app.use('/api/carta-publica', cartaPublicaRoutes);
 app.use('/fondos', fondosRoutes);
 app.use('/gastos', gastosRoutes);
+app.use('/empleados', empleadosRoutes);
 
 // Middleware global de manejo de errores
 app.use((error, req, res, next) => {

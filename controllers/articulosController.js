@@ -7,6 +7,11 @@ const {
     calcularCostoArticuloElaborado: calcularCostoArticuloElaboradoService,
     ERROR_CODES: COSTO_ERROR_CODES
 } = require('../services/ArticulosCostService');
+const {
+    defaultControlaStockPorTipo,
+    normalizarTipoArticulo,
+    parseBooleanFlexible
+} = require('../services/articuloStockPolicy');
 
 /**
  * Controller para gestión de artículos con validación y seguridad
@@ -325,17 +330,22 @@ const crearArticulo = async (req, res) => {
             stock_actual = 0,
             stock_minimo = 0,
             tipo = 'OTRO',
+            controla_stock,
             imagen_url,
             activo = true,
             peso,
             ingredientes = []
         } = req.body;
 
+        const tipoNormalizado = normalizarTipoArticulo(tipo);
         const pesoConFallback = peso ?? 1;
+        const controlaStockParseado = parseBooleanFlexible(controla_stock);
 
         console.log('[articulos][create] Payload recibido', {
             nombre,
             categoria_id,
+            tipo: tipoNormalizado,
+            controla_stock_recibido: controla_stock,
             peso_recibido: req.body?.peso,
             peso_usado: pesoConFallback
         });
@@ -344,8 +354,16 @@ const crearArticulo = async (req, res) => {
         if (!nombre || nombre.trim() === '') errores.push('El nombre es obligatorio');
         if (!precio || isNaN(precio) || parseFloat(precio) < 0) errores.push('El precio debe ser mayor o igual a 0');
         if (!categoria_id || isNaN(categoria_id)) errores.push('La categoría es obligatoria');
-        if (stock_actual !== undefined && isNaN(stock_actual)) errores.push('El stock actual debe ser un número');
-        if (stock_minimo !== undefined && (isNaN(stock_minimo) || parseInt(stock_minimo, 10) < 0)) errores.push('El stock mínimo debe ser un número positivo o cero');
+        if (!controlaStockParseado.valido) errores.push(controlaStockParseado.mensaje);
+
+        const controlaStockFinal = controlaStockParseado.valor !== undefined
+            ? controlaStockParseado.valor
+            : defaultControlaStockPorTipo(tipoNormalizado);
+
+        if (controlaStockFinal) {
+            if (stock_actual !== undefined && isNaN(stock_actual)) errores.push('El stock actual debe ser un número');
+            if (stock_minimo !== undefined && (isNaN(stock_minimo) || parseInt(stock_minimo, 10) < 0)) errores.push('El stock mínimo debe ser un número positivo o cero');
+        }
 
         const pesoValidacion = normalizarPeso(pesoConFallback, { requerido: true });
         if (!pesoValidacion.valido) errores.push(pesoValidacion.mensaje);
@@ -356,6 +374,9 @@ const crearArticulo = async (req, res) => {
         if (errores.length > 0) {
             return res.status(400).json({ error: 'Errores de validación', errores });
         }
+
+        const stockActualFinal = controlaStockFinal ? parseInt(stock_actual, 10) : 0;
+        const stockMinimoFinal = controlaStockFinal ? parseInt(stock_minimo, 10) : 0;
 
         await connection.beginTransaction();
 
@@ -379,24 +400,25 @@ const crearArticulo = async (req, res) => {
         const [result] = await connection.execute(
             `INSERT INTO articulos (
                 categoria_id, codigo_barra, nombre, descripcion, precio,
-                stock_actual, stock_minimo, tipo, imagen_url, activo, peso
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                stock_actual, stock_minimo, tipo, controla_stock, imagen_url, activo, peso
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
                 parseInt(categoria_id, 10),
                 codigo_barra ? codigo_barra.trim() : null,
                 nombre.trim(),
                 descripcion ? descripcion.trim() : null,
                 parseFloat(precio),
-                parseInt(stock_actual, 10),
-                parseInt(stock_minimo, 10),
-                tipo,
+                stockActualFinal,
+                stockMinimoFinal,
+                tipoNormalizado,
+                controlaStockFinal ? 1 : 0,
                 imagen_url || null,
                 activo ? 1 : 0,
                 pesoValidacion.valor
             ]
         );
 
-        if (tipo === 'ELABORADO') {
+        if (tipoNormalizado === 'ELABORADO') {
             await sincronizarContenidoElaborado(connection, result.insertId, ingredientes);
         }
 
@@ -450,14 +472,21 @@ const actualizarArticulo = async (req, res) => {
             stock_actual,
             stock_minimo,
             tipo,
+            controla_stock,
             imagen_url,
             activo,
             peso,
             ingredientes
         } = req.body;
 
+        const tipoNormalizadoInput = tipo !== undefined ? normalizarTipoArticulo(tipo) : undefined;
+        const hasControlaStockEnPayload = Object.prototype.hasOwnProperty.call(req.body || {}, 'controla_stock');
+        const controlaStockParseado = parseBooleanFlexible(controla_stock);
+
         console.log('[articulos][update] Payload recibido', {
             articulo_id: id,
+            tipo_recibido: tipo,
+            controla_stock_recibido: controla_stock,
             peso_recibido: req.body?.peso
         });
 
@@ -469,8 +498,7 @@ const actualizarArticulo = async (req, res) => {
         if (nombre !== undefined && (!nombre || nombre.trim() === '')) errores.push('El nombre no puede estar vacío');
         if (precio !== undefined && (isNaN(precio) || parseFloat(precio) < 0)) errores.push('El precio debe ser mayor o igual a 0');
         if (categoria_id !== undefined && (!categoria_id || isNaN(categoria_id))) errores.push('La categoría no puede estar vacía');
-        if (stock_actual !== undefined && isNaN(stock_actual)) errores.push('El stock actual debe ser un número');
-        if (stock_minimo !== undefined && (isNaN(stock_minimo) || parseInt(stock_minimo, 10) < 0)) errores.push('El stock mínimo debe ser un número positivo o cero');
+        if (hasControlaStockEnPayload && !controlaStockParseado.valido) errores.push(controlaStockParseado.mensaje);
 
         const pesoValidacion = normalizarPeso(peso, { requerido: false });
         if (!pesoValidacion.valido) errores.push(pesoValidacion.mensaje);
@@ -492,11 +520,30 @@ const actualizarArticulo = async (req, res) => {
             return res.status(404).json({ error: 'Artículo no encontrado' });
         }
         const articuloActual = articuloExistente[0];
+        const tipoFinal = tipoNormalizadoInput !== undefined
+            ? tipoNormalizadoInput
+            : normalizarTipoArticulo(articuloActual.tipo);
+        const controlaStockActual = Boolean(Number(articuloActual.controla_stock));
+        const controlaStockFinal = hasControlaStockEnPayload
+            ? controlaStockParseado.valor
+            : (tipoNormalizadoInput !== undefined
+                ? defaultControlaStockPorTipo(tipoFinal)
+                : controlaStockActual);
+
+        if (controlaStockFinal) {
+            if (stock_actual !== undefined && isNaN(stock_actual)) errores.push('El stock actual debe ser un número');
+            if (stock_minimo !== undefined && (isNaN(stock_minimo) || parseInt(stock_minimo, 10) < 0)) errores.push('El stock mínimo debe ser un número positivo o cero');
+        }
+
+        if (errores.length > 0) {
+            await connection.rollback();
+            return res.status(400).json({ error: 'Errores de validación', errores });
+        }
 
         // Compatibilidad operativa: permitir actualizar otros campos (ej. peso)
         // en artículos heredados con stock negativo, siempre que no se intente
         // cambiar ese stock negativo a otro valor también negativo.
-        if (stock_actual !== undefined && parseInt(stock_actual, 10) < 0) {
+        if (controlaStockFinal && stock_actual !== undefined && parseInt(stock_actual, 10) < 0) {
             const stockActualBd = parseInt(articuloActual.stock_actual, 10);
             if (parseInt(stock_actual, 10) !== stockActualBd) {
                 await connection.rollback();
@@ -533,12 +580,28 @@ const actualizarArticulo = async (req, res) => {
         if (descripcion !== undefined) { campos.push('descripcion = ?'); valores.push(descripcion ? descripcion.trim() : null); }
         if (precio !== undefined) { campos.push('precio = ?'); valores.push(parseFloat(precio)); }
         if (categoria_id !== undefined) { campos.push('categoria_id = ?'); valores.push(parseInt(categoria_id, 10)); }
-        if (stock_actual !== undefined) { campos.push('stock_actual = ?'); valores.push(parseInt(stock_actual, 10)); }
-        if (stock_minimo !== undefined) { campos.push('stock_minimo = ?'); valores.push(parseInt(stock_minimo, 10)); }
-        if (tipo !== undefined) { campos.push('tipo = ?'); valores.push(tipo); }
+        if (tipoNormalizadoInput !== undefined) { campos.push('tipo = ?'); valores.push(tipoFinal); }
+        if (hasControlaStockEnPayload || tipoNormalizadoInput !== undefined) { campos.push('controla_stock = ?'); valores.push(controlaStockFinal ? 1 : 0); }
         if (imagen_url !== undefined) { campos.push('imagen_url = ?'); valores.push(imagen_url || null); }
         if (activo !== undefined) { campos.push('activo = ?'); valores.push(activo ? 1 : 0); }
         if (peso !== undefined && peso !== null && peso !== '') { campos.push('peso = ?'); valores.push(pesoValidacion.valor); }
+
+        const forzarStockEnCero = !controlaStockFinal && (
+            hasControlaStockEnPayload ||
+            tipoNormalizadoInput !== undefined ||
+            stock_actual !== undefined ||
+            stock_minimo !== undefined
+        );
+
+        if (forzarStockEnCero) {
+            campos.push('stock_actual = ?');
+            valores.push(0);
+            campos.push('stock_minimo = ?');
+            valores.push(0);
+        } else {
+            if (stock_actual !== undefined) { campos.push('stock_actual = ?'); valores.push(parseInt(stock_actual, 10)); }
+            if (stock_minimo !== undefined) { campos.push('stock_minimo = ?'); valores.push(parseInt(stock_minimo, 10)); }
+        }
 
         if (campos.length === 0 && ingredientes === undefined) {
             await connection.rollback();
@@ -558,7 +621,6 @@ const actualizarArticulo = async (req, res) => {
             );
         }
 
-        const tipoFinal = tipo !== undefined ? tipo : articuloActual.tipo;
         if (tipoFinal === 'ELABORADO' && Array.isArray(ingredientes)) {
             await sincronizarContenidoElaborado(connection, id, ingredientes);
         } else if (tipoFinal !== 'ELABORADO') {

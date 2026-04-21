@@ -2,6 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const inventarioController = require('../controllers/inventarioController');
+const stockSemanalRoutes = require('./stockSemanalRoutes');
 const { middlewareAuditoria } = require('../middlewares/auditoriaMiddleware');
 const { authenticateToken, authorizeRole } = require('../middlewares/authMiddleware');
 
@@ -25,6 +26,8 @@ router.get('/articulos/:id', ...soloAdminGerente, responderRutaArticulosDeprecad
 router.post('/articulos', ...soloAdminGerente, responderRutaArticulosDeprecada);
 router.put('/articulos/:id', ...soloAdminGerente, responderRutaArticulosDeprecada);
 router.delete('/articulos/:id', ...soloAdminGerente, responderRutaArticulosDeprecada);
+
+router.use(stockSemanalRoutes);
 
 // =====================================================
 // RUTAS DE INGREDIENTES
@@ -324,7 +327,22 @@ router.use((error, req, res, next) => {
         method: req.method,
         user: req.user?.usuario || 'DESCONOCIDO'
     });
-    
+
+    if (typeof error?.status === 'number' && error.status >= 400 && error.status < 600) {
+        const payload = {
+            success: false,
+            message: error.message || 'Error en inventario',
+            timestamp: new Date().toISOString(),
+            path: req.originalUrl
+        };
+        if (error.code) payload.code = error.code;
+        if (error.details) payload.details = error.details;
+        if (process.env.NODE_ENV === 'development') {
+            payload.error = error.message;
+        }
+        return res.status(error.status).json(payload);
+    }
+
     // Errores específicos del módulo
     if (error.code === 'ER_DUP_ENTRY') {
         return res.status(409).json({

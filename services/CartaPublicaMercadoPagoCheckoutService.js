@@ -40,7 +40,7 @@ async function obtenerArticulosPorIds(connection, articuloIds = []) {
     if (articuloIds.length === 0) return [];
     const placeholders = articuloIds.map(() => '?').join(',');
     const [rows] = await connection.execute(
-        `SELECT id, nombre, precio
+        `SELECT id, nombre, precio, controla_stock
          FROM articulos
          WHERE id IN (${placeholders}) AND activo = 1`,
         articuloIds
@@ -191,7 +191,7 @@ async function insertarPedidoContenido(connection, pedidoId, itemsNormalizados =
         ]);
 
         await connection.execute(
-            'UPDATE articulos SET stock_actual = stock_actual - ? WHERE id = ?',
+            'UPDATE articulos SET stock_actual = stock_actual - ? WHERE id = ? AND controla_stock = 1',
             [item.cantidad, item.articulo_id]
         );
     }
