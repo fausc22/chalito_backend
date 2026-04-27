@@ -93,6 +93,7 @@ const cartaPublicaRoutes = require('./routes/cartaPublicaRoutes');
 const fondosRoutes = require('./routes/fondosRoutes');
 const gastosRoutes = require('./routes/gastosRoutes');
 const empleadosRoutes = require('./routes/empleadosRoutes');
+const reportesRoutes = require('./routes/reportes.routes');
 
 // Importar worker de cola de pedidos
 const OrderQueueWorker = require('./workers/OrderQueueWorker');
@@ -242,6 +243,7 @@ app.use('/api/carta-publica', cartaPublicaRoutes);
 app.use('/fondos', fondosRoutes);
 app.use('/gastos', gastosRoutes);
 app.use('/empleados', empleadosRoutes);
+app.use('/reportes', reportesRoutes);
 
 // Middleware global de manejo de errores
 app.use((error, req, res, next) => {
