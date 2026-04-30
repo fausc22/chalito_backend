@@ -20,6 +20,7 @@ const { isStoreOpen, isValidScheduledDateTime, getNowInStoreTimezone } = require
 const { isStoreHoursValidationEnabled } = require('../config/storeHoursConfig');
 const { enrichPedidoRealtime, buildPedidoSnapshotById } = require('../services/pedidoRealtimeSerializer');
 const { calcularTotalesDesdePrecioFinal } = require('../services/totalesPrecioFinal');
+const ClientesService = require('../services/ClientesService');
 
 function parseMontoConCuantoAbona(value) {
     if (value === null || value === undefined) return null;
@@ -253,17 +254,25 @@ const crearPedidoCarta = async (req, res) => {
             horaInicioPreparacion = new Date(horarioEntregaDate.getTime() - tiempoPlaceholder * 60 * 1000);
         }
 
+        const clienteEntidad = await ClientesService.findOrCreate({
+            nombre: customer.nombre,
+            telefono: customer.telefono,
+            email: customer.email || null,
+            direccion: address || null
+        }, connection);
+
         // Insert pedidos
         const pedidoQuery = `
             INSERT INTO pedidos (
-                fecha, cliente_nombre, cliente_direccion, cliente_telefono, cliente_email,
+                cliente_id, fecha, cliente_nombre, cliente_direccion, cliente_telefono, cliente_email,
                 origen_pedido, subtotal, iva_total, total, medio_pago, estado_pago, modalidad, horario_entrega,
                 estado, observaciones, monto_con_cuanto_abona, usuario_id, usuario_nombre,
                 prioridad, tiempo_estimado_preparacion, hora_inicio_preparacion, transicion_automatica
-            ) VALUES (NOW(), ?, ?, ?, ?, 'WEB', ?, ?, ?, ?, 'PENDIENTE', ?, ?, 'RECIBIDO', ?, ?, NULL, NULL, ?, ?, ?, ?)
+            ) VALUES (?, NOW(), ?, ?, ?, ?, 'WEB', ?, ?, ?, ?, 'PENDIENTE', ?, ?, 'RECIBIDO', ?, ?, NULL, NULL, ?, ?, ?, ?)
         `;
 
         const pedidoValues = [
+            clienteEntidad?.id || null,
             customer.nombre,
             address || null,
             customer.telefono,
