@@ -18,6 +18,7 @@ const {
     obtenerTotalFinalDesdeRegistro,
     calcularTotalesConDescuentoPorcentaje
 } = require('../services/totalesPrecioFinal');
+const ClientesService = require('../services/ClientesService');
 
 const PRESENTACIONES_VALIDAS = new Set(['SIMPLE', 'DOBLE', 'TRIPLE']);
 
@@ -168,16 +169,24 @@ const crearPedido = async (req, res) => {
             }
             
             // Insertar pedido
+            const clienteEntidad = await ClientesService.findOrCreate({
+                nombre: pedidoData.cliente_nombre,
+                telefono: pedidoData.cliente_telefono,
+                email: pedidoData.cliente_email,
+                direccion: pedidoData.cliente_direccion
+            }, connection);
+
             const pedidoQuery = `
                 INSERT INTO pedidos (
-                    fecha, cliente_nombre, cliente_direccion, cliente_telefono, cliente_email,
+                    cliente_id, fecha, cliente_nombre, cliente_direccion, cliente_telefono, cliente_email,
                     origen_pedido, subtotal, iva_total, total, medio_pago, estado_pago, modalidad, horario_entrega,
                     estado, observaciones, usuario_id, usuario_nombre,
                     prioridad, tiempo_estimado_preparacion, hora_inicio_preparacion, transicion_automatica
-                ) VALUES (NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `;
             
             const pedidoValues = [
+                clienteEntidad?.id || null,
                 pedidoData.cliente_nombre,
                 pedidoData.cliente_direccion,
                 pedidoData.cliente_telefono,
@@ -1733,13 +1742,13 @@ const cobrarPedido = async (req, res) => {
         try {
             const ventaQueryConPedido = `
                 INSERT INTO ventas (
-                    pedido_id, fecha, cliente_nombre, cliente_direccion, cliente_telefono, cliente_email,
+                    pedido_id, cliente_id, fecha, cliente_nombre, cliente_direccion, cliente_telefono, cliente_email,
                     subtotal, iva_total, descuento, total, medio_pago, cuenta_id,
                     estado, observaciones, tipo_factura, usuario_id, usuario_nombre
-                ) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'FACTURADA', ?, ?, ?, ?)
+                ) VALUES (?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'FACTURADA', ?, ?, ?, ?)
             `;
             [ventaResult] = await connection.execute(ventaQueryConPedido, [
-                id, pedido.cliente_nombre, pedido.cliente_direccion, pedido.cliente_telefono,
+                id, pedido.cliente_id || null, pedido.cliente_nombre, pedido.cliente_direccion, pedido.cliente_telefono,
                 pedido.cliente_email, totalesVenta.subtotal, totalesVenta.iva_total, totalesVenta.descuento, totalesVenta.total,
                 medio_pago || pedido.medio_pago || 'EFECTIVO', cuenta_id || null,
                 pedido.observaciones, tipo_factura || null, usuario.id || null,
@@ -1749,13 +1758,13 @@ const cobrarPedido = async (req, res) => {
             if (err.code === 'ER_BAD_FIELD_ERROR' && err.message && err.message.includes('pedido_id')) {
                 const ventaQuerySinPedido = `
                     INSERT INTO ventas (
-                        fecha, cliente_nombre, cliente_direccion, cliente_telefono, cliente_email,
+                        cliente_id, fecha, cliente_nombre, cliente_direccion, cliente_telefono, cliente_email,
                         subtotal, iva_total, descuento, total, medio_pago, cuenta_id,
                         estado, observaciones, tipo_factura, usuario_id, usuario_nombre
-                    ) VALUES (NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'FACTURADA', ?, ?, ?, ?)
+                    ) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'FACTURADA', ?, ?, ?, ?)
                 `;
                 [ventaResult] = await connection.execute(ventaQuerySinPedido, [
-                    pedido.cliente_nombre, pedido.cliente_direccion, pedido.cliente_telefono,
+                    pedido.cliente_id || null, pedido.cliente_nombre, pedido.cliente_direccion, pedido.cliente_telefono,
                     pedido.cliente_email, totalesVenta.subtotal, totalesVenta.iva_total, totalesVenta.descuento, totalesVenta.total,
                     medio_pago || pedido.medio_pago || 'EFECTIVO', cuenta_id || null,
                     pedido.observaciones, tipo_factura || null, usuario.id || null,
