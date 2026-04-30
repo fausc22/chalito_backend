@@ -18,7 +18,8 @@ jobs:
           script: |
             set -e
             cd /opt/api-chalito
-            git pull origin test
+            git fetch origin test
+            git reset --hard origin/test
             npm install --production
             pm2 reload chalito-backend-test
             echo "✅ Deploy completado exitosamente"

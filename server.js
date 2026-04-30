@@ -124,62 +124,34 @@ ensureWorkerHeartbeatInterval(io);
 emitWorkerStatus(io, Boolean(OrderQueueWorker.isRunning));
 
 
-// CORS configuration - Optimizado para VPS
+// ============================================
+// CORS
+// ============================================
 const allowedOrigins = [
     'http://localhost:3000',
+    'http://localhost:3001',
+    'https://chalito-carta.vercel.app',
+    'https://chalito-beta.vercel.app'
 ];
 
-// Origen de la carta online (chalito_carta)
-if (process.env.CARTA_FRONTEND_URL) {
-    allowedOrigins.push(process.env.CARTA_FRONTEND_URL);
-}
+const { middlewareAuditoria } = require('./middlewares/auditoriaMiddleware');
 
-// Orígenes adicionales desde env (separados por coma)
-if (process.env.ALLOWED_ORIGINS) {
-    process.env.ALLOWED_ORIGINS.split(',').forEach(origin => {
-        const trimmed = origin.trim();
-        if (trimmed) allowedOrigins.push(trimmed);
-    });
-}
-
-// En desarrollo, permitir cualquier origen localhost
-if (process.env.NODE_ENV === 'development') {
-    allowedOrigins.push(/^http:\/\/localhost:\d+$/);
-    allowedOrigins.push(/^http:\/\/127\.0\.0\.1:\d+$/);
-}
-
-
-const corsOptions = {
+app.use(cors({
     origin: (origin, callback) => {
-        // Permitir requests sin origen (apps móviles, Postman, etc.)
         if (!origin) return callback(null, true);
-        
-        // Verificar si el origen está en la lista permitida
-        const isAllowed = allowedOrigins.some(allowedOrigin => {
-            if (typeof allowedOrigin === 'string') {
-                return allowedOrigin === origin;
-            }
-            // Para RegExp
-            return allowedOrigin.test(origin);
-        });
-        
-        if (isAllowed) {
+
+        if (allowedOrigins.filter(Boolean).includes(origin)) {
             callback(null, true);
         } else {
-            console.log(`❌ CORS bloqueado para origen: ${origin}`);
+            console.warn(`⚠️ [CORS] Origen no permitido: ${origin}`);
             callback(new Error('No permitido por CORS'));
         }
     },
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Guest-Device-Id'],
     credentials: true,
-    optionsSuccessStatus: 200 // Para navegadores legacy
-};
-
-
-const { middlewareAuditoria } = require('./middlewares/auditoriaMiddleware');
-
-app.use(cors(corsOptions));
+    maxAge: 86400,
+}));
 app.use(cookieParser());  
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
