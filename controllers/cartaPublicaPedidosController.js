@@ -21,6 +21,10 @@ const { isStoreHoursValidationEnabled } = require('../config/storeHoursConfig');
 const { enrichPedidoRealtime, buildPedidoSnapshotById } = require('../services/pedidoRealtimeSerializer');
 const { calcularTotalesDesdePrecioFinal } = require('../services/totalesPrecioFinal');
 const ClientesService = require('../services/ClientesService');
+const {
+    notificarPedidoEfectivo,
+    notificarPedidoTransferencia
+} = require('../services/pedidoNotificacionWspService');
 
 function parseMontoConCuantoAbona(value) {
     if (value === null || value === undefined) return null;
@@ -403,6 +407,24 @@ const crearPedidoCarta = async (req, res) => {
             } catch (err) {
                 console.warn('⚠️ No se pudo emitir WebSocket para pedido carta:', err.message);
             }
+        }
+
+        try {
+            if (medioPagoNormalizado === 'EFECTIVO') {
+                await notificarPedidoEfectivo({
+                    id: pedidoId,
+                    cliente_telefono: customer.telefono,
+                    total
+                });
+            } else if (medioPagoNormalizado === 'TRANSFERENCIA') {
+                await notificarPedidoTransferencia({
+                    id: pedidoId,
+                    cliente_telefono: customer.telefono,
+                    total
+                });
+            }
+        } catch (err) {
+            console.warn('⚠️ [WA] No se pudo enviar notificación WhatsApp:', err.message);
         }
 
         const response = {

@@ -98,6 +98,8 @@ const clientesRoutes = require('./routes/clientesRoutes');
 
 // Importar worker de cola de pedidos
 const OrderQueueWorker = require('./workers/OrderQueueWorker');
+const MercadoPagoWorker = require('./workers/MercadoPagoWorker');
+const { iniciarWhatsApp } = require('./services/whatsappService');
 
 // Envolver start/stop para sincronizar estado sin tocar la lógica del worker
 const originalWorkerStart = OrderQueueWorker.start.bind(OrderQueueWorker);
@@ -124,62 +126,34 @@ ensureWorkerHeartbeatInterval(io);
 emitWorkerStatus(io, Boolean(OrderQueueWorker.isRunning));
 
 
-// CORS configuration - Optimizado para VPS
+// ============================================
+// CORS
+// ============================================
 const allowedOrigins = [
     'http://localhost:3000',
+    'http://localhost:3001',
+    'https://chalito-carta.vercel.app',
+    'https://chalito-beta.vercel.app'
 ];
 
-// Origen de la carta online (chalito_carta)
-if (process.env.CARTA_FRONTEND_URL) {
-    allowedOrigins.push(process.env.CARTA_FRONTEND_URL);
-}
+const { middlewareAuditoria } = require('./middlewares/auditoriaMiddleware');
 
-// Orígenes adicionales desde env (separados por coma)
-if (process.env.ALLOWED_ORIGINS) {
-    process.env.ALLOWED_ORIGINS.split(',').forEach(origin => {
-        const trimmed = origin.trim();
-        if (trimmed) allowedOrigins.push(trimmed);
-    });
-}
-
-// En desarrollo, permitir cualquier origen localhost
-if (process.env.NODE_ENV === 'development') {
-    allowedOrigins.push(/^http:\/\/localhost:\d+$/);
-    allowedOrigins.push(/^http:\/\/127\.0\.0\.1:\d+$/);
-}
-
-
-const corsOptions = {
+app.use(cors({
     origin: (origin, callback) => {
-        // Permitir requests sin origen (apps móviles, Postman, etc.)
         if (!origin) return callback(null, true);
-        
-        // Verificar si el origen está en la lista permitida
-        const isAllowed = allowedOrigins.some(allowedOrigin => {
-            if (typeof allowedOrigin === 'string') {
-                return allowedOrigin === origin;
-            }
-            // Para RegExp
-            return allowedOrigin.test(origin);
-        });
-        
-        if (isAllowed) {
+
+        if (allowedOrigins.filter(Boolean).includes(origin)) {
             callback(null, true);
         } else {
-            console.log(`❌ CORS bloqueado para origen: ${origin}`);
+            console.warn(`⚠️ [CORS] Origen no permitido: ${origin}`);
             callback(new Error('No permitido por CORS'));
         }
     },
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Guest-Device-Id'],
     credentials: true,
-    optionsSuccessStatus: 200 // Para navegadores legacy
-};
-
-
-const { middlewareAuditoria } = require('./middlewares/auditoriaMiddleware');
-
-app.use(cors(corsOptions));
+    maxAge: 86400,
+}));
 app.use(cookieParser());  
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
@@ -197,7 +171,7 @@ app.get('/health', async (req, res) => {
         
         
         res.json({
-            status: '✅ VPS Healthy',
+            status: '✅ PEDILO',
             timestamp: new Date().toISOString(),
             environment: process.env.NODE_ENV || 'development',
             server: {
@@ -328,7 +302,16 @@ server.listen(port, '0.0.0.0', () => {
         } catch (error) {
             console.error('❌ Error iniciando OrderQueueWorker:', error);
         }
+        try {
+            MercadoPagoWorker.start();
+        } catch (error) {
+            console.error('❌ Error iniciando MercadoPagoWorker:', error);
+        }
     }, 3000); // Esperar 3 segundos después del inicio del servidor
+
+    iniciarWhatsApp().catch((err) => {
+        console.warn('⚠️ WhatsApp no disponible al arranque (escanear QR):', err.message);
+    });
 });
 
 // Exportar io para usar en otros módulos
@@ -338,6 +321,7 @@ app.set('io', io);
 process.on('SIGTERM', () => {
     console.log('🛑 SIGTERM recibido, cerrando servidor gracefully...');
     OrderQueueWorker.stop();
+    MercadoPagoWorker.stop();
     if (workerHeartbeatInterval) {
         clearInterval(workerHeartbeatInterval);
         workerHeartbeatInterval = null;
@@ -353,6 +337,7 @@ process.on('SIGTERM', () => {
 process.on('SIGINT', () => {
     console.log('🛑 SIGINT recibido, cerrando servidor gracefully...');
     OrderQueueWorker.stop();
+    MercadoPagoWorker.stop();
     if (workerHeartbeatInterval) {
         clearInterval(workerHeartbeatInterval);
         workerHeartbeatInterval = null;
