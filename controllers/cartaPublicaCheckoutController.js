@@ -2,8 +2,10 @@ const db = require('./dbPromise');
 const {
     crearCheckoutMercadoPago,
     procesarWebhookMercadoPago,
-    obtenerEstadoPagoPedidoCartaPublica
+    obtenerEstadoPagoPedidoCartaPublica,
+    obtenerEstadoSesionMp
 } = require('../services/CartaPublicaMercadoPagoCheckoutService');
+const { buildPedidoSnapshotById } = require('../services/pedidoRealtimeSerializer');
 
 async function crearCheckoutMercadoPagoController(req, res) {
     try {
@@ -11,17 +13,17 @@ async function crearCheckoutMercadoPagoController(req, res) {
         const resultado = await crearCheckoutMercadoPago(db, payload);
 
         if (!resultado.ok) {
-            console.error('⚠️ Pedido creado sin preferencia MP:', resultado.error?.message);
+            console.error('⚠️ Checkout MP sin preferencia:', resultado.error?.message);
             return res.status(502).json({
                 ok: false,
-                mensaje: 'Pedido creado, pero no se pudo generar la preferencia de pago. Intentá nuevamente en unos minutos.',
+                mensaje: 'No se pudo iniciar el pago con Mercado Pago. Intentá nuevamente en unos minutos.',
                 data: resultado.data
             });
         }
 
         return res.status(201).json({
             ok: true,
-            mensaje: 'Pedido creado y preferencia de pago generada correctamente.',
+            mensaje: 'Sesión de pago creada. Redirigiendo a Mercado Pago.',
             data: resultado.data
         });
     } catch (error) {
@@ -65,25 +67,70 @@ async function obtenerEstadoPagoPedidoController(req, res) {
     }
 }
 
+async function obtenerEstadoSesionMpController(req, res) {
+    try {
+        const resultado = await obtenerEstadoSesionMp(db, req.params.sessionId);
+
+        if (!resultado.encontrado) {
+            if (resultado.motivo === 'id_invalido') {
+                return res.status(400).json({
+                    ok: false,
+                    mensaje: 'Identificador de sesión inválido.'
+                });
+            }
+            return res.status(404).json({
+                ok: false,
+                mensaje: 'Sesión de pago no encontrada.'
+            });
+        }
+
+        return res.status(200).json({
+            ok: true,
+            data: resultado.data
+        });
+    } catch (error) {
+        console.error('❌ Error al consultar estado de sesión MP:', error);
+        return res.status(500).json({
+            ok: false,
+            mensaje: 'Error al consultar el estado de la sesión.',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+}
+
+async function emitirSocketPostWebhook(io, resultado) {
+    if (!io || !resultado?.procesado || !resultado?.pedidoId) {
+        return;
+    }
+    try {
+        const { getInstance: getSocketService } = require('../services/SocketService');
+        const socketService = getSocketService(io);
+        const snapshot = await buildPedidoSnapshotById({
+            pedidoId: resultado.pedidoId,
+            connection: db,
+            includeArticulos: true
+        });
+        if (!snapshot) {
+            return;
+        }
+        if (resultado.esPagoNuevo) {
+            socketService.emitPedidoCreado(snapshot);
+        } else if (resultado.pagoRecienConfirmadoLegacy) {
+            socketService.emitPedidoActualizado(resultado.pedidoId, snapshot);
+        }
+    } catch (socketError) {
+        console.warn(
+            `⚠️ Error emitiendo socket post-webhook MP pedido #${resultado.pedidoId}:`,
+            socketError.message
+        );
+    }
+}
+
 async function webhookMercadoPagoController(req, res) {
     try {
         const resultado = await procesarWebhookMercadoPago(db, req);
-
-        if (resultado?.procesado && resultado?.pedidoId) {
-            const io = req.app.get('io');
-            if (io) {
-                try {
-                    const [pedidoRows] = await db.execute('SELECT * FROM pedidos WHERE id = ?', [resultado.pedidoId]);
-                    if (pedidoRows.length > 0) {
-                        const { getInstance: getSocketService } = require('../services/SocketService');
-                        const socketService = getSocketService(io);
-                        socketService.emitPedidoActualizado(resultado.pedidoId, pedidoRows[0]);
-                    }
-                } catch (socketError) {
-                    console.warn(`⚠️ Error emitiendo socket de pago actualizado para pedido #${resultado.pedidoId}:`, socketError.message);
-                }
-            }
-        }
+        const io = req.app.get('io');
+        await emitirSocketPostWebhook(io, resultado);
 
         return res.status(200).json({
             ok: true,
@@ -106,5 +153,6 @@ async function webhookMercadoPagoController(req, res) {
 module.exports = {
     crearCheckoutMercadoPagoController,
     obtenerEstadoPagoPedidoController,
+    obtenerEstadoSesionMpController,
     webhookMercadoPagoController
 };

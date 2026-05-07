@@ -25,6 +25,8 @@ Ejecutar siempre por nombre de archivo (prefijo numerico):
 1. `001_empleados_base.sql`
 2. `002_stock_semanal_inventario.sql`
 3. `003_articulos_controla_stock.sql`
+4. `004_clientes.sql`
+5. `005_checkout_sesiones_mp.sql`
 
 ## Que hace cada archivo
 
@@ -42,6 +44,8 @@ Ejecutar siempre por nombre de archivo (prefijo numerico):
   - `ELABORADO` => `controla_stock = false`
   - `BEBIDA` => `controla_stock = true`
   - `OTRO` y tipos no mapeados => `controla_stock = true`
+- `004_clientes.sql` -> modulo clientes (estructura segun el archivo).
+- `005_checkout_sesiones_mp.sql` -> tabla `checkout_sesiones_mp` para checkout Mercado Pago sin crear pedido hasta pago aprobado.
 
 ## Seeds relacionados
 

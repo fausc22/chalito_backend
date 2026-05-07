@@ -64,9 +64,12 @@ PORT=3001
 CARTA_FRONTEND_URL=http://localhost:3000
 BACKEND_URL=http://localhost:3001
 MP_ACCESS_TOKEN=TEST-xxxxxxxxxxxxxxxxxxxx
+# Firma de webhooks (obligatorio en producción): panel Mercado Pago → Webhooks
+MP_WEBHOOK_SECRET=tu_clave_secreta_webhook
 ```
 
 > Recomendacion: no subir secretos ni credenciales reales al repositorio.
+> En producción, sin `MP_WEBHOOK_SECRET` el endpoint de webhook MP responde 500.
 
 ---
 

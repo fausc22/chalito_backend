@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const { MercadoPagoConfig, Preference, Payment } = require('mercadopago');
 const { validarExtrasNoDobleYTriple, construirPersonalizaciones } = require('./PersonalizacionesService');
 const { parseScheduledTime } = require('./ScheduledTimeParser');
@@ -7,6 +8,7 @@ const {
     MERCADO_PAGO_CHECKOUT_PUBLIC_URL_ERROR_MESSAGE
 } = require('./mercadoPagoPreferenciaUrlHelper');
 const { calcularTotalesDesdePrecioFinal } = require('./totalesPrecioFinal');
+const { notificarPedidoMercadoPagoAprobado } = require('./pedidoNotificacionWspService');
 
 const PROVEEDOR_MERCADOPAGO = 'MERCADOPAGO';
 const MONEDA_ARS = 'ARS';
@@ -14,6 +16,12 @@ const ESTADO_PAGO_PENDIENTE = 'PENDIENTE';
 const ESTADO_PAGO_PAGADO = 'PAGADO';
 const ESTADO_PAGO_RECHAZADO = 'RECHAZADO';
 const ESTADO_PAGO_CANCELADO = 'CANCELADO';
+
+const PREFIJO_REF_SESION_MP = 'sesion_mp_';
+const SESION_EXPIRACION_MINUTOS = 30;
+const TOLERANCIA_MONTO_MP_ARS = 1.5;
+
+const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function getMercadoPagoClient() {
     const accessToken = process.env.MP_ACCESS_TOKEN;
@@ -136,7 +144,8 @@ function normalizarHorarioEntrega(horarioEntregaRaw) {
     return parsed.date;
 }
 
-async function insertarPedido(connection, payload, resumenCarrito) {
+async function insertarPedido(connection, payload, resumenCarrito, opciones = {}) {
+    const estadoPago = opciones.estadoPago ?? ESTADO_PAGO_PENDIENTE;
     const horarioEntregaDate = normalizarHorarioEntrega(payload?.pedido?.horario_entrega);
     const query = `
         INSERT INTO pedidos (
@@ -159,7 +168,7 @@ async function insertarPedido(connection, payload, resumenCarrito) {
         resumenCarrito.iva_total,
         resumenCarrito.total,
         PROVEEDOR_MERCADOPAGO,
-        ESTADO_PAGO_PENDIENTE,
+        estadoPago,
         payload.pedido.modalidad,
         horarioEntregaDate,
         payload.pedido.observaciones || null,
@@ -197,26 +206,39 @@ async function insertarPedidoContenido(connection, pedidoId, itemsNormalizados =
     }
 }
 
-async function insertarPedidoPago(connection, pedidoId, total) {
-    const referenciaExterna = `pedido_${pedidoId}`;
+async function insertarPedidoPago(connection, pedidoId, total, opciones = {}) {
+    const referenciaExterna = opciones.referenciaExterna ?? `pedido_${pedidoId}`;
+    const estadoPago = opciones.estadoPago ?? ESTADO_PAGO_PENDIENTE;
+    const idPreferencia = opciones.idPreferencia ?? null;
+    const idPago = opciones.idPago != null ? String(opciones.idPago) : null;
+    const estadoProveedor = opciones.estadoProveedor
+        ?? (estadoPago === ESTADO_PAGO_PENDIENTE ? 'preference_pending' : 'payment_notification');
+    const detalleEstadoProveedor = opciones.detalleEstadoProveedor
+        ?? (estadoPago === ESTADO_PAGO_PENDIENTE ? 'Pedido creado pendiente de preferencia' : 'Pago confirmado');
+    const fechaAprobado = opciones.fechaAprobado ?? null;
+    const datosAdicionales = opciones.datosAdicionales != null ? opciones.datosAdicionales : {};
+
     const query = `
         INSERT INTO pedidos_pagos (
             pedido_id, fecha, proveedor_pago, estado_pago, monto, moneda,
             referencia_externa, id_preferencia, id_pago, estado_proveedor,
             detalle_estado_proveedor, fecha_aprobado, fecha_ultima_notificacion,
             datos_adicionales, fecha_modificacion
-        ) VALUES (?, NOW(), ?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL, NOW(), ?, NOW())
+        ) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, NOW())
     `;
     const values = [
         pedidoId,
         PROVEEDOR_MERCADOPAGO,
-        ESTADO_PAGO_PENDIENTE,
+        estadoPago,
         total,
         MONEDA_ARS,
         referenciaExterna,
-        'preference_pending',
-        'Pedido creado pendiente de preferencia',
-        JSON.stringify({})
+        idPreferencia,
+        idPago,
+        estadoProveedor,
+        detalleEstadoProveedor,
+        fechaAprobado,
+        JSON.stringify(typeof datosAdicionales === 'object' ? datosAdicionales : {})
     ];
     const [result] = await connection.execute(query, values);
     return {
@@ -251,11 +273,20 @@ function assertBackUrlsValidas(backUrls) {
     }
 }
 
-function construirPreferenciaPayload({ pedidoId, total, modalidad, referenciaExterna, itemsNormalizados }) {
+/**
+ * Preferencia Checkout Pro asociada a una sesión (sin pedido en BD aún).
+ */
+function construirPreferenciaPayloadDesdeSesion({
+    sessionId,
+    total,
+    modalidad,
+    referenciaExterna,
+    itemsNormalizados
+}) {
     const { cartaFrontendBaseUrl: frontendBaseUrl, backendBaseUrl } = obtenerUrlsBaseCheckoutProNormalizadas();
 
     const descripcion = construirDescripcionPreferencia(itemsNormalizados);
-    const baseResultUrl = `${frontendBaseUrl}/checkout/resultado?pedido_id=${pedidoId}`;
+    const baseResultUrl = `${frontendBaseUrl}/checkout/resultado?session_id=${encodeURIComponent(sessionId)}`;
     const backUrls = {
         success: `${baseResultUrl}&resultado=success`,
         pending: `${baseResultUrl}&resultado=pending`,
@@ -267,8 +298,8 @@ function construirPreferenciaPayload({ pedidoId, total, modalidad, referenciaExt
     const payload = {
         items: [
             {
-                id: `pedido_${pedidoId}`,
-                title: `Pedido El Chalito #${pedidoId}`,
+                id: `sesion_${sessionId}`,
+                title: `Pedido web El Chalito (pago pendiente)`,
                 description: descripcion,
                 quantity: 1,
                 currency_id: MONEDA_ARS,
@@ -279,7 +310,7 @@ function construirPreferenciaPayload({ pedidoId, total, modalidad, referenciaExt
         back_urls: backUrls,
         notification_url: `${backendBaseUrl}/api/carta-publica/checkout/mercadopago/webhook`,
         metadata: {
-            pedido_id: pedidoId,
+            session_id: sessionId,
             origen: 'WEB',
             modulo: 'chalito_carta',
             modalidad,
@@ -287,7 +318,6 @@ function construirPreferenciaPayload({ pedidoId, total, modalidad, referenciaExt
         }
     };
 
-    // Mercado Pago requiere back_urls.success para usar auto_return.
     if (payload.back_urls?.success) {
         payload.auto_return = 'approved';
     }
@@ -309,58 +339,57 @@ async function crearPreferenciaMercadoPago(preferenciaPayload) {
     }
     assertUrlHttpsPublicaMercadoPago(notificationUrl, 'notification_url');
 
-    // Logs temporales de diagnóstico para validar payload real enviado a Mercado Pago.
     console.log('[MP][CheckoutPro][debug] CARTA_FRONTEND_URL:', cartUrl);
     console.log('[MP][CheckoutPro][debug] BACKEND_URL:', backUrl);
     console.log('[MP][CheckoutPro][debug] preferenceBody.back_urls:', JSON.stringify(backUrls, null, 2));
     console.log('[MP][CheckoutPro][debug] preferenceBody.notification_url:', notificationUrl);
-    console.log('[MP][CheckoutPro][debug] preferenceBody completo:', JSON.stringify(preferenciaPayload, null, 2));
 
     const client = getMercadoPagoClient();
     const preference = new Preference(client);
     return preference.create({ body: preferenciaPayload });
 }
 
-async function actualizarIdPreferencia(executor, pagoId, idPreferencia, urlPago) {
-    await executor.execute(
-        `UPDATE pedidos_pagos
-         SET id_preferencia = ?,
-             estado_proveedor = ?,
-             detalle_estado_proveedor = ?,
-             datos_adicionales = ?,
-             fecha_modificacion = NOW()
-         WHERE id = ?`,
-        [
-            idPreferencia,
-            'preference_created',
-            'Preferencia creada correctamente',
-            JSON.stringify({ init_point: urlPago || null }),
-            pagoId
-        ]
+async function insertarSesionCheckoutMp(db, {
+    sessionId,
+    referenciaExterna,
+    payloadCheckout,
+    fechaExpiracionSql
+}) {
+    await db.execute(
+        `INSERT INTO checkout_sesiones_mp (
+            id, fecha_expiracion, estado, referencia_externa, payload_checkout
+        ) VALUES (?, ?, 'PENDIENTE', ?, ?)`,
+        [sessionId, fechaExpiracionSql, referenciaExterna, payloadCheckout]
     );
 }
 
+async function eliminarSesionCheckoutMp(db, sessionId) {
+    await db.execute('DELETE FROM checkout_sesiones_mp WHERE id = ?', [sessionId]);
+}
+
+async function actualizarPreferenciaEnSesion(db, sessionId, idPreferencia) {
+    await db.execute(
+        `UPDATE checkout_sesiones_mp
+         SET id_preferencia = ?, fecha_modificacion = NOW()
+         WHERE id = ?`,
+        [idPreferencia, sessionId]
+    );
+}
+
+/**
+ * Checkout MP: solo persiste sesión + preferencia. El pedido se crea al aprobar el pago.
+ */
 async function crearCheckoutMercadoPago(db, payload) {
     validarPayloadCheckout(payload);
 
     const connection = await db.getConnection();
-    let pedidoId = null;
-    let pagoId = null;
-    let referenciaExterna = null;
-    let total = 0;
     let resumenCarrito = null;
+    let sessionId = null;
+    let referenciaExterna = null;
 
     try {
         await connection.beginTransaction();
         resumenCarrito = await recalcularCarrito(connection, payload.items);
-        total = resumenCarrito.total;
-
-        pedidoId = await insertarPedido(connection, payload, resumenCarrito);
-        await insertarPedidoContenido(connection, pedidoId, resumenCarrito.itemsNormalizados);
-        const pagoInsert = await insertarPedidoPago(connection, pedidoId, total);
-        pagoId = pagoInsert.pagoId;
-        referenciaExterna = pagoInsert.referenciaExterna;
-
         await connection.commit();
     } catch (error) {
         try { await connection.rollback(); } catch (_) { /* noop */ }
@@ -369,10 +398,33 @@ async function crearCheckoutMercadoPago(db, payload) {
         connection.release();
     }
 
+    sessionId = crypto.randomUUID();
+    referenciaExterna = `${PREFIJO_REF_SESION_MP}${sessionId}`;
+
+    const payloadCheckout = {
+        payload,
+        resumenCarrito: {
+            itemsNormalizados: resumenCarrito.itemsNormalizados,
+            subtotal: resumenCarrito.subtotal,
+            iva_total: resumenCarrito.iva_total,
+            total: resumenCarrito.total
+        }
+    };
+
+    const fechaExp = new Date(Date.now() + SESION_EXPIRACION_MINUTOS * 60 * 1000);
+    const fechaExpSql = fechaExp.toISOString().slice(0, 19).replace('T', ' ');
+
     try {
-        const preferenciaPayload = construirPreferenciaPayload({
-            pedidoId,
-            total,
+        await insertarSesionCheckoutMp(db, {
+            sessionId,
+            referenciaExterna,
+            payloadCheckout,
+            fechaExpiracionSql: fechaExpSql
+        });
+
+        const preferenciaPayload = construirPreferenciaPayloadDesdeSesion({
+            sessionId,
+            total: resumenCarrito.total,
             modalidad: payload.pedido.modalidad,
             referenciaExterna,
             itemsNormalizados: resumenCarrito.itemsNormalizados
@@ -385,17 +437,14 @@ async function crearCheckoutMercadoPago(db, payload) {
             throw new Error('Mercado Pago no devolvió id de preferencia o URL de pago');
         }
 
-        await actualizarIdPreferencia(db, pagoId, idPreferencia, urlPago);
+        await actualizarPreferenciaEnSesion(db, sessionId, idPreferencia);
 
         return {
             ok: true,
             data: {
-                pedido_id: pedidoId,
-                pago_id: pagoId,
-                estado_pedido: 'RECIBIDO',
-                estado_pago: ESTADO_PAGO_PENDIENTE,
-                medio_pago: PROVEEDOR_MERCADOPAGO,
-                total,
+                session_id: sessionId,
+                estado_sesion: 'PENDIENTE',
+                total: resumenCarrito.total,
                 moneda: MONEDA_ARS,
                 referencia_externa: referenciaExterna,
                 id_preferencia: idPreferencia,
@@ -403,17 +452,14 @@ async function crearCheckoutMercadoPago(db, payload) {
             }
         };
     } catch (error) {
+        try {
+            await eliminarSesionCheckoutMp(db, sessionId);
+        } catch (_) { /* noop */ }
         return {
             ok: false,
             error,
             data: {
-                pedido_id: pedidoId,
-                pago_id: pagoId,
-                estado_pedido: 'RECIBIDO',
-                estado_pago: ESTADO_PAGO_PENDIENTE,
-                medio_pago: PROVEEDOR_MERCADOPAGO,
-                total,
-                moneda: MONEDA_ARS,
+                session_id: sessionId,
                 referencia_externa: referenciaExterna
             }
         };
@@ -426,6 +472,10 @@ function extraerPedidoIdDesdeReferencia(referenciaExterna) {
     if (!match) return null;
     const pedidoId = Number(match[1]);
     return Number.isInteger(pedidoId) && pedidoId > 0 ? pedidoId : null;
+}
+
+function esReferenciaSesionMp(referenciaExterna) {
+    return String(referenciaExterna || '').startsWith(PREFIJO_REF_SESION_MP);
 }
 
 function mapearEstadoMercadoPago(status) {
@@ -476,17 +526,73 @@ async function obtenerPagoMercadoPago(paymentId) {
     return paymentClient.get({ id: paymentId });
 }
 
-async function procesarWebhookMercadoPago(db, req) {
-    const { type, paymentId } = extraerNotificacionMercadoPago(req);
-    if (!type || type !== 'payment' || !paymentId) {
-        return { procesado: false, motivo: 'notificacion_ignorada' };
+function parsePayloadSesion(sesionRow) {
+    const raw = sesionRow.payload_checkout;
+    if (!raw) return null;
+    if (typeof raw === 'object') return raw;
+    try {
+        return JSON.parse(String(raw));
+    } catch {
+        return null;
+    }
+}
+
+async function crearPedidoDesdeSesion(connection, sesionRow, resumenPagoMp, paymentId) {
+    const parsed = parsePayloadSesion(sesionRow);
+    if (!parsed || !parsed.payload || !parsed.payload.items) {
+        throw new Error('payload_checkout inválido en sesión MP');
     }
 
-    const pago = await obtenerPagoMercadoPago(paymentId);
-    const resumenPagoMp = construirResumenPagoMp(pago);
+    const resumenCarrito = await recalcularCarrito(connection, parsed.payload.items);
+    const montoMp = Number(resumenPagoMp.transaction_amount);
+    if (Number.isFinite(montoMp) && Math.abs(montoMp - Number(resumenCarrito.total)) > TOLERANCIA_MONTO_MP_ARS) {
+        throw new Error(
+            `Monto MP (${montoMp}) no coincide con total recalculado (${resumenCarrito.total})`
+        );
+    }
+
+    const pedidoId = await insertarPedido(connection, parsed.payload, resumenCarrito, {
+        estadoPago: ESTADO_PAGO_PAGADO
+    });
+    await insertarPedidoContenido(connection, pedidoId, resumenCarrito.itemsNormalizados);
+
+    const fechaAprobadoParseada = resumenPagoMp.date_approved ? new Date(resumenPagoMp.date_approved) : null;
+    const fechaAprobadoValida = fechaAprobadoParseada && !Number.isNaN(fechaAprobadoParseada.getTime())
+        ? fechaAprobadoParseada
+        : new Date();
+
+    await insertarPedidoPago(connection, pedidoId, resumenCarrito.total, {
+        referenciaExterna: sesionRow.referencia_externa,
+        estadoPago: ESTADO_PAGO_PAGADO,
+        idPreferencia: sesionRow.id_preferencia,
+        idPago: String(paymentId),
+        estadoProveedor: resumenPagoMp.status,
+        detalleEstadoProveedor: resumenPagoMp.status_detail,
+        fechaAprobado: fechaAprobadoValida,
+        datosAdicionales: resumenPagoMp
+    });
+
+    await connection.execute(
+        `UPDATE checkout_sesiones_mp
+         SET estado = 'PROCESADO',
+             pedido_id = ?,
+             id_pago = ?,
+             estado_mp = ?,
+             fecha_modificacion = NOW()
+         WHERE id = ?`,
+        [pedidoId, String(paymentId), resumenPagoMp.status, sesionRow.id]
+    );
+
+    return pedidoId;
+}
+
+/**
+ * Núcleo compartido webhook + worker de reconciliación.
+ */
+async function procesarPagoMercadoPagoInterno(db, resumenPagoMp, paymentId) {
     const externalReference = resumenPagoMp.external_reference;
     if (!externalReference) {
-        return { procesado: false, motivo: 'sin_referencia_externa', paymentId };
+        return { procesado: false, motivo: 'sin_referencia_externa', paymentId: String(paymentId) };
     }
 
     const estadoProveedor = resumenPagoMp.status;
@@ -499,6 +605,165 @@ async function procesarWebhookMercadoPago(db, req) {
     const fechaAprobado = estadoPagoInterno === ESTADO_PAGO_PAGADO
         ? (fechaAprobadoValida || new Date())
         : null;
+
+    if (esReferenciaSesionMp(externalReference)) {
+        const [sesionRows] = await db.execute(
+            `SELECT * FROM checkout_sesiones_mp WHERE referencia_externa = ? LIMIT 1`,
+            [externalReference]
+        );
+
+        if (sesionRows.length === 0) {
+            return {
+                procesado: false,
+                motivo: 'sesion_no_encontrada',
+                paymentId: String(paymentId),
+                externalReference
+            };
+        }
+
+        const sesion = sesionRows[0];
+        const estadoSesion = String(sesion.estado || '').toUpperCase();
+
+        if (estadoSesion === 'PROCESADO') {
+            return {
+                procesado: true,
+                esPagoNuevo: false,
+                pedidoId: sesion.pedido_id ? Number(sesion.pedido_id) : null,
+                estadoPagoInterno,
+                externalReference,
+                resumenPagoMp,
+                paymentId: String(paymentId),
+                pagoRecienConfirmadoLegacy: false
+            };
+        }
+
+        if (estadoSesion === 'EXPIRADO' || estadoSesion === 'CANCELADO') {
+            if (estadoPagoInterno === ESTADO_PAGO_PAGADO) {
+                console.warn(
+                    `[MP] Pago aprobado tardío para sesión ${sesion.id} en estado ${estadoSesion}; se ignora.`
+                );
+            }
+            return {
+                procesado: true,
+                esPagoNuevo: false,
+                pedidoId: null,
+                estadoPagoInterno,
+                externalReference,
+                resumenPagoMp,
+                paymentId: String(paymentId),
+                motivo: 'sesion_ya_cerrada',
+                pagoRecienConfirmadoLegacy: false
+            };
+        }
+
+        if (estadoPagoInterno === ESTADO_PAGO_PENDIENTE) {
+            await db.execute(
+                `UPDATE checkout_sesiones_mp
+                 SET id_pago = ?, estado_mp = ?, fecha_modificacion = NOW()
+                 WHERE id = ? AND estado = 'PENDIENTE'`,
+                [String(paymentId), estadoProveedor, sesion.id]
+            );
+            return {
+                procesado: true,
+                esPagoNuevo: false,
+                pedidoId: null,
+                estadoPagoInterno,
+                externalReference,
+                resumenPagoMp,
+                paymentId: String(paymentId),
+                pagoRecienConfirmadoLegacy: false
+            };
+        }
+
+        if (estadoPagoInterno === ESTADO_PAGO_RECHAZADO || estadoPagoInterno === ESTADO_PAGO_CANCELADO) {
+            await db.execute(
+                `UPDATE checkout_sesiones_mp
+                 SET estado = 'CANCELADO',
+                     id_pago = ?,
+                     estado_mp = ?,
+                     fecha_modificacion = NOW()
+                 WHERE id = ? AND estado = 'PENDIENTE'`,
+                [String(paymentId), estadoProveedor, sesion.id]
+            );
+            return {
+                procesado: true,
+                esPagoNuevo: false,
+                pedidoId: null,
+                estadoPagoInterno,
+                externalReference,
+                resumenPagoMp,
+                paymentId: String(paymentId),
+                pagoRecienConfirmadoLegacy: false
+            };
+        }
+
+        if (estadoPagoInterno === ESTADO_PAGO_PAGADO) {
+            const connection = await db.getConnection();
+            let pedidoId = null;
+            let esPagoNuevo = false;
+            try {
+                await connection.beginTransaction();
+                const [locked] = await connection.execute(
+                    `SELECT * FROM checkout_sesiones_mp WHERE id = ? FOR UPDATE`,
+                    [sesion.id]
+                );
+                if (locked.length === 0) {
+                    await connection.rollback();
+                    return { procesado: false, motivo: 'sesion_perdida', paymentId: String(paymentId) };
+                }
+                const row = locked[0];
+                if (String(row.estado).toUpperCase() === 'PROCESADO') {
+                    await connection.commit();
+                    return {
+                        procesado: true,
+                        esPagoNuevo: false,
+                        pedidoId: Number(row.pedido_id),
+                        estadoPagoInterno,
+                        externalReference,
+                        resumenPagoMp,
+                        paymentId: String(paymentId),
+                        pagoRecienConfirmadoLegacy: false
+                    };
+                }
+                pedidoId = await crearPedidoDesdeSesion(connection, row, resumenPagoMp, paymentId);
+                esPagoNuevo = true;
+                await connection.commit();
+
+                try {
+                    const [rows] = await db.execute(
+                        `SELECT cliente_telefono, total FROM pedidos WHERE id = ? LIMIT 1`,
+                        [pedidoId]
+                    );
+                    if (rows.length > 0) {
+                        await notificarPedidoMercadoPagoAprobado({
+                            id: pedidoId,
+                            cliente_telefono: rows[0].cliente_telefono,
+                            total: rows[0].total
+                        });
+                    }
+                } catch (err) {
+                    console.warn('⚠️ [WA] No se pudo enviar notificación MP aprobado:', err.message);
+                }
+
+                return {
+                    procesado: true,
+                    esPagoNuevo,
+                    pedidoId,
+                    estadoPagoInterno,
+                    externalReference,
+                    resumenPagoMp,
+                    paymentId: String(paymentId),
+                    pagoRecienConfirmadoLegacy: false
+                };
+            } catch (err) {
+                try { await connection.rollback(); } catch (_) { /* noop */ }
+                console.error('❌ [MP] Error creando pedido desde sesión:', err.message);
+                throw err;
+            } finally {
+                connection.release();
+            }
+        }
+    }
 
     const pedidoIdDesdeMetadata = Number(resumenPagoMp?.metadata?.pedido_id) || null;
     const pedidoIdDesdeReferencia = extraerPedidoIdDesdeReferencia(externalReference);
@@ -513,6 +778,20 @@ async function procesarWebhookMercadoPago(db, req) {
             [externalReference]
         );
         pedidoId = pagosRows.length > 0 ? Number(pagosRows[0].pedido_id) : null;
+    }
+
+    let estadoAnteriorPago = null;
+    if (pedidoId) {
+        const [pedidoRows] = await db.execute(
+            `SELECT estado_pago
+             FROM pedidos
+             WHERE id = ?
+             LIMIT 1`,
+            [pedidoId]
+        );
+        if (pedidoRows.length > 0) {
+            estadoAnteriorPago = String(pedidoRows[0].estado_pago || '').trim().toUpperCase() || null;
+        }
     }
 
     await db.execute(
@@ -537,6 +816,7 @@ async function procesarWebhookMercadoPago(db, req) {
         ]
     );
 
+    let pagoRecienConfirmadoLegacy = false;
     if (pedidoId) {
         await db.execute(
             `UPDATE pedidos
@@ -545,21 +825,54 @@ async function procesarWebhookMercadoPago(db, req) {
              WHERE id = ?`,
             [estadoPagoInterno, pedidoId]
         );
+
+        if (estadoPagoInterno === ESTADO_PAGO_PAGADO && estadoAnteriorPago !== ESTADO_PAGO_PAGADO) {
+            pagoRecienConfirmadoLegacy = true;
+            try {
+                const [rows] = await db.execute(
+                    `SELECT cliente_telefono, total
+                     FROM pedidos
+                     WHERE id = ?
+                     LIMIT 1`,
+                    [pedidoId]
+                );
+
+                if (rows.length > 0) {
+                    await notificarPedidoMercadoPagoAprobado({
+                        id: pedidoId,
+                        cliente_telefono: rows[0].cliente_telefono,
+                        total: rows[0].total
+                    });
+                }
+            } catch (err) {
+                console.warn('⚠️ [WA] No se pudo enviar notificación MP aprobado:', err.message);
+            }
+        }
     }
 
     return {
         procesado: true,
         paymentId: String(paymentId),
         pedidoId,
+        esPagoNuevo: false,
         estadoPagoInterno,
         externalReference,
-        resumenPagoMp
+        resumenPagoMp,
+        pagoRecienConfirmadoLegacy
     };
 }
 
-/**
- * Estado de pago para pantalla post-checkout (pedido WEB + último registro en pedidos_pagos).
- */
+async function procesarWebhookMercadoPago(db, req) {
+    const { type, paymentId } = extraerNotificacionMercadoPago(req);
+    if (!type || type !== 'payment' || !paymentId) {
+        return { procesado: false, motivo: 'notificacion_ignorada' };
+    }
+
+    const pago = await obtenerPagoMercadoPago(paymentId);
+    const resumenPagoMp = construirResumenPagoMp(pago);
+    return procesarPagoMercadoPagoInterno(db, resumenPagoMp, paymentId);
+}
+
 async function obtenerEstadoPagoPedidoCartaPublica(db, pedidoId) {
     const id = Number(pedidoId);
     if (!Number.isInteger(id) || id <= 0) {
@@ -611,20 +924,162 @@ async function obtenerEstadoPagoPedidoCartaPublica(db, pedidoId) {
     };
 }
 
+function mapearEstadoPagoUiDesdeSesion(sesion, pedido) {
+    const est = String(sesion.estado || '').toUpperCase();
+    if (est === 'PROCESADO' && pedido) {
+        return pedido.estado_pago != null ? String(pedido.estado_pago).trim().toUpperCase() : ESTADO_PAGO_PAGADO;
+    }
+    if (est === 'PENDIENTE') {
+        return ESTADO_PAGO_PENDIENTE;
+    }
+    if (est === 'CANCELADO') {
+        const mp = String(sesion.estado_mp || '').toLowerCase();
+        if (mp === 'rejected') return ESTADO_PAGO_RECHAZADO;
+        return ESTADO_PAGO_CANCELADO;
+    }
+    if (est === 'EXPIRADO') {
+        return ESTADO_PAGO_CANCELADO;
+    }
+    return ESTADO_PAGO_PENDIENTE;
+}
+
+async function obtenerEstadoSesionMp(db, sessionIdRaw) {
+    const sessionId = String(sessionIdRaw || '').trim();
+    if (!UUID_V4_RE.test(sessionId)) {
+        return { encontrado: false, motivo: 'id_invalido' };
+    }
+
+    const [rows] = await db.execute(
+        `SELECT id, estado, pedido_id, estado_mp, referencia_externa, fecha_expiracion, payload_checkout
+         FROM checkout_sesiones_mp
+         WHERE id = ?
+         LIMIT 1`,
+        [sessionId]
+    );
+
+    if (rows.length === 0) {
+        return { encontrado: false, motivo: 'sesion_no_encontrada' };
+    }
+
+    const sesion = rows[0];
+    let pedido = null;
+    if (sesion.pedido_id) {
+        const [pRows] = await db.execute(
+            `SELECT id, estado, medio_pago, estado_pago, total
+             FROM pedidos
+             WHERE id = ?
+             LIMIT 1`,
+            [sesion.pedido_id]
+        );
+        pedido = pRows.length > 0 ? pRows[0] : null;
+    }
+
+    const estadoPagoUi = mapearEstadoPagoUiDesdeSesion(sesion, pedido);
+
+    let totalMostrar = pedido ? (parseFloat(pedido.total) || 0) : null;
+    if (totalMostrar == null && sesion.payload_checkout) {
+        const parsed = parsePayloadSesion(sesion);
+        const t = parsed?.resumenCarrito?.total;
+        if (t != null && Number.isFinite(Number(t))) {
+            totalMostrar = Number(t);
+        }
+    }
+
+    return {
+        encontrado: true,
+        data: {
+            session_id: sessionId,
+            estado_sesion: String(sesion.estado || '').toUpperCase(),
+            pedido_id: sesion.pedido_id ? Number(sesion.pedido_id) : null,
+            estado_pedido: pedido?.estado != null ? String(pedido.estado).trim() : null,
+            estado_pago: estadoPagoUi,
+            total: totalMostrar,
+            moneda: MONEDA_ARS,
+            estado_mp: sesion.estado_mp != null ? String(sesion.estado_mp).trim() : null,
+            fecha_expiracion: sesion.fecha_expiracion
+        }
+    };
+}
+
+/**
+ * Worker: expira sesiones, limpia filas viejas, reconcilia pagos contra la API MP.
+ */
+async function ejecutarMantenimientoSesionesMercadoPago(db) {
+    await db.execute(
+        `UPDATE checkout_sesiones_mp
+         SET estado = 'EXPIRADO', fecha_modificacion = NOW()
+         WHERE estado = 'PENDIENTE'
+           AND fecha_expiracion < NOW()`
+    );
+
+    await db.execute(
+        `DELETE FROM checkout_sesiones_mp
+         WHERE estado IN ('CANCELADO', 'EXPIRADO')
+           AND fecha < DATE_SUB(NOW(), INTERVAL 24 HOUR)`
+    );
+
+    const [pendientes] = await db.execute(
+        `SELECT id, referencia_externa
+         FROM checkout_sesiones_mp
+         WHERE estado = 'PENDIENTE'
+           AND fecha < DATE_SUB(NOW(), INTERVAL 5 MINUTE)`
+    );
+
+    if (pendientes.length === 0) {
+        return { reconciliadas: 0 };
+    }
+
+    const client = getMercadoPagoClient();
+    const paymentClient = new Payment(client);
+    let reconciliadas = 0;
+
+    for (const row of pendientes) {
+        try {
+            const searchRes = await paymentClient.search({
+                options: {
+                    sort: 'date_created',
+                    criteria: 'desc',
+                    external_reference: row.referencia_externa
+                }
+            });
+            const results = searchRes?.results;
+            if (!Array.isArray(results) || results.length === 0) {
+                continue;
+            }
+            const approved = results.find((p) => String(p?.status || '').toLowerCase() === 'approved');
+            const candidato = approved || results[0];
+            const pid = candidato?.id;
+            if (!pid) continue;
+
+            const full = await paymentClient.get({ id: pid });
+            const resumen = construirResumenPagoMp(full);
+            await procesarPagoMercadoPagoInterno(db, resumen, String(pid));
+            reconciliadas += 1;
+        } catch (e) {
+            console.warn(`⚠️ [MP][Worker] Reconciliación sesión ${row.id}:`, e.message);
+        }
+    }
+
+    return { reconciliadas };
+}
+
 module.exports = {
     crearCheckoutMercadoPago,
     procesarWebhookMercadoPago,
     obtenerEstadoPagoPedidoCartaPublica,
+    obtenerEstadoSesionMp,
+    ejecutarMantenimientoSesionesMercadoPago,
+    procesarPagoMercadoPagoInterno,
     helpers: {
         validarPayloadCheckout,
         recalcularCarrito,
         insertarPedido,
         insertarPedidoContenido,
         insertarPedidoPago,
-        construirPreferenciaPayload,
-        actualizarIdPreferencia,
+        construirPreferenciaPayload: construirPreferenciaPayloadDesdeSesion,
         extraerPedidoIdDesdeReferencia,
         mapearEstadoMercadoPago,
-        construirResumenPagoMp
+        construirResumenPagoMp,
+        esReferenciaSesionMp
     }
 };

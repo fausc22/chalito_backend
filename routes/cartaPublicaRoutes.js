@@ -17,8 +17,13 @@ const { crearPedidoCarta } = require('../controllers/cartaPublicaPedidosControll
 const {
   crearCheckoutMercadoPagoController,
   obtenerEstadoPagoPedidoController,
+  obtenerEstadoSesionMpController,
   webhookMercadoPagoController
 } = require('../controllers/cartaPublicaCheckoutController');
+const {
+  verificarFirmaWebhookMp,
+  verificarTimestampWebhookMp
+} = require('../middlewares/webhookSignatureMiddleware');
 const { apiRateLimiter } = require('../middlewares/rateLimitMiddleware');
 const {
   crearPedidoCartaSchema,
@@ -67,10 +72,18 @@ router.post('/pedidos', apiRateLimiter, validate(crearPedidoCartaSchema), crearP
 // GET /carta-publica/pedidos/:pedidoId/estado-pago - Estado de pago post-checkout (público, solo pedidos WEB)
 router.get('/pedidos/:pedidoId/estado-pago', apiRateLimiter, obtenerEstadoPagoPedidoController);
 
-// POST /carta-publica/checkout/mercadopago - Crear pedido + preferencia Checkout Pro
+// POST /carta-publica/checkout/mercadopago - Sesión de pago + preferencia Checkout Pro (pedido tras aprobación)
 router.post('/checkout/mercadopago', apiRateLimiter, validate(checkoutMercadoPagoSchema), crearCheckoutMercadoPagoController);
 
-// POST /carta-publica/checkout/mercadopago/webhook - Webhook de Mercado Pago
-router.post('/checkout/mercadopago/webhook', webhookMercadoPagoController);
+// GET /carta-publica/checkout/sesion/:sessionId/estado - Estado de sesión MP (polling post-checkout)
+router.get('/checkout/sesion/:sessionId/estado', apiRateLimiter, obtenerEstadoSesionMpController);
+
+// POST /carta-publica/checkout/mercadopago/webhook - Webhook de Mercado Pago (firma HMAC)
+router.post(
+  '/checkout/mercadopago/webhook',
+  verificarTimestampWebhookMp(300),
+  verificarFirmaWebhookMp(),
+  webhookMercadoPagoController
+);
 
 module.exports = router;

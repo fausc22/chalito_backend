@@ -98,6 +98,8 @@ const clientesRoutes = require('./routes/clientesRoutes');
 
 // Importar worker de cola de pedidos
 const OrderQueueWorker = require('./workers/OrderQueueWorker');
+const MercadoPagoWorker = require('./workers/MercadoPagoWorker');
+const { iniciarWhatsApp } = require('./services/whatsappService');
 
 // Envolver start/stop para sincronizar estado sin tocar la lógica del worker
 const originalWorkerStart = OrderQueueWorker.start.bind(OrderQueueWorker);
@@ -300,7 +302,16 @@ server.listen(port, '0.0.0.0', () => {
         } catch (error) {
             console.error('❌ Error iniciando OrderQueueWorker:', error);
         }
+        try {
+            MercadoPagoWorker.start();
+        } catch (error) {
+            console.error('❌ Error iniciando MercadoPagoWorker:', error);
+        }
     }, 3000); // Esperar 3 segundos después del inicio del servidor
+
+    iniciarWhatsApp().catch((err) => {
+        console.warn('⚠️ WhatsApp no disponible al arranque (escanear QR):', err.message);
+    });
 });
 
 // Exportar io para usar en otros módulos
@@ -310,6 +321,7 @@ app.set('io', io);
 process.on('SIGTERM', () => {
     console.log('🛑 SIGTERM recibido, cerrando servidor gracefully...');
     OrderQueueWorker.stop();
+    MercadoPagoWorker.stop();
     if (workerHeartbeatInterval) {
         clearInterval(workerHeartbeatInterval);
         workerHeartbeatInterval = null;
@@ -325,6 +337,7 @@ process.on('SIGTERM', () => {
 process.on('SIGINT', () => {
     console.log('🛑 SIGINT recibido, cerrando servidor gracefully...');
     OrderQueueWorker.stop();
+    MercadoPagoWorker.stop();
     if (workerHeartbeatInterval) {
         clearInterval(workerHeartbeatInterval);
         workerHeartbeatInterval = null;

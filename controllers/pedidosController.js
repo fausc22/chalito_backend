@@ -575,7 +575,11 @@ const actualizarEstadoPedido = async (req, res) => {
                 // Registrar hora_inicio_preparacion si no está ya registrada
                 const ahora = new Date();
                 await connection.execute(
-                    'UPDATE pedidos SET hora_inicio_preparacion = ?, fecha_modificacion = NOW() WHERE id = ? AND hora_inicio_preparacion IS NULL',
+                    `UPDATE pedidos
+                     SET hora_inicio_preparacion = ?,
+                         transicion_automatica = FALSE,
+                         fecha_modificacion = NOW()
+                     WHERE id = ?`,
                     [ahora, id]
                 );
                 
@@ -1274,7 +1278,7 @@ const forzarEstadoPedido = async (req, res) => {
         if (estado === 'EN_PREPARACION' && datosAnteriores.estado !== 'EN_PREPARACION') {
             const ahora = new Date();
             await connection.execute(
-                'UPDATE pedidos SET hora_inicio_preparacion = ?, fecha_modificacion = NOW() WHERE id = ? AND hora_inicio_preparacion IS NULL',
+                'UPDATE pedidos SET hora_inicio_preparacion = ?, fecha_modificacion = NOW() WHERE id = ?',
                 [ahora, id]
             );
             
@@ -1405,7 +1409,7 @@ const forzarEstadoPedido = async (req, res) => {
 };
 
 /**
- * Iniciar preparación manual de un pedido (RECIBIDO → EN_PREPARACION)
+ * Iniciar preparación manual de un pedido (RECIBIDO o PROGRAMADO → EN_PREPARACION)
  * POST /pedidos/:id/iniciar-preparacion-manual
  */
 const iniciarPreparacionManual = async (req, res) => {
@@ -1445,11 +1449,14 @@ const iniciarPreparacionManual = async (req, res) => {
                 });
             }
 
-            if (pedido.estado !== 'RECIBIDO') {
+            const estadoNormalizado = String(pedido.estado || '').trim().toUpperCase();
+            const puedeIniciarManual =
+                estadoNormalizado === 'RECIBIDO' || estadoNormalizado === 'PROGRAMADO';
+            if (!puedeIniciarManual) {
                 await connection.rollback();
                 return res.status(409).json({
                     success: false,
-                    message: 'El pedido ya fue procesado y no está en estado RECIBIDO',
+                    message: 'El pedido ya fue procesado y no está en estado RECIBIDO o PROGRAMADO',
                     code: 'PEDIDO_YA_PROCESADO',
                     estado_actual: pedido.estado
                 });
