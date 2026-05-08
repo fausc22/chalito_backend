@@ -112,6 +112,20 @@ exports.login = async (req, res) => {
             return res.status(401).json({ message: 'Contraseña incorrecta' });
         }
 
+        await db.execute(
+            'UPDATE usuarios SET ultima_conexion = NOW() WHERE id = ?',
+            [usuario.id]
+        );
+
+        const [usuariosActualizados] = await db.execute(
+            `SELECT id, nombre, email, usuario, rol, avatar_key, ultima_conexion
+             FROM usuarios
+             WHERE id = ?`,
+            [usuario.id]
+        );
+
+        const usuarioActualizado = usuariosActualizados[0] || usuario;
+
         // ✅ Crear tokens
         const { accessToken, refreshToken, accessExp, refreshExp } = createTokens(usuario, rememberBool);
 
@@ -137,11 +151,13 @@ exports.login = async (req, res) => {
             refreshExpiresIn: refreshToken ? refreshExp : null,
             hasRefreshToken: !!refreshToken,
             usuario: {
-                id: usuario.id,
-                nombre: usuario.nombre,
-                usuario: usuario.usuario,
-                rol: usuario.rol,
-                email: usuario.email
+                id: usuarioActualizado.id,
+                nombre: usuarioActualizado.nombre,
+                email: usuarioActualizado.email,
+                usuario: usuarioActualizado.usuario,
+                rol: usuarioActualizado.rol,
+                avatar_key: usuarioActualizado.avatar_key || null,
+                ultima_conexion: usuarioActualizado.ultima_conexion || null
             }
         });
 
@@ -315,7 +331,9 @@ exports.getProfile = async (req, res) => {
         const usuarioId = req.user.id;
         
         const [usuarios] = await db.execute(
-            'SELECT id, nombre, email, usuario, rol FROM usuarios WHERE id = ? AND activo = 1', 
+            `SELECT id, nombre, email, usuario, rol, avatar_key, ultima_conexion
+             FROM usuarios
+             WHERE id = ? AND activo = 1`,
             [usuarioId]
         );
 

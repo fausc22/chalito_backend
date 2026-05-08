@@ -3,7 +3,8 @@ const router = express.Router();
 const {
     obtenerConfiguraciones,
     obtenerConfiguracion,
-    actualizarConfiguracion
+    actualizarConfiguracion,
+    actualizarConfiguracionOperativa
 } = require('../controllers/configuracionController');
 
 const { authenticateToken } = require('../middlewares/authMiddleware');
@@ -17,11 +18,7 @@ const { apiRateLimiter } = require('../middlewares/rateLimitMiddleware');
 // Obtener todas las configuraciones
 router.get('/', apiRateLimiter, authenticateToken, obtenerConfiguraciones);
 
-// Obtener una configuración por clave
-router.get('/:clave', apiRateLimiter, authenticateToken, obtenerConfiguracion);
-
-// Actualizar una configuración (requiere rol ADMIN o GERENTE)
-router.put('/:clave', apiRateLimiter, authenticateToken, (req, res, next) => {
+const validarRolConfiguracion = (req, res, next) => {
     // Verificar que el usuario tiene permisos (ADMIN o GERENTE)
     const user = req.user;
     if (!user || (user.rol !== 'ADMIN' && user.rol !== 'GERENTE')) {
@@ -31,7 +28,16 @@ router.put('/:clave', apiRateLimiter, authenticateToken, (req, res, next) => {
         });
     }
     next();
-}, actualizarConfiguracion);
+};
+
+// Actualizar configuraciones operativas para UI (bulk)
+router.put('/', apiRateLimiter, authenticateToken, validarRolConfiguracion, actualizarConfiguracionOperativa);
+
+// Obtener una configuración por clave
+router.get('/:clave', apiRateLimiter, authenticateToken, obtenerConfiguracion);
+
+// Actualizar una configuración (requiere rol ADMIN o GERENTE)
+router.put('/:clave', apiRateLimiter, authenticateToken, validarRolConfiguracion, actualizarConfiguracion);
 
 module.exports = router;
 
