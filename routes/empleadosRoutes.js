@@ -24,7 +24,7 @@ const {
     crearLiquidacion
 } = require('../controllers/empleadosController');
 
-const { authenticateToken, authorizeRole } = require('../middlewares/authMiddleware');
+const { writeEmpleados } = require('../middlewares/routeGuards');
 const { apiRateLimiter } = require('../middlewares/rateLimitMiddleware');
 const {
     crearEmpleadoSchema,
@@ -48,7 +48,7 @@ const {
     validateQuery
 } = require('../validators/empleadosValidators');
 
-const soloDuenioEncargadoAdmin = [authenticateToken, authorizeRole(['ADMIN', 'GERENTE'])];
+const soloDuenioEncargadoAdmin = writeEmpleados;
 
 /**
  * RUTAS DE EMPLEADOS

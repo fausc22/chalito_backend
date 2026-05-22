@@ -7,7 +7,7 @@ const {
     actualizarObservaciones
 } = require('../controllers/comandasController');
 
-const { authenticateToken } = require('../middlewares/authMiddleware');
+const { readPedidos, writePedidos } = require('../middlewares/routeGuards');
 const { apiRateLimiter } = require('../middlewares/rateLimitMiddleware');
 const { 
     crearComandaSchema, 
@@ -17,24 +17,9 @@ const {
     idParamSchema
 } = require('../validators/comandasValidators');
 
-/**
- * Rutas de comandas
- * Todas las rutas requieren autenticación y rate limiting
- */
-
-// Crear nueva comanda
-router.post('/', apiRateLimiter, authenticateToken, validate(crearComandaSchema), crearComanda);
-
-// Obtener todas las comandas
-router.get('/', apiRateLimiter, authenticateToken, obtenerComandas);
-
-// Obtener una comanda por ID
-router.get('/:id', apiRateLimiter, authenticateToken, validateParams(idParamSchema), obtenerComandaPorId);
-
-// Actualizar observaciones de comanda
-// NOTA: No existe ruta para actualizar estado de comanda porque la comanda no maneja estado propio.
-// El estado se deriva exclusivamente de pedidos.estado
-router.put('/:id/observaciones', apiRateLimiter, authenticateToken, validateParams(idParamSchema), validate(actualizarObservacionesComandaSchema), actualizarObservaciones);
+router.post('/', apiRateLimiter, ...writePedidos, validate(crearComandaSchema), crearComanda);
+router.get('/', apiRateLimiter, ...readPedidos, obtenerComandas);
+router.get('/:id', apiRateLimiter, ...readPedidos, validateParams(idParamSchema), obtenerComandaPorId);
+router.put('/:id/observaciones', apiRateLimiter, ...writePedidos, validateParams(idParamSchema), validate(actualizarObservacionesComandaSchema), actualizarObservaciones);
 
 module.exports = router;
-

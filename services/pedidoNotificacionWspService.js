@@ -1,65 +1,89 @@
-const { enviarWhatsApp } = require('./whatsappService');
+const { enviarWhatsApp, estaConectado } = require('./whatsappService');
+const whatsappSettingsService = require('./whatsappSettingsService');
+const { loadPedidoWhatsAppContext } = require('./pedidoContenidoLoader');
+const {
+    buildWhatsAppMessage,
+    normalizeMedioPago,
+    isAliasTransferenciaValido,
+} = require('./whatsappMessageBuilder');
 
-function formatCurrencyArs(value) {
-    const amount = Number(value) || 0;
-    return new Intl.NumberFormat('es-AR', {
-        style: 'currency',
-        currency: 'ARS',
-        maximumFractionDigits: 0
-    }).format(amount);
+async function assertPuedeEnviar() {
+    const settings = await whatsappSettingsService.getSettings();
+    if (!settings.notificacionesActivas) {
+        return { skip: true, settings };
+    }
+    if (!estaConectado()) {
+        throw new Error('WhatsApp no esta conectado');
+    }
+    return { skip: false, settings };
 }
 
-function getNombreLocal() {
-    return (process.env.NOMBRE_LOCAL || 'El Chalito').trim();
-}
+async function notificarPedidoWhatsApp({
+    medioPago,
+    id,
+    cliente_telefono,
+    total,
+    modalidad,
+    items = [],
+}) {
+    const check = await assertPuedeEnviar();
+    if (check.skip) {
+        console.log(`[WA] Notificaciones desactivadas, omitiendo pedido #${id}`);
+        return null;
+    }
 
-function getAliasTransferencia() {
-    return (process.env.ALIAS_TRANSFERENCIA || 'ALIAS.NO.CONFIGURADO').trim();
-}
+    const { settings } = check;
+    const mp = normalizeMedioPago(medioPago);
 
-async function notificarPedidoEfectivo({ id, cliente_telefono, total }) {
-    const local = getNombreLocal();
-    const monto = formatCurrencyArs(total);
-    const mensaje = [
-        `Hola! ${local} te confirma el pedido #${id}.`,
-        'Ya lo estamos preparando.',
-        `Total de productos: ${monto}.`,
-        'Recorda que el envio lo cobra el cadete aparte y no esta incluido en ese total.',
-        'Abonas en efectivo al recibir tu pedido.'
-    ].join('\n');
+    if (mp === 'TRANSFERENCIA' && !isAliasTransferenciaValido(settings.aliasTransferencia)) {
+        console.warn(`[WA] Alias no configurado, omitiendo notificacion transferencia pedido #${id}`);
+        return null;
+    }
+
+    const mensaje = buildWhatsAppMessage({
+        medioPago: mp,
+        modalidad,
+        id,
+        items,
+        total,
+        local: settings.nombreNegocio,
+        alias: settings.aliasTransferencia,
+    });
 
     return enviarWhatsApp(cliente_telefono, mensaje);
 }
 
-async function notificarPedidoTransferencia({ id, cliente_telefono, total }) {
-    const local = getNombreLocal();
-    const alias = getAliasTransferencia();
-    const monto = formatCurrencyArs(total);
-    const mensaje = [
-        `Hola! ${local} recibio tu pedido #${id}.`,
-        `Para comenzar a prepararlo, transferi ${monto} al alias: ${alias}.`,
-        'Cuando hagas la transferencia, comparti el comprobante por este WhatsApp.',
-        'El envio lo cobra el cadete aparte y no se suma al total de productos.'
-    ].join('\n');
-
-    return enviarWhatsApp(cliente_telefono, mensaje);
+async function notificarPedidoEfectivo(params) {
+    return notificarPedidoWhatsApp({ ...params, medioPago: 'EFECTIVO' });
 }
 
-async function notificarPedidoMercadoPagoAprobado({ id, cliente_telefono, total }) {
-    const local = getNombreLocal();
-    const monto = formatCurrencyArs(total);
-    const mensaje = [
-        `Hola! ${local} te confirma el pedido #${id}.`,
-        'Tu pago por Mercado Pago fue aprobado y ya estamos preparando tu pedido.',
-        `Total de productos pagado: ${monto}.`,
-        'El envio lo coordina y cobra el cadete aparte.'
-    ].join('\n');
+async function notificarPedidoTransferencia(params) {
+    return notificarPedidoWhatsApp({ ...params, medioPago: 'TRANSFERENCIA' });
+}
 
-    return enviarWhatsApp(cliente_telefono, mensaje);
+async function notificarPedidoMercadoPagoAprobado(params) {
+    return notificarPedidoWhatsApp({ ...params, medioPago: 'MERCADOPAGO' });
+}
+
+async function notificarPedidoMercadoPagoAprobadoPorId(pedidoId, connection = null) {
+    const ctx = await loadPedidoWhatsAppContext(pedidoId, connection);
+    if (!ctx?.cliente_telefono) {
+        console.warn(`[WA] Pedido #${pedidoId} sin telefono, omitiendo notificacion MP`);
+        return null;
+    }
+    return notificarPedidoMercadoPagoAprobado({
+        id: ctx.id,
+        cliente_telefono: ctx.cliente_telefono,
+        total: ctx.total,
+        modalidad: ctx.modalidad,
+        items: ctx.items,
+    });
 }
 
 module.exports = {
+    notificarPedidoWhatsApp,
     notificarPedidoEfectivo,
     notificarPedidoTransferencia,
-    notificarPedidoMercadoPagoAprobado
+    notificarPedidoMercadoPagoAprobado,
+    notificarPedidoMercadoPagoAprobadoPorId,
 };

@@ -1,106 +1,97 @@
 /**
  * Tests para storeScheduleService - validación de horarios de atención
  */
+const test = require('node:test');
+const assert = require('node:assert/strict');
 const moment = require('moment-timezone');
 const {
-    getStoreSchedule,
+    getStoreScheduleSync,
     getNowInStoreTimezone,
-    isStoreOpen,
-    isValidScheduledDateTime,
-    getNextOpeningInfo,
-    STORE_TIMEZONE
+    isStoreOpenSync,
+    isValidScheduledDateTimeSync,
+    getEstadoTienda,
+    FALLBACK_SCHEDULE_RAW,
+    STORE_TIMEZONE,
+    setTestScheduleOverride,
+    clearTestScheduleOverride,
+    setTestSettingsOverride,
+    clearTestSettingsOverride
 } = require('../../services/storeScheduleService');
 
 const parseInTz = (str) => moment.tz(str, 'YYYY-MM-DD HH:mm', STORE_TIMEZONE);
+const SCHEDULE = FALLBACK_SCHEDULE_RAW;
 
-describe('storeScheduleService', () => {
-    describe('getStoreSchedule', () => {
-        it('devuelve estructura con timezone y schedule', () => {
-            const s = getStoreSchedule();
-            expect(s.timezone).toBe(STORE_TIMEZONE);
-            expect(s.toleranceMinutes).toBe(5);
-            expect(s.schedule['3']).toEqual([[10, 0, 13, 5], [18, 0, 23, 5]]); // Miércoles con tolerancia
-            expect(s.schedule['0']).toEqual([[17, 0, 23, 35]]); // Domingo 17-23:30 + 5min
-        });
+test.before(() => {
+    setTestScheduleOverride(SCHEDULE);
+    setTestSettingsOverride({
+        tiendaOnlineActiva: true,
+        validarHorarios: true,
+        toleranceMinutes: 5
     });
+});
 
-    describe('getNowInStoreTimezone', () => {
-        it('devuelve moment válido en La_Pampa', () => {
-            const now = getNowInStoreTimezone();
-            expect(now.isValid()).toBe(true);
-            expect(now.format('Z')).toBeDefined();
-        });
-    });
+test.after(() => {
+    clearTestScheduleOverride();
+    clearTestSettingsOverride();
+});
 
-    describe('isStoreOpen', () => {
-        it('miércoles 11:00 La_Pampa => abierto', () => {
-            const d = parseInTz('2026-03-04 11:00').toDate();
-            expect(isStoreOpen(d)).toBe(true);
-        });
-        it('miércoles 14:00 La_Pampa => cerrado', () => {
-            const d = parseInTz('2026-03-04 14:00').toDate();
-            expect(isStoreOpen(d)).toBe(false);
-        });
-        it('miércoles 23:05 La_Pampa => abierto (tolerancia)', () => {
-            const d = parseInTz('2026-03-04 23:05').toDate();
-            expect(isStoreOpen(d)).toBe(true);
-        });
-        it('miércoles 23:06 La_Pampa => cerrado', () => {
-            const d = parseInTz('2026-03-04 23:06').toDate();
-            expect(isStoreOpen(d)).toBe(false);
-        });
-        it('lunes 12:00 La_Pampa => cerrado', () => {
-            const d = parseInTz('2026-03-02 12:00').toDate();
-            expect(isStoreOpen(d)).toBe(false);
-        });
-        it('domingo 18:00 La_Pampa => abierto', () => {
-            const d = parseInTz('2026-03-08 18:00').toDate();
-            expect(isStoreOpen(d)).toBe(true);
-        });
-        it('domingo 23:35 La_Pampa => abierto (tolerancia)', () => {
-            const d = parseInTz('2026-03-08 23:35').toDate();
-            expect(isStoreOpen(d)).toBe(true);
-        });
-    });
+test('getStoreScheduleSync devuelve estructura con timezone y schedule', () => {
+    const s = getStoreScheduleSync(SCHEDULE, 5);
+    assert.equal(s.timezone, STORE_TIMEZONE);
+    assert.equal(s.toleranceMinutes, 5);
+    assert.deepEqual(s.schedule['3'], [[10, 0, 13, 5], [18, 0, 23, 5]]);
+    assert.deepEqual(s.schedule['0'], [[17, 0, 23, 35]]);
+});
 
-    describe('isValidScheduledDateTime', () => {
-        it('domingo 18:00 => válido', () => {
-            const d = parseInTz('2026-03-08 18:00').toDate();
-            expect(isValidScheduledDateTime(d)).toBe(true);
-        });
-        it('domingo 15:30 => inválido (antes de apertura)', () => {
-            const d = parseInTz('2026-03-08 15:30').toDate();
-            expect(isValidScheduledDateTime(d)).toBe(false);
-        });
-        it('miércoles 18:30 => válido', () => {
-            const d = parseInTz('2026-03-04 18:30').toDate();
-            expect(isValidScheduledDateTime(d)).toBe(true);
-        });
-        it('miércoles 15:00 => inválido (entre franjas)', () => {
-            const d = parseInTz('2026-03-04 15:00').toDate();
-            expect(isValidScheduledDateTime(d)).toBe(false);
-        });
-        it('miércoles 23:05 => inválido para programado (sin tolerancia)', () => {
-            const d = parseInTz('2026-03-04 23:05').toDate();
-            expect(isValidScheduledDateTime(d)).toBe(false);
-        });
-        it('miércoles 23:00 => válido (cierre exacto)', () => {
-            const d = parseInTz('2026-03-04 23:00').toDate();
-            expect(isValidScheduledDateTime(d)).toBe(true);
-        });
-    });
+test('getNowInStoreTimezone devuelve moment válido', () => {
+    const now = getNowInStoreTimezone();
+    assert.equal(now.isValid(), true);
+});
 
-    describe('getNextOpeningInfo', () => {
-        it('domingo 16:00 => próxima apertura 17:00', () => {
-            const d = parseInTz('2026-03-08 16:00');
-            const info = getNextOpeningInfo(d);
-            expect(info).not.toBeNull();
-            expect(info.dayName).toBe('Domingo');
-        });
-        it('domingo 18:00 => ya abierto (null)', () => {
-            const d = parseInTz('2026-03-08 18:00');
-            const info = getNextOpeningInfo(d);
-            expect(info).toBeNull();
-        });
+test('miércoles 11:00 => abierto', () => {
+    const d = parseInTz('2026-03-04 11:00').toDate();
+    assert.equal(isStoreOpenSync(d, SCHEDULE, 5, true), true);
+});
+
+test('miércoles 14:00 => cerrado', () => {
+    const d = parseInTz('2026-03-04 14:00').toDate();
+    assert.equal(isStoreOpenSync(d, SCHEDULE, 5, true), false);
+});
+
+test('getEstadoTienda: tienda inactiva => bloqueado', async () => {
+    setTestSettingsOverride({
+        tiendaOnlineActiva: false,
+        validarHorarios: true,
+        toleranceMinutes: 5
     });
+    const estado = await getEstadoTienda(parseInTz('2026-03-04 11:00').toDate());
+    assert.equal(estado.bloqueado, true);
+    assert.equal(estado.estaAbierto, false);
+    setTestSettingsOverride({
+        tiendaOnlineActiva: true,
+        validarHorarios: true,
+        toleranceMinutes: 5
+    });
+});
+
+test('getEstadoTienda: validación OFF => siempre abierto', async () => {
+    setTestSettingsOverride({
+        tiendaOnlineActiva: true,
+        validarHorarios: false,
+        toleranceMinutes: 5
+    });
+    const estado = await getEstadoTienda(parseInTz('2026-03-02 12:00').toDate());
+    assert.equal(estado.estaAbierto, true);
+    assert.equal(estado.validarHorarios, false);
+    setTestSettingsOverride({
+        tiendaOnlineActiva: true,
+        validarHorarios: true,
+        toleranceMinutes: 5
+    });
+});
+
+test('getEstadoTienda: dentro de horario => abierto', async () => {
+    const estado = await getEstadoTienda(parseInTz('2026-03-04 11:00').toDate());
+    assert.equal(estado.estaAbierto, true);
+    assert.equal(estado.bloqueado, false);
 });

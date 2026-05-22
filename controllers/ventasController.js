@@ -127,14 +127,24 @@ const crearVenta = async (req, res) => {
         } = totalesConDescuento;
         const totalesPedidoAsociado = calcularTotalesDesdePrecioFinal(totalPedidoBase);
         
+        const FondosArcaRouting = require('../services/FondosArcaRoutingService');
+        const CuentasSistema = require('../services/CuentasSistemaService');
+        const medioVenta = FondosArcaRouting.normalizarMedioPago(ventaData.medio_pago || 'EFECTIVO');
+        const tipoFacturaVenta = FondosArcaRouting.resolverTipoFactura(medioVenta);
+        const caeEstadoVenta = FondosArcaRouting.resolverCaeEstadoInicial(medioVenta);
+        const cuentaVenta = await CuentasSistema.obtenerCuentaPorNombre(
+            FondosArcaRouting.resolverNombreCuenta(medioVenta),
+            connection
+        );
+
         // Insertar venta
         const ventaQuery = `
             INSERT INTO ventas (
                 pedido_id,
                 fecha, cliente_nombre, cliente_direccion, cliente_telefono, cliente_email,
                 subtotal, iva_total, descuento, total, medio_pago, cuenta_id,
-                estado, observaciones, tipo_factura, usuario_id, usuario_nombre
-            ) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                estado, observaciones, tipo_factura, cae_estado, usuario_id, usuario_nombre
+            ) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
         
         const ventaValues = [
@@ -147,11 +157,12 @@ const crearVenta = async (req, res) => {
             ivaTotalFinal,
             descuentoFinal,
             totalFinal,
-            ventaData.medio_pago || 'EFECTIVO',
-            ventaData.cuenta_id || null,
+            medioVenta,
+            cuentaVenta.id,
             ventaData.estado || 'FACTURADA',
             ventaData.observaciones || null,
-            ventaData.tipo_factura || null,
+            tipoFacturaVenta,
+            caeEstadoVenta,
             usuario.id || null,
             usuario.nombre || usuario.usuario || null
         ];
@@ -183,38 +194,17 @@ const crearVenta = async (req, res) => {
             );
         }
         
-        // Si hay cuenta_id, actualizar saldo y registrar movimiento
-        if (ventaData.cuenta_id) {
-            const [saldoAnterior] = await connection.execute(
-                'SELECT saldo FROM cuentas_fondos WHERE id = ?',
-                [ventaData.cuenta_id]
-            );
-            
-            const saldoAnteriorValor = parseFloat(saldoAnterior[0]?.saldo) || 0;
-            const saldoNuevoValor = saldoAnteriorValor + totalFinal;
-            
-            // Actualizar saldo
-            await connection.execute(
-                'UPDATE cuentas_fondos SET saldo = ? WHERE id = ?',
-                [saldoNuevoValor, ventaData.cuenta_id]
-            );
-            
-            // Registrar movimiento de ingreso
-            await connection.execute(
-                `INSERT INTO movimientos_fondos (
-                    fecha, cuenta_id, tipo, origen, referencia_id, monto,
-                    saldo_anterior, saldo_nuevo, observaciones
-                ) VALUES (NOW(), ?, 'INGRESO', ?, ?, ?, ?, ?, ?)`,
-                [
-                    ventaData.cuenta_id,
-                    `Venta #${ventaId}`,
-                    ventaId,
-                    totalFinal,
-                    saldoAnteriorValor,
-                    saldoNuevoValor,
-                    `Venta - Cliente: ${ventaData.cliente_nombre || 'Consumidor Final'}`
-                ]
-            );
+        await CuentasSistema.acreditarCuenta(
+            connection,
+            cuentaVenta.id,
+            totalFinal,
+            `Venta #${ventaId}`,
+            ventaId
+        );
+
+        if (FondosArcaRouting.requiereArca(medioVenta)) {
+            const { encolarSolicitudCae } = require('../services/ArcaFacturacionService');
+            encolarSolicitudCae(ventaId, req.app?.get('io') || null);
         }
 
         // Si la venta está asociada a un pedido, reflejar estado de pago cuando el esquema lo soporte
@@ -418,7 +408,7 @@ const obtenerVentas = async (req, res) => {
                 v.cliente_direccion, v.cliente_email,
                 v.subtotal, v.iva_total, v.descuento, v.total,
                 v.medio_pago, v.estado, v.observaciones,
-                v.tipo_factura, v.cae_id, v.cae_fecha,
+                v.tipo_factura, v.numero_factura, v.cae_id, v.cae_fecha, v.cae_estado,
                 v.usuario_id, v.usuario_nombre, v.cuenta_id,
                 v.fecha_modificacion,
                 cf.nombre as cuenta_nombre
@@ -503,7 +493,7 @@ const obtenerVentaPorId = async (req, res) => {
                 v.cliente_direccion, v.cliente_email,
                 v.subtotal, v.iva_total, v.descuento, v.total,
                 v.medio_pago, v.estado, v.observaciones,
-                v.tipo_factura, v.cae_id, v.cae_fecha,
+                v.tipo_factura, v.numero_factura, v.cae_id, v.cae_fecha, v.cae_estado,
                 v.usuario_id, v.usuario_nombre, v.cuenta_id,
                 v.fecha_modificacion,
                 cf.nombre as cuenta_nombre

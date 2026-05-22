@@ -13,38 +13,34 @@ router.post('/logout', authMiddleware.authenticateToken, authController.logout);
 router.get('/profile', authMiddleware.authenticateToken, authController.getProfile);
 router.put('/change-password', authMiddleware.authenticateToken, authController.changePassword);
 
-// ✅ RUTA DE VERIFICACIÓN DE TOKEN - CORREGIDA
-router.get('/verify', authMiddleware.authenticateToken, (req, res) => {
-    // Si llegó acá es porque el middleware validó el token
+// Verificación de token con datos frescos desde BD
+router.get('/verify', ...authMiddleware.authWithRevalidate, async (req, res) => {
     try {
-        // Verificar que req.user existe y tiene la estructura esperada
-        if (!req.user || !req.user.id) {
-            console.error('❌ req.user no válido:', req.user);
-            return res.status(403).json({ 
+        if (!req.user?.id) {
+            return res.status(403).json({
                 valid: false,
-                error: 'Token structure invalid',
-                message: 'Token no contiene información válida del usuario'
+                code: 'TOKEN_FORMAT_INVALID',
+                message: 'Token no contiene información válida del usuario',
             });
         }
 
-        console.log('✅ Token verificado para usuario:', req.user.usuario);
-        
-        res.json({ 
+        res.json({
             valid: true,
             usuario: {
                 id: req.user.id,
                 nombre: req.user.nombre,
                 usuario: req.user.usuario,
                 rol: req.user.rol,
-                email: req.user.email // Si está disponible en el token
-            }
+                email: req.user.email,
+                avatar_key: req.user.avatar_key ?? null,
+                activo: req.user.activo !== false,
+            },
         });
     } catch (error) {
         console.error('❌ Error en verify route:', error);
         res.status(500).json({
             valid: false,
-            error: 'Internal server error',
-            message: 'Error interno del servidor'
+            message: 'Error interno del servidor',
         });
     }
 });

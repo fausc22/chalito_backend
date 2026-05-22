@@ -20,6 +20,9 @@ package-lock.json
 .AppleDouble
 .LSOverride
 
+# ARCA WSAA tickets (runtime)
+storage/arca-tickets/
+
 # Logs
 logs/
 *.log

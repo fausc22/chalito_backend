@@ -91,12 +91,44 @@ async function findOrCreate(rawData = {}, connection = null) {
   return cliente;
 }
 
+function buildClienteSearchClause(query = '') {
+  const norm = normalizeName(query);
+  const tokens = norm.split(' ').filter((t) => t.length > 0);
+  const phoneDigits = normalizePhone(query);
+
+  const parts = [];
+  const params = [];
+
+  if (tokens.length > 0) {
+    const nameParts = tokens.map(() => 'c.nombre_norm LIKE ?');
+    parts.push(`(${nameParts.join(' AND ')})`);
+    params.push(...tokens.map((t) => `%${t}%`));
+  }
+
+  // Sin dígitos, telefono LIKE '%%' matchea a todos; solo filtrar por teléfono con 3+ dígitos.
+  if (phoneDigits.length >= 3) {
+    parts.push('c.telefono LIKE ?');
+    params.push(`%${phoneDigits}%`);
+  }
+
+  if (!parts.length) {
+    return { clause: '1 = 0', params: [] };
+  }
+
+  return {
+    clause: `(${parts.join(' OR ')})`,
+    params,
+  };
+}
+
 async function buscarSugerencias(query = '') {
   const q = String(query || '').trim();
   if (q.length < 2) return [];
 
-  const likeNorm = `%${normalizeName(q)}%`;
-  const likePhone = `%${normalizePhone(q)}%`;
+  const { clause, params } = buildClienteSearchClause(q);
+  const norm = normalizeName(q);
+  const prefix = `${norm}%`;
+  const contains = `%${norm}%`;
 
   const [clientes] = await db.query(
     `
@@ -114,19 +146,17 @@ async function buscarSugerencias(query = '') {
         ) AS ultima_direccion
       FROM clientes c
       WHERE c.activo = 1
-        AND (
-          c.nombre_norm LIKE ?
-          OR c.telefono LIKE ?
-        )
+        AND ${clause}
       ORDER BY
         CASE
-          WHEN c.nombre_norm LIKE CONCAT(?, '%') THEN 0
-          ELSE 1
+          WHEN c.nombre_norm LIKE ? THEN 0
+          WHEN c.nombre_norm LIKE ? THEN 1
+          ELSE 2
         END,
         c.updated_at DESC
       LIMIT 10
     `,
-    [likeNorm, likePhone, normalizeName(q)]
+    [...params, prefix, contains]
   );
 
   return clientes;
@@ -137,14 +167,13 @@ async function listar({ page = 1, limit = 20, q = '' } = {}) {
   const pageSize = Math.max(1, Math.min(100, Number(limit) || 20));
   const offset = (currentPage - 1) * pageSize;
   const query = String(q || '').trim();
-  const likeNorm = `%${normalizeName(query)}%`;
-  const likePhone = `%${normalizePhone(query)}%`;
   const hasFilter = query.length >= 1;
+  const search = hasFilter ? buildClienteSearchClause(query) : { clause: '1 = 1', params: [] };
 
   const where = hasFilter
-    ? 'WHERE c.activo = 1 AND (c.nombre_norm LIKE ? OR c.telefono LIKE ?)'
+    ? `WHERE c.activo = 1 AND ${search.clause}`
     : 'WHERE c.activo = 1';
-  const params = hasFilter ? [likeNorm, likePhone] : [];
+  const params = hasFilter ? search.params : [];
 
   const [rows] = await db.query(
     `
@@ -292,6 +321,7 @@ async function eliminar(clienteId) {
 module.exports = {
   normalizeName,
   normalizePhone,
+  buildClienteSearchClause,
   findOrCreate,
   buscarSugerencias,
   listar,

@@ -47,6 +47,8 @@ const crearPedidoCartaSchema = z.object({
     horario_entrega: z.string().optional().nullable(),
     deliveryTime: z.string().optional().nullable(),
     prioridad: z.enum(['NORMAL', 'ALTA']).optional(),
+    couponCode: z.string().max(64).optional().nullable(),
+    cuponCodigo: z.string().max(64).optional().nullable(),
     items: z.array(z.object({
         productId: z.coerce.number().int().positive('productId debe ser un número positivo'),
         quantity: z.coerce.number().int().positive('La cantidad debe ser mayor a 0'),
@@ -96,7 +98,8 @@ const checkoutMercadoPagoSchema = z.object({
         extras: z.array(z.object({
             id: z.coerce.number().int().positive('extras.id debe ser un número positivo')
         })).optional().default([])
-    })).min(1, 'Debe incluir al menos un item')
+    })).min(1, 'Debe incluir al menos un item'),
+    couponCode: z.string().max(64).optional().nullable()
 }).superRefine((data, ctx) => {
     const modalidad = String(data?.pedido?.modalidad || '').toUpperCase();
     const direccion = data?.cliente?.direccion;
@@ -128,8 +131,19 @@ const validate = (schema) => (req, res, next) => {
     }
 };
 
+const validarCuponSchema = z.object({
+    couponCode: z.string().min(1, 'couponCode es requerido').max(64),
+    items: z.array(z.object({
+        productId: z.coerce.number().int().positive('productId debe ser un número positivo'),
+        quantity: z.coerce.number().int().positive('La cantidad debe ser mayor a 0'),
+        selectedExtras: z.array(z.coerce.number().int().nonnegative()).optional().default([]),
+        itemNotes: z.string().max(255).optional().nullable()
+    })).min(1, 'Debe incluir al menos un item')
+});
+
 module.exports = {
     crearPedidoCartaSchema,
     checkoutMercadoPagoSchema,
+    validarCuponSchema,
     validate
 };

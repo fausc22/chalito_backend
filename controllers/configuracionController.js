@@ -140,6 +140,19 @@ const actualizarConfiguracion = async (req, res) => {
             [valorString, clave]
         );
         
+        const BRANDING_KEYS = new Set([
+            'COLOR_PRIMARIO',
+            'TIENDA_COLOR_PRIMARIO',
+            'TIENDA_COLOR_SECUNDARIO'
+        ]);
+        if (BRANDING_KEYS.has(clave)) {
+            try {
+                require('../services/brandingSettingsService').invalidateCache();
+            } catch (_) {
+                /* servicio opcional en entornos mínimos */
+            }
+        }
+
         // Si se actualiza worker_interval_segundos, reiniciar worker
         if (clave === 'worker_interval_segundos' && OrderQueueWorker.isRunning) {
             const nuevoIntervalo = parseInt(valor, 10);

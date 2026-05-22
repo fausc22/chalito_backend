@@ -14,12 +14,12 @@ const KitchenCapacityService = require('../services/KitchenCapacityService');
 const { OrderQueueEngine } = require('../services/OrderQueueEngine');
 const { pedidoEstaHabilitadoOperativamente } = require('../services/pedidoOperativoHelper');
 const { validateMontoConCuantoAbonaEfectivo } = require('../services/montoConCuantoAbonaRules');
-const { validarExtrasNoDobleYTriple, construirPersonalizaciones } = require('../services/PersonalizacionesService');
 const { parseScheduledTime } = require('../services/ScheduledTimeParser');
-const { isStoreOpen, isValidScheduledDateTime, getNowInStoreTimezone } = require('../services/storeScheduleService');
-const { isStoreHoursValidationEnabled } = require('../config/storeHoursConfig');
+const storeScheduleService = require('../services/storeScheduleService');
+const { isStoreOpen, isValidScheduledDateTime, getNowInStoreTimezone } = storeScheduleService;
 const { enrichPedidoRealtime, buildPedidoSnapshotById } = require('../services/pedidoRealtimeSerializer');
-const { calcularTotalesDesdePrecioFinal } = require('../services/totalesPrecioFinal');
+const { calcularPricingCompleto } = require('../services/cartaPedidoPricingService');
+const { redeemCoupon } = require('../services/couponService');
 const ClientesService = require('../services/ClientesService');
 const {
     notificarPedidoEfectivo,
@@ -114,9 +114,17 @@ const crearPedidoCarta = async (req, res) => {
 
         const { esHoraProgramada, horarioEntregaDate, prioridadFinal } = modalidad;
 
+        const estadoTienda = await storeScheduleService.getEstadoTienda();
+
+        if (estadoTienda.bloqueado) {
+            return res.status(400).json({
+                success: false,
+                message: estadoTienda.mensaje || 'La tienda online no está disponible en este momento.'
+            });
+        }
+
         // Validación de horarios de atención (backend es fuente de verdad)
-        // Permite bypass global mediante ENABLE_STORE_HOURS_VALIDATION=false
-        if (isStoreHoursValidationEnabled()) {
+        if (estadoTienda.validarHorarios) {
             if (esHoraProgramada) {
                 if (!horarioEntregaDate) {
                     return res.status(400).json({
@@ -124,7 +132,7 @@ const crearPedidoCarta = async (req, res) => {
                         message: 'Debés indicar un horario programado válido.'
                     });
                 }
-                if (!isValidScheduledDateTime(horarioEntregaDate)) {
+                if (!(await isValidScheduledDateTime(horarioEntregaDate))) {
                     return res.status(400).json({
                         success: false,
                         message: 'El horario programado está fuera del horario de atención.'
@@ -132,7 +140,7 @@ const crearPedidoCarta = async (req, res) => {
                 }
             } else {
                 const now = getNowInStoreTimezone();
-                if (!isStoreOpen(now)) {
+                if (!(await isStoreOpen(now))) {
                     return res.status(400).json({
                         success: false,
                         message: 'El local está cerrado y no está tomando pedidos en este momento.'
@@ -156,89 +164,40 @@ const crearPedidoCarta = async (req, res) => {
 
         await connection.beginTransaction();
 
-        const articulosNormalizados = [];
+        const couponCode = data.couponCode ?? data.cuponCodigo ?? null;
+        let pricing;
 
-        for (const item of items) {
-            const productId = item.productId;
-            const quantity = item.quantity;
-            const selectedExtras = Array.isArray(item.selectedExtras) ? item.selectedExtras : [];
-
-            // 1. Validar artículo existe y traer precio
-            const [articuloRows] = await connection.execute(
-                'SELECT id, nombre, precio, controla_stock FROM articulos WHERE id = ? AND activo = 1',
-                [productId]
-            );
-
-            if (articuloRows.length === 0) {
-                await connection.rollback();
+        try {
+            pricing = await calcularPricingCompleto(connection, items, couponCode);
+        } catch (pricingError) {
+            await connection.rollback();
+            if (pricingError.code === 'CUPON_INVALIDO') {
                 return res.status(400).json({
                     success: false,
-                    message: `Producto no encontrado o no disponible: ${productId}`
+                    message: pricingError.message,
+                    code: 'CUPON_INVALIDO'
                 });
             }
-
-            const articulo = articuloRows[0];
-            const precioBase = parseFloat(articulo.precio) || 0;
-
-            // 2. Validar y traer adicionales seleccionados (que pertenezcan al artículo)
-            let extrasSnapshot = [];
-            let extrasTotal = 0;
-
-            if (selectedExtras.length > 0) {
-                const placeholders = selectedExtras.map(() => '?').join(',');
-                const [adicionalesRows] = await connection.execute(
-                    `SELECT a.id, a.nombre, a.precio_extra
-                     FROM adicionales a
-                     INNER JOIN adicionales_contenido ac ON a.id = ac.adicional_id AND ac.articulo_id = ?
-                     WHERE a.id IN (${placeholders}) AND a.disponible = 1`,
-                    [productId, ...selectedExtras]
-                );
-
-                if (adicionalesRows.length !== selectedExtras.length) {
-                    await connection.rollback();
-                    return res.status(400).json({
-                        success: false,
-                        message: `Uno o más adicionales no son válidos para el artículo ${articulo.nombre} (productId: ${productId})`
-                    });
-                }
-
-                extrasSnapshot = adicionalesRows.map(a => ({
-                    id: a.id,
-                    nombre: a.nombre,
-                    precio_extra: parseFloat(a.precio_extra) || 0
-                }));
-
-                const validacion = validarExtrasNoDobleYTriple(extrasSnapshot);
-                if (!validacion.valid) {
-                    await connection.rollback();
-                    return res.status(400).json({
-                        success: false,
-                        message: validacion.message,
-                        code: 'EXTRAS_DOBLE_TRIPLE_INCOMPATIBLES'
-                    });
-                }
-
-                extrasTotal = extrasSnapshot.reduce((sum, e) => sum + e.precio_extra, 0);
+            if (pricingError.code === 'EXTRAS_DOBLE_TRIPLE_INCOMPATIBLES') {
+                return res.status(400).json({
+                    success: false,
+                    message: pricingError.message,
+                    code: 'EXTRAS_DOBLE_TRIPLE_INCOMPATIBLES'
+                });
             }
-
-            const precioUnitario = precioBase + extrasTotal;
-            const subtotal = precioUnitario * quantity;
-
-            const personalizaciones = construirPersonalizaciones(extrasSnapshot);
-
-            articulosNormalizados.push({
-                articulo_id: articulo.id,
-                articulo_nombre: articulo.nombre,
-                cantidad: quantity,
-                precio: precioUnitario,
-                subtotal,
-                personalizaciones: extrasSnapshot.length > 0 ? personalizaciones : null,
-                observaciones: item.itemNotes || null
+            return res.status(400).json({
+                success: false,
+                message: pricingError.message || 'Error al calcular el carrito'
             });
         }
 
-        const totalBase = articulosNormalizados.reduce((sum, a) => sum + a.subtotal, 0);
-        const { subtotal: subtotalPedido, iva_total: ivaTotal, total } = calcularTotalesDesdePrecioFinal(totalBase);
+        const {
+            articulosNormalizados,
+            desglose,
+            montoDescuento,
+            cupon
+        } = pricing;
+        const { subtotal: subtotalPedido, iva_total: ivaTotal, total } = desglose;
 
         if (medioPagoNormalizado === 'EFECTIVO') {
             const validacionMonto = validateMontoConCuantoAbonaEfectivo(montoConCuantoAbona, total);
@@ -271,8 +230,9 @@ const crearPedidoCarta = async (req, res) => {
                 cliente_id, fecha, cliente_nombre, cliente_direccion, cliente_telefono, cliente_email,
                 origen_pedido, subtotal, iva_total, total, medio_pago, estado_pago, modalidad, horario_entrega,
                 estado, observaciones, monto_con_cuanto_abona, usuario_id, usuario_nombre,
-                prioridad, tiempo_estimado_preparacion, hora_inicio_preparacion, transicion_automatica
-            ) VALUES (?, NOW(), ?, ?, ?, ?, 'WEB', ?, ?, ?, ?, 'PENDIENTE', ?, ?, 'RECIBIDO', ?, ?, NULL, NULL, ?, ?, ?, ?)
+                prioridad, tiempo_estimado_preparacion, hora_inicio_preparacion, transicion_automatica,
+                cupon_id, cupon_codigo, descuento_cupon
+            ) VALUES (?, NOW(), ?, ?, ?, ?, 'WEB', ?, ?, ?, ?, 'PENDIENTE', ?, ?, 'RECIBIDO', ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?)
         `;
 
         const pedidoValues = [
@@ -292,7 +252,10 @@ const crearPedidoCarta = async (req, res) => {
             prioridadFinal,
             tiempoPlaceholder,
             horaInicioPreparacion,
-            true
+            true,
+            cupon?.id ?? null,
+            cupon?.codigo ?? null,
+            montoDescuento || 0
         ];
 
         const [pedidoResult] = await connection.execute(pedidoQuery, pedidoValues);
@@ -334,6 +297,10 @@ const crearPedidoCarta = async (req, res) => {
             'UPDATE pedidos SET tiempo_estimado_preparacion = ?, hora_inicio_preparacion = ? WHERE id = ?',
             [tiempoEstimadoReal, horaInicioPreparacionFinal, pedidoId]
         );
+
+        if (cupon?.id && montoDescuento > 0) {
+            await redeemCoupon(cupon.id, pedidoId, montoDescuento, connection);
+        }
 
         await connection.commit();
 
@@ -414,13 +381,17 @@ const crearPedidoCarta = async (req, res) => {
                 await notificarPedidoEfectivo({
                     id: pedidoId,
                     cliente_telefono: customer.telefono,
-                    total
+                    total,
+                    modalidad: deliveryType,
+                    items: articulosNormalizados,
                 });
             } else if (medioPagoNormalizado === 'TRANSFERENCIA') {
                 await notificarPedidoTransferencia({
                     id: pedidoId,
                     cliente_telefono: customer.telefono,
-                    total
+                    total,
+                    modalidad: deliveryType,
+                    items: articulosNormalizados,
                 });
             }
         } catch (err) {

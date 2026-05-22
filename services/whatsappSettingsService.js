@@ -1,0 +1,107 @@
+function getDb() {
+    return require('../controllers/dbPromise');
+}
+
+const KEYS = {
+    NOTIFICACIONES_ACTIVAS: 'WHATSAPP_NOTIFICACIONES_ACTIVAS',
+    ALIAS_TRANSFERENCIA: 'ALIAS_TRANSFERENCIA',
+};
+
+const BUSINESS_NAME = (process.env.NOMBRE_LOCAL || process.env.NOMBRE_NEGOCIO || 'El Chalito').trim();
+
+const CACHE_TTL_MS = 30_000;
+let settingsCache = null;
+let settingsCacheAt = 0;
+
+const parseBoolean = (value, defaultValue = true) => {
+    if (value === undefined || value === null) return defaultValue;
+    if (typeof value === 'boolean') return value;
+    const normalized = String(value).trim().toLowerCase();
+    if (['1', 'true', 'si', 'sí', 'on'].includes(normalized)) return true;
+    if (['0', 'false', 'no', 'off', ''].includes(normalized)) return false;
+    return defaultValue;
+};
+
+const fetchSettingsFromDb = async () => {
+    const claves = Object.values(KEYS);
+    const placeholders = claves.map(() => '?').join(',');
+    const [rows] = await getDb().execute(
+        `SELECT clave, valor FROM configuracion_sistema WHERE clave IN (${placeholders})`,
+        claves
+    );
+
+    const map = rows.reduce((acc, row) => {
+        acc[row.clave] = row.valor;
+        return acc;
+    }, {});
+
+    const alias = (map[KEYS.ALIAS_TRANSFERENCIA] || process.env.ALIAS_TRANSFERENCIA || 'ALIAS.NO.CONFIGURADO').trim();
+
+    return {
+        notificacionesActivas: parseBoolean(map[KEYS.NOTIFICACIONES_ACTIVAS], true),
+        aliasTransferencia: alias,
+        nombreNegocio: BUSINESS_NAME,
+    };
+};
+
+const getSettings = async () => {
+    const now = Date.now();
+    if (settingsCache && now - settingsCacheAt < CACHE_TTL_MS) {
+        return { ...settingsCache };
+    }
+
+    try {
+        const settings = await fetchSettingsFromDb();
+        settingsCache = settings;
+        settingsCacheAt = now;
+        return { ...settings };
+    } catch (error) {
+        console.error('Error leyendo settings WhatsApp, usando defaults:', error.message);
+        return {
+            notificacionesActivas: true,
+            aliasTransferencia: (process.env.ALIAS_TRANSFERENCIA || 'ALIAS.NO.CONFIGURADO').trim(),
+            nombreNegocio: BUSINESS_NAME,
+        };
+    }
+};
+
+const updateSettings = async (payload = {}) => {
+    const updates = [];
+
+    if (payload.notificacionesActivas !== undefined) {
+        updates.push([
+            KEYS.NOTIFICACIONES_ACTIVAS,
+            payload.notificacionesActivas ? 'true' : 'false',
+            'BOOLEAN',
+        ]);
+    }
+    if (payload.aliasTransferencia !== undefined) {
+        updates.push([
+            KEYS.ALIAS_TRANSFERENCIA,
+            String(payload.aliasTransferencia || '').trim(),
+            'STRING',
+        ]);
+    }
+
+    for (const [clave, valor, tipo] of updates) {
+        await getDb().execute(
+            `UPDATE configuracion_sistema SET valor = ?, tipo = ? WHERE clave = ?`,
+            [valor, tipo, clave]
+        );
+    }
+
+    invalidateCache();
+    return getSettings();
+};
+
+const invalidateCache = () => {
+    settingsCache = null;
+    settingsCacheAt = 0;
+};
+
+module.exports = {
+    KEYS,
+    getSettings,
+    updateSettings,
+    invalidateCache,
+};

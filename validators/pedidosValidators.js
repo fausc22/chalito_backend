@@ -83,6 +83,10 @@ const actualizarObservacionesSchema = z.object({
     observaciones: z.string().max(255).optional().nullable()
 });
 
+const actualizarHorarioEntregaSchema = z.object({
+    horario_entrega: z.union([z.string().datetime(), z.null()]).optional()
+});
+
 // Schema para agregar artículo a pedido existente
 const agregarArticuloSchema = pedidoContenidoSchema;
 
@@ -119,8 +123,6 @@ const editarPedidoCompletoSchema = z.object({
 
 const cobrarPedidoSchema = z.object({
     medio_pago: z.string().max(50).optional().nullable(),
-    cuenta_id: z.number().int().positive('cuenta_id debe ser un número positivo').optional().nullable(),
-    tipo_factura: z.string().length(1).optional().nullable(),
     descuento_porcentaje: z.coerce.number().min(0, 'El descuento porcentual no puede ser menor a 0').max(100, 'El descuento porcentual no puede ser mayor a 100').optional().default(0)
 });
 
@@ -179,6 +181,7 @@ module.exports = {
     crearPedidoSchema,
     actualizarEstadoPedidoSchema,
     actualizarObservacionesSchema,
+    actualizarHorarioEntregaSchema,
     agregarArticuloSchema,
     actualizarArticuloPedidoSchema,
     editarPedidoCompletoSchema,

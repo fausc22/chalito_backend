@@ -1,6 +1,8 @@
 
 // middlewares/authMiddleware.js
 const jwt = require('jsonwebtoken');
+const db = require('../controllers/dbPromise');
+const { canAccess, ROLES } = require('../config/permissions');
 
 // Middleware para verificar JWT con mejor manejo de errores
 const authenticateToken = (req, res, next) => {
@@ -81,6 +83,123 @@ const authenticateToken = (req, res, next) => {
         next();
     });
 };
+
+/**
+ * Relee usuario activo desde BD y sincroniza req.user.rol con la base.
+ * Debe ir después de authenticateToken.
+ */
+const revalidateUser = async (req, res, next) => {
+    if (!req.user?.id) {
+        return res.status(401).json({
+            message: 'Usuario no autenticado',
+            code: 'NOT_AUTHENTICATED',
+        });
+    }
+
+    try {
+        const [rows] = await db.execute(
+            `SELECT id, nombre, usuario, email, rol, activo, avatar_key
+             FROM usuarios WHERE id = ?`,
+            [req.user.id]
+        );
+
+        if (rows.length === 0) {
+            return res.status(401).json({
+                message: 'Usuario no encontrado',
+                code: 'USER_NOT_FOUND',
+            });
+        }
+
+        const usuarioDb = rows[0];
+
+        if (!usuarioDb.activo) {
+            return res.status(401).json({
+                message: 'Usuario inactivo',
+                code: 'USER_INACTIVE',
+            });
+        }
+
+        req.user = {
+            ...req.user,
+            id: usuarioDb.id,
+            nombre: usuarioDb.nombre,
+            usuario: usuarioDb.usuario,
+            email: usuarioDb.email,
+            rol: usuarioDb.rol,
+            avatar_key: usuarioDb.avatar_key,
+            activo: usuarioDb.activo,
+        };
+
+        next();
+    } catch (error) {
+        console.error('❌ Error en revalidateUser:', error);
+        return res.status(500).json({
+            message: 'Error interno del servidor',
+            code: 'INTERNAL_ERROR',
+        });
+    }
+};
+
+/**
+ * Autoriza por módulo usando config/permissions.js
+ */
+const authorizeModule = (module, action = 'read') => {
+    return (req, res, next) => {
+        if (!req.user?.rol) {
+            return res.status(401).json({
+                message: 'Usuario no autenticado',
+                code: 'NOT_AUTHENTICATED',
+            });
+        }
+
+        if (!canAccess(req.user.rol, module, action)) {
+            return res.status(403).json({
+                message: 'No tienes permisos para esta acción',
+                code: 'INSUFFICIENT_PERMISSION',
+                userRole: req.user.rol,
+                module,
+                action,
+            });
+        }
+
+        next();
+    };
+};
+
+const authorizeMinimumRole = (minimumRole) => {
+    const hierarchy = {
+        [ROLES.COCINA]: 1,
+        [ROLES.CAJERO]: 2,
+        [ROLES.GERENTE]: 3,
+        [ROLES.ADMIN]: 4,
+    };
+    const minLevel = hierarchy[minimumRole] || 0;
+
+    return (req, res, next) => {
+        if (!req.user?.rol) {
+            return res.status(401).json({
+                message: 'Usuario no autenticado',
+                code: 'NOT_AUTHENTICATED',
+            });
+        }
+
+        const userLevel = hierarchy[req.user.rol] || 0;
+        if (userLevel < minLevel) {
+            return res.status(403).json({
+                message: `No tienes permisos. Se requiere rol mínimo: ${minimumRole}`,
+                code: 'INSUFFICIENT_ROLE',
+                userRole: req.user.rol,
+                requiredMinimumRole: minimumRole,
+            });
+        }
+
+        next();
+    };
+};
+
+const authWithRevalidate = [authenticateToken, revalidateUser];
+
+const requireAdminModule = [...authWithRevalidate, authorizeModule('usuarios', 'write')];
 
 // Middleware de autorización por roles - ADAPTADO PARA SISTEMA CHALITO
 const authorizeRole = (roles) => {
@@ -183,7 +302,12 @@ const authenticateWithRefresh = async (req, res, next) => {
 };
 
 module.exports = { 
-    authenticateToken, 
+    authenticateToken,
+    revalidateUser,
+    authorizeModule,
+    authorizeMinimumRole,
+    authWithRevalidate,
+    requireAdminModule,
     authorizeRole,
     requireAdmin,
     requireGerente, 
