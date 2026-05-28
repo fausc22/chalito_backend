@@ -63,36 +63,95 @@ const normalizeDateOutput = (value) => {
     return String(value).slice(0, 10);
 };
 
-const obtenerDashboardReportes = async ({ desdeDateTime, hastaDateTime, limit }) => {
+const buildVentasFilterClause = ({ medioPago, origenPedido }) => {
+    const conditions = [];
+    const params = [];
+
+    if (medioPago) {
+        conditions.push('v.medio_pago = ?');
+        params.push(medioPago);
+    }
+
+    if (origenPedido) {
+        conditions.push('p.origen_pedido = ?');
+        params.push(origenPedido);
+    }
+
+    return {
+        sql: conditions.length ? ` AND ${conditions.join(' AND ')}` : '',
+        params,
+        needsPedidosJoin: Boolean(origenPedido)
+    };
+};
+
+const buildPedidosFilterClause = ({ medioPago, origenPedido }) => {
+    const conditions = [];
+    const params = [];
+
+    if (medioPago) {
+        conditions.push('p.medio_pago = ?');
+        params.push(medioPago);
+    }
+
+    if (origenPedido) {
+        conditions.push('p.origen_pedido = ?');
+        params.push(origenPedido);
+    }
+
+    return {
+        sql: conditions.length ? ` AND ${conditions.join(' AND ')}` : '',
+        params
+    };
+};
+
+const obtenerDashboardReportes = async ({
+    desdeDateTime,
+    hastaDateTime,
+    limit,
+    medioPago,
+    origenPedido
+}) => {
     const limitSeguro = Math.max(toInt(limit, 10), 1);
+    const filtros = { medioPago, origenPedido };
+    const ventasFilters = buildVentasFilterClause(filtros);
+    const pedidosFilters = buildPedidosFilterClause(filtros);
+    const ventasJoin = ventasFilters.needsPedidosJoin
+        ? ' INNER JOIN pedidos p ON v.pedido_id = p.id'
+        : '';
+
+    const baseDateParams = [desdeDateTime, hastaDateTime];
 
     const resumenQuery = `
         SELECT
             COUNT(*) AS cantidadVentas,
-            COALESCE(SUM(total), 0) AS totalVendido,
-            COALESCE(SUM(subtotal), 0) AS subtotalVendido,
-            COALESCE(SUM(iva_total), 0) AS ivaTotal,
-            COALESCE(SUM(descuento), 0) AS descuentoTotal,
-            COALESCE(AVG(total), 0) AS ticketPromedio,
-            COALESCE(MIN(total), 0) AS ventaMinima,
-            COALESCE(MAX(total), 0) AS ventaMaxima
-        FROM ventas
-        WHERE fecha BETWEEN ? AND ?
-          AND estado = 'FACTURADA'
+            COALESCE(SUM(v.total), 0) AS totalVendido,
+            COALESCE(SUM(v.subtotal), 0) AS subtotalVendido,
+            COALESCE(SUM(v.iva_total), 0) AS ivaTotal,
+            COALESCE(SUM(v.descuento), 0) AS descuentoTotal,
+            COALESCE(AVG(v.total), 0) AS ticketPromedio,
+            COALESCE(MIN(v.total), 0) AS ventaMinima,
+            COALESCE(MAX(v.total), 0) AS ventaMaxima
+        FROM ventas v${ventasJoin}
+        WHERE v.fecha BETWEEN ? AND ?
+          AND v.estado = 'FACTURADA'${ventasFilters.sql}
     `;
 
     const ventasPorDiaQuery = `
         SELECT
-            DATE(fecha) AS dia,
+            DATE(v.fecha) AS dia,
             COUNT(*) AS cantidadVentas,
-            COALESCE(SUM(total), 0) AS totalVendido,
-            COALESCE(AVG(total), 0) AS ticketPromedio
-        FROM ventas
-        WHERE fecha BETWEEN ? AND ?
-          AND estado = 'FACTURADA'
-        GROUP BY DATE(fecha)
+            COALESCE(SUM(v.total), 0) AS totalVendido,
+            COALESCE(AVG(v.total), 0) AS ticketPromedio
+        FROM ventas v${ventasJoin}
+        WHERE v.fecha BETWEEN ? AND ?
+          AND v.estado = 'FACTURADA'${ventasFilters.sql}
+        GROUP BY DATE(v.fecha)
         ORDER BY dia ASC
     `;
+
+    const productosJoin = ventasFilters.needsPedidosJoin
+        ? ' INNER JOIN pedidos p ON v.pedido_id = p.id'
+        : '';
 
     const productosMasVendidosQuery = `
         SELECT
@@ -102,9 +161,9 @@ const obtenerDashboardReportes = async ({ desdeDateTime, hastaDateTime, limit })
             COALESCE(SUM(vc.subtotal), 0) AS totalGenerado,
             COALESCE(AVG(vc.precio), 0) AS precioPromedio
         FROM ventas_contenido vc
-        INNER JOIN ventas v ON v.id = vc.venta_id
+        INNER JOIN ventas v ON v.id = vc.venta_id${productosJoin}
         WHERE v.fecha BETWEEN ? AND ?
-          AND v.estado = 'FACTURADA'
+          AND v.estado = 'FACTURADA'${ventasFilters.sql}
         GROUP BY vc.articulo_id, vc.articulo_nombre
         ORDER BY cantidadVendida DESC
         LIMIT ${limitSeguro}
@@ -112,48 +171,51 @@ const obtenerDashboardReportes = async ({ desdeDateTime, hastaDateTime, limit })
 
     const horariosDemandaQuery = `
         SELECT
-            HOUR(fecha) AS hora,
+            HOUR(p.fecha) AS hora,
             COUNT(*) AS cantidadPedidos
-        FROM pedidos
-        WHERE fecha BETWEEN ? AND ?
-          AND estado <> 'CANCELADO'
-        GROUP BY HOUR(fecha)
+        FROM pedidos p
+        WHERE p.fecha BETWEEN ? AND ?
+          AND p.estado <> 'CANCELADO'${pedidosFilters.sql}
+        GROUP BY HOUR(p.fecha)
         ORDER BY hora ASC
     `;
 
     const mediosPagoQuery = `
         SELECT
-            COALESCE(NULLIF(TRIM(medio_pago), ''), 'SIN_MEDIO_PAGO') AS medioPago,
+            COALESCE(NULLIF(TRIM(v.medio_pago), ''), 'SIN_MEDIO_PAGO') AS medioPago,
             COUNT(*) AS cantidadVentas,
-            COALESCE(SUM(total), 0) AS totalVendido
-        FROM ventas
-        WHERE fecha BETWEEN ? AND ?
-          AND estado = 'FACTURADA'
-        GROUP BY COALESCE(NULLIF(TRIM(medio_pago), ''), 'SIN_MEDIO_PAGO')
+            COALESCE(SUM(v.total), 0) AS totalVendido
+        FROM ventas v${ventasJoin}
+        WHERE v.fecha BETWEEN ? AND ?
+          AND v.estado = 'FACTURADA'${ventasFilters.sql}
+        GROUP BY COALESCE(NULLIF(TRIM(v.medio_pago), ''), 'SIN_MEDIO_PAGO')
         ORDER BY totalVendido DESC
     `;
 
     const origenesQuery = `
         SELECT
-            COALESCE(NULLIF(TRIM(origen_pedido), ''), 'SIN_ORIGEN') AS origenPedido,
+            COALESCE(NULLIF(TRIM(p.origen_pedido), ''), 'SIN_ORIGEN') AS origenPedido,
             COUNT(*) AS cantidadPedidos
-        FROM pedidos
-        WHERE fecha BETWEEN ? AND ?
-          AND estado <> 'CANCELADO'
-        GROUP BY COALESCE(NULLIF(TRIM(origen_pedido), ''), 'SIN_ORIGEN')
+        FROM pedidos p
+        WHERE p.fecha BETWEEN ? AND ?
+          AND p.estado <> 'CANCELADO'${pedidosFilters.sql}
+        GROUP BY COALESCE(NULLIF(TRIM(p.origen_pedido), ''), 'SIN_ORIGEN')
         ORDER BY cantidadPedidos DESC
     `;
 
     const modalidadesQuery = `
         SELECT
-            COALESCE(NULLIF(TRIM(modalidad), ''), 'SIN_MODALIDAD') AS modalidad,
+            COALESCE(NULLIF(TRIM(p.modalidad), ''), 'SIN_MODALIDAD') AS modalidad,
             COUNT(*) AS cantidadPedidos
-        FROM pedidos
-        WHERE fecha BETWEEN ? AND ?
-          AND estado <> 'CANCELADO'
-        GROUP BY COALESCE(NULLIF(TRIM(modalidad), ''), 'SIN_MODALIDAD')
+        FROM pedidos p
+        WHERE p.fecha BETWEEN ? AND ?
+          AND p.estado <> 'CANCELADO'${pedidosFilters.sql}
+        GROUP BY COALESCE(NULLIF(TRIM(p.modalidad), ''), 'SIN_MODALIDAD')
         ORDER BY cantidadPedidos DESC
     `;
+
+    const ventasParams = [...baseDateParams, ...ventasFilters.params];
+    const pedidosParams = [...baseDateParams, ...pedidosFilters.params];
 
     const [
         [resumenRows],
@@ -164,13 +226,13 @@ const obtenerDashboardReportes = async ({ desdeDateTime, hastaDateTime, limit })
         [origenesRows],
         [modalidadesRows]
     ] = await Promise.all([
-        db.execute(resumenQuery, [desdeDateTime, hastaDateTime]),
-        db.execute(ventasPorDiaQuery, [desdeDateTime, hastaDateTime]),
-        db.execute(productosMasVendidosQuery, [desdeDateTime, hastaDateTime]),
-        db.execute(horariosDemandaQuery, [desdeDateTime, hastaDateTime]),
-        db.execute(mediosPagoQuery, [desdeDateTime, hastaDateTime]),
-        db.execute(origenesQuery, [desdeDateTime, hastaDateTime]),
-        db.execute(modalidadesQuery, [desdeDateTime, hastaDateTime])
+        db.execute(resumenQuery, ventasParams),
+        db.execute(ventasPorDiaQuery, ventasParams),
+        db.execute(productosMasVendidosQuery, ventasParams),
+        db.execute(horariosDemandaQuery, pedidosParams),
+        db.execute(mediosPagoQuery, ventasParams),
+        db.execute(origenesQuery, pedidosParams),
+        db.execute(modalidadesQuery, pedidosParams)
     ]);
 
     const resumenBase = resumenRows?.[0] || {};

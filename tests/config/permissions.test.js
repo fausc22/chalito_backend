@@ -38,3 +38,12 @@ test('GERENTE y ADMIN acceden auditoria', () => {
   assert.equal(canAccess(ROLES.GERENTE, MODULES.AUDITORIA, 'read'), true);
   assert.equal(canAccess(ROLES.CAJERO, MODULES.AUDITORIA, 'read'), false);
 });
+
+test('GERENTE lee empleados pero no escribe', () => {
+  assert.equal(canAccess(ROLES.GERENTE, MODULES.EMPLEADOS, 'read'), true);
+  assert.equal(canAccess(ROLES.GERENTE, MODULES.EMPLEADOS, 'write'), false);
+});
+
+test('ADMIN escribe empleados', () => {
+  assert.equal(canAccess(ROLES.ADMIN, MODULES.EMPLEADOS, 'write'), true);
+});

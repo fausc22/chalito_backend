@@ -338,9 +338,20 @@ const obtenerVentas = async (req, res) => {
         let whereConditions = ['1=1'];
         let queryParams = [];
         
-        // Filtro por mes/año (prioritario sobre fecha_desde/fecha_hasta)
-        if (month && month !== 'all' && year) {
-            // Mes específico del año
+        // Rango manual tiene prioridad; si no hay fechas, se usa mes/año
+        const hasCustomDateRange = Boolean(fecha_desde || fecha_hasta);
+
+        if (hasCustomDateRange) {
+            if (fecha_desde) {
+                whereConditions.push('DATE(v.fecha) >= ?');
+                queryParams.push(fecha_desde);
+            }
+
+            if (fecha_hasta) {
+                whereConditions.push('DATE(v.fecha) <= ?');
+                queryParams.push(fecha_hasta);
+            }
+        } else if (month && month !== 'all' && year) {
             const monthNum = parseInt(month);
             const yearNum = parseInt(year);
             if (monthNum >= 1 && monthNum <= 12 && yearNum > 0) {
@@ -351,7 +362,6 @@ const obtenerVentas = async (req, res) => {
                 queryParams.push(firstDay, lastDay);
             }
         } else if ((month === 'all' || !month) && year) {
-            // Todos los meses del año (month === 'all' o no se especifica mes)
             const yearNum = parseInt(year);
             if (yearNum > 0) {
                 const firstDay = `${yearNum}-01-01`;
@@ -359,18 +369,6 @@ const obtenerVentas = async (req, res) => {
                 whereConditions.push('DATE(v.fecha) >= ?');
                 whereConditions.push('DATE(v.fecha) <= ?');
                 queryParams.push(firstDay, lastDay);
-            }
-        } else {
-            // Filtro por fecha desde (solo si no se usa month/year)
-            if (fecha_desde) {
-                whereConditions.push('DATE(v.fecha) >= ?');
-                queryParams.push(fecha_desde);
-            }
-            
-            // Filtro por fecha hasta (solo si no se usa month/year)
-            if (fecha_hasta) {
-                whereConditions.push('DATE(v.fecha) <= ?');
-                queryParams.push(fecha_hasta);
             }
         }
         

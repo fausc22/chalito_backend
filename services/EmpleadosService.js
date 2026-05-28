@@ -1,4 +1,6 @@
 const db = require('../controllers/dbPromise');
+const { prepareEmpleadoMasterPayload } = require('../utils/empleadosPayloadGuard');
+const { assertCanMutateEmpleadoMaster } = require('../utils/empleadosAccessAssert');
 
 const EMPLEADOS_SELECT = `
     SELECT
@@ -100,7 +102,12 @@ const obtenerEmpleadoPorId = async (id) => {
     return rows[0] || null;
 };
 
-const crearEmpleado = async (data) => {
+const crearEmpleado = async (data, context = {}) => {
+    if (context.rol) {
+        assertCanMutateEmpleadoMaster(context.rol);
+    }
+    const safeData = context.rol ? prepareEmpleadoMasterPayload(data, context.rol) : data;
+
     const query = `
         INSERT INTO empleados (
             nombre, apellido, telefono, email, documento, activo, tipo_pago, valor_hora, fecha_ingreso, observaciones
@@ -108,22 +115,27 @@ const crearEmpleado = async (data) => {
     `;
 
     const values = [
-        data.nombre,
-        data.apellido,
-        data.telefono || null,
-        data.email || null,
-        data.documento || null,
-        data.activo ? 1 : 0,
-        data.valor_hora,
-        data.fecha_ingreso,
-        data.observaciones || null
+        safeData.nombre,
+        safeData.apellido,
+        safeData.telefono || null,
+        safeData.email || null,
+        safeData.documento || null,
+        safeData.activo ? 1 : 0,
+        safeData.valor_hora,
+        safeData.fecha_ingreso,
+        safeData.observaciones || null
     ];
 
     const [result] = await db.execute(query, values);
     return obtenerEmpleadoPorId(result.insertId);
 };
 
-const actualizarEmpleado = async (id, data) => {
+const actualizarEmpleado = async (id, data, context = {}) => {
+    if (context.rol) {
+        assertCanMutateEmpleadoMaster(context.rol);
+    }
+    const safeData = context.rol ? prepareEmpleadoMasterPayload(data, context.rol) : data;
+
     const query = `
         UPDATE empleados
         SET
@@ -141,14 +153,14 @@ const actualizarEmpleado = async (id, data) => {
     `;
 
     const values = [
-        data.nombre ?? null,
-        data.apellido ?? null,
-        data.telefono ?? null,
-        data.email ?? null,
-        data.documento ?? null,
-        data.valor_hora,
-        data.fecha_ingreso ?? null,
-        data.observaciones ?? null,
+        safeData.nombre ?? null,
+        safeData.apellido ?? null,
+        safeData.telefono ?? null,
+        safeData.email ?? null,
+        safeData.documento ?? null,
+        safeData.valor_hora,
+        safeData.fecha_ingreso ?? null,
+        safeData.observaciones ?? null,
         id
     ];
 
@@ -156,7 +168,10 @@ const actualizarEmpleado = async (id, data) => {
     return result.affectedRows > 0;
 };
 
-const actualizarActivoEmpleado = async (id, activo) => {
+const actualizarActivoEmpleado = async (id, activo, context = {}) => {
+    if (context.rol) {
+        assertCanMutateEmpleadoMaster(context.rol);
+    }
     const [result] = await db.execute(
         `UPDATE empleados
          SET activo = ?, fecha_actualizacion = NOW()

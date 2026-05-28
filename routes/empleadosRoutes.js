@@ -24,7 +24,12 @@ const {
     crearLiquidacion
 } = require('../controllers/empleadosController');
 
-const { writeEmpleados } = require('../middlewares/routeGuards');
+const {
+    readEmpleados,
+    mutateEmpleadosMaster,
+    writeEmpleadosLiquidaciones,
+    operateEmpleadosAsistenciaMovimientos,
+} = require('../middlewares/routeGuards');
 const { apiRateLimiter } = require('../middlewares/rateLimitMiddleware');
 const {
     crearEmpleadoSchema,
@@ -48,54 +53,52 @@ const {
     validateQuery
 } = require('../validators/empleadosValidators');
 
-const soloDuenioEncargadoAdmin = writeEmpleados;
-
 /**
  * RUTAS DE EMPLEADOS
  * Incluye: empleados, asistencias, movimientos y liquidaciones
  * Base: /empleados
  *
- * Endpoints principales (base /empleados):
- * - Empleados: GET /, GET /:id, POST /, PUT /:id, PATCH /:id/activo
- * - Asistencias: GET /asistencias, GET /asistencias/:id, POST /asistencias/ingreso, POST /asistencias/egreso, PUT /asistencias/:id
- * - Movimientos: GET /movimientos, GET /movimientos/:id, POST /movimientos, PUT /movimientos/:id, DELETE /movimientos/:id
- * - Liquidaciones: GET /liquidaciones/resumen (canonica), POST /liquidaciones/calcular (compatibilidad frontend), GET /liquidaciones, GET /liquidaciones/:id, POST /liquidaciones
+ * Permisos:
+ * - readEmpleados: GET (ADMIN, GERENTE)
+ * - mutateEmpleadosMaster: POST/PUT/PATCH empleados (solo ADMIN)
+ * - operateEmpleadosAsistenciaMovimientos: POST/PUT/DELETE asistencias y movimientos (ADMIN, GERENTE)
+ * - writeEmpleadosLiquidaciones: liquidaciones (solo ADMIN)
  */
 
 // =====================================================
 // ASISTENCIAS
 // =====================================================
-router.get('/asistencias', apiRateLimiter, ...soloDuenioEncargadoAdmin, validateQuery(filtrosAsistenciasQuerySchema), obtenerAsistencias);
-router.post('/asistencias/ingreso', apiRateLimiter, ...soloDuenioEncargadoAdmin, validate(registrarIngresoAsistenciaSchema), registrarIngresoAsistencia);
-router.post('/asistencias/egreso', apiRateLimiter, ...soloDuenioEncargadoAdmin, validate(registrarEgresoAsistenciaSchema), registrarEgresoAsistencia);
-router.get('/asistencias/:id', apiRateLimiter, ...soloDuenioEncargadoAdmin, validateParams(idParamSchema), obtenerAsistenciaPorId);
-router.put('/asistencias/:id', apiRateLimiter, ...soloDuenioEncargadoAdmin, validateParams(idParamSchema), validate(corregirAsistenciaSchema), corregirAsistencia);
+router.get('/asistencias', apiRateLimiter, ...readEmpleados, validateQuery(filtrosAsistenciasQuerySchema), obtenerAsistencias);
+router.post('/asistencias/ingreso', apiRateLimiter, ...operateEmpleadosAsistenciaMovimientos, validate(registrarIngresoAsistenciaSchema), registrarIngresoAsistencia);
+router.post('/asistencias/egreso', apiRateLimiter, ...operateEmpleadosAsistenciaMovimientos, validate(registrarEgresoAsistenciaSchema), registrarEgresoAsistencia);
+router.get('/asistencias/:id', apiRateLimiter, ...readEmpleados, validateParams(idParamSchema), obtenerAsistenciaPorId);
+router.put('/asistencias/:id', apiRateLimiter, ...operateEmpleadosAsistenciaMovimientos, validateParams(idParamSchema), validate(corregirAsistenciaSchema), corregirAsistencia);
 
 // =====================================================
 // MOVIMIENTOS
 // =====================================================
-router.get('/movimientos', apiRateLimiter, ...soloDuenioEncargadoAdmin, validateQuery(filtrosMovimientosQuerySchema), obtenerMovimientos);
-router.post('/movimientos', apiRateLimiter, ...soloDuenioEncargadoAdmin, validate(crearMovimientoSchema), crearMovimiento);
-router.get('/movimientos/:id', apiRateLimiter, ...soloDuenioEncargadoAdmin, validateParams(idParamSchema), obtenerMovimientoPorId);
-router.put('/movimientos/:id', apiRateLimiter, ...soloDuenioEncargadoAdmin, validateParams(idParamSchema), validate(editarMovimientoSchema), editarMovimiento);
-router.delete('/movimientos/:id', apiRateLimiter, ...soloDuenioEncargadoAdmin, validateParams(idParamSchema), eliminarMovimiento);
+router.get('/movimientos', apiRateLimiter, ...readEmpleados, validateQuery(filtrosMovimientosQuerySchema), obtenerMovimientos);
+router.post('/movimientos', apiRateLimiter, ...operateEmpleadosAsistenciaMovimientos, validate(crearMovimientoSchema), crearMovimiento);
+router.get('/movimientos/:id', apiRateLimiter, ...readEmpleados, validateParams(idParamSchema), obtenerMovimientoPorId);
+router.put('/movimientos/:id', apiRateLimiter, ...operateEmpleadosAsistenciaMovimientos, validateParams(idParamSchema), validate(editarMovimientoSchema), editarMovimiento);
+router.delete('/movimientos/:id', apiRateLimiter, ...operateEmpleadosAsistenciaMovimientos, validateParams(idParamSchema), eliminarMovimiento);
 
 // =====================================================
-// LIQUIDACIONES
+// LIQUIDACIONES (solo ADMIN)
 // =====================================================
-router.get('/liquidaciones', apiRateLimiter, ...soloDuenioEncargadoAdmin, validateQuery(filtrosLiquidacionesQuerySchema), obtenerLiquidaciones);
-router.get('/liquidaciones/resumen', apiRateLimiter, ...soloDuenioEncargadoAdmin, validateQuery(resumenLiquidacionQuerySchema), obtenerResumenLiquidacion);
-router.post('/liquidaciones/calcular', apiRateLimiter, ...soloDuenioEncargadoAdmin, validate(resumenLiquidacionBodySchema), calcularResumenLiquidacion);
-router.get('/liquidaciones/:id', apiRateLimiter, ...soloDuenioEncargadoAdmin, validateParams(idParamSchema), obtenerLiquidacionPorId);
-router.post('/liquidaciones', apiRateLimiter, ...soloDuenioEncargadoAdmin, validate(guardarLiquidacionSchema), crearLiquidacion);
+router.get('/liquidaciones', apiRateLimiter, ...writeEmpleadosLiquidaciones, validateQuery(filtrosLiquidacionesQuerySchema), obtenerLiquidaciones);
+router.get('/liquidaciones/resumen', apiRateLimiter, ...writeEmpleadosLiquidaciones, validateQuery(resumenLiquidacionQuerySchema), obtenerResumenLiquidacion);
+router.post('/liquidaciones/calcular', apiRateLimiter, ...writeEmpleadosLiquidaciones, validate(resumenLiquidacionBodySchema), calcularResumenLiquidacion);
+router.get('/liquidaciones/:id', apiRateLimiter, ...writeEmpleadosLiquidaciones, validateParams(idParamSchema), obtenerLiquidacionPorId);
+router.post('/liquidaciones', apiRateLimiter, ...writeEmpleadosLiquidaciones, validate(guardarLiquidacionSchema), crearLiquidacion);
 
 // =====================================================
-// EMPLEADOS
+// EMPLEADOS (maestro)
 // =====================================================
-router.get('/', apiRateLimiter, ...soloDuenioEncargadoAdmin, validateQuery(filtrosEmpleadosQuerySchema), obtenerEmpleados);
-router.post('/', apiRateLimiter, ...soloDuenioEncargadoAdmin, validate(crearEmpleadoSchema), crearEmpleado);
-router.get('/:id', apiRateLimiter, ...soloDuenioEncargadoAdmin, validateParams(idParamSchema), obtenerEmpleadoPorId);
-router.put('/:id', apiRateLimiter, ...soloDuenioEncargadoAdmin, validateParams(idParamSchema), validate(editarEmpleadoSchema), editarEmpleado);
-router.patch('/:id/activo', apiRateLimiter, ...soloDuenioEncargadoAdmin, validateParams(idParamSchema), validate(actualizarEstadoEmpleadoSchema), actualizarEstadoEmpleado);
+router.get('/', apiRateLimiter, ...readEmpleados, validateQuery(filtrosEmpleadosQuerySchema), obtenerEmpleados);
+router.post('/', apiRateLimiter, ...mutateEmpleadosMaster, validate(crearEmpleadoSchema), crearEmpleado);
+router.get('/:id', apiRateLimiter, ...readEmpleados, validateParams(idParamSchema), obtenerEmpleadoPorId);
+router.put('/:id', apiRateLimiter, ...mutateEmpleadosMaster, validateParams(idParamSchema), validate(editarEmpleadoSchema), editarEmpleado);
+router.patch('/:id/activo', apiRateLimiter, ...mutateEmpleadosMaster, validateParams(idParamSchema), validate(actualizarEstadoEmpleadoSchema), actualizarEstadoEmpleado);
 
 module.exports = router;

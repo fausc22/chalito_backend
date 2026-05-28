@@ -56,7 +56,7 @@ const ROLE_ACCESS = {
     [MODULES.COCINA]: 'write',
     [MODULES.VENTAS]: 'write',
     [MODULES.INVENTARIO]: 'write',
-    [MODULES.EMPLEADOS]: 'write',
+    [MODULES.EMPLEADOS]: 'read',
     [MODULES.GASTOS]: 'write',
     [MODULES.FONDOS]: 'write',
     [MODULES.REPORTES]: 'write',

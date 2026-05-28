@@ -3,6 +3,7 @@ const router = express.Router();
 const authController = require('../controllers/authController');
 const authMiddleware = require('../middlewares/authMiddleware');
 const { loginRateLimiter, apiRateLimiter } = require('../middlewares/rateLimitMiddleware');
+const { getEmpleadosCapabilities } = require('../config/empleadosPermissions');
 
 // ✅ RUTAS PÚBLICAS (con rate limiting)
 router.post('/login', loginRateLimiter, authController.login);
@@ -35,6 +36,7 @@ router.get('/verify', ...authMiddleware.authWithRevalidate, async (req, res) => 
                 avatar_key: req.user.avatar_key ?? null,
                 activo: req.user.activo !== false,
             },
+            empleadosCapabilities: getEmpleadosCapabilities(req.user.rol),
         });
     } catch (error) {
         console.error('❌ Error en verify route:', error);

@@ -2,6 +2,16 @@ const { obtenerDashboardReportes } = require('../services/reportes.service');
 
 const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
+const MEDIOS_PAGO_PERMITIDOS = new Set([
+    'EFECTIVO',
+    'TRANSFERENCIA',
+    'DEBITO',
+    'CREDITO',
+    'MERCADOPAGO'
+]);
+
+const ORIGENES_PERMITIDOS = new Set(['MOSTRADOR', 'TELEFONO', 'WHATSAPP', 'WEB']);
+
 const formatDateOnly = (date) => {
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -37,8 +47,8 @@ const resolverFechas = (query = {}) => {
     const desdeDefault = `${ahora.getFullYear()}-${String(ahora.getMonth() + 1).padStart(2, '0')}-01`;
     const hastaDefault = formatDateOnly(ahora);
 
-    const desde = query.desde ?? desdeDefault;
-    const hasta = query.hasta ?? hastaDefault;
+    const desde = query.desde ?? query.date_from ?? desdeDefault;
+    const hasta = query.hasta ?? query.date_to ?? hastaDefault;
 
     if (!isValidDateOnly(desde)) {
         return { error: `El parámetro "desde" es inválido. Debe usar formato YYYY-MM-DD.` };
@@ -60,6 +70,38 @@ const resolverFechas = (query = {}) => {
     };
 };
 
+const resolverMedioPago = (query = {}) => {
+    const raw = query.medio_pago ?? query.payment_method ?? query.medioPago;
+    if (raw === undefined || raw === null || String(raw).trim() === '') {
+        return { medioPago: undefined };
+    }
+
+    const medioPago = String(raw).trim().toUpperCase();
+    if (!MEDIOS_PAGO_PERMITIDOS.has(medioPago)) {
+        return {
+            error: `El parámetro "medio_pago" es inválido. Valores permitidos: ${[...MEDIOS_PAGO_PERMITIDOS].join(', ')}.`
+        };
+    }
+
+    return { medioPago };
+};
+
+const resolverOrigenPedido = (query = {}) => {
+    const raw = query.origen_pedido ?? query.origin ?? query.origenPedido;
+    if (raw === undefined || raw === null || String(raw).trim() === '') {
+        return { origenPedido: undefined };
+    }
+
+    const origenPedido = String(raw).trim().toUpperCase();
+    if (!ORIGENES_PERMITIDOS.has(origenPedido)) {
+        return {
+            error: `El parámetro "origen_pedido" es inválido. Valores permitidos: ${[...ORIGENES_PERMITIDOS].join(', ')}.`
+        };
+    }
+
+    return { origenPedido };
+};
+
 const getDashboardReportes = async (req, res) => {
     try {
         const fechas = resolverFechas(req.query || {});
@@ -70,7 +112,7 @@ const getDashboardReportes = async (req, res) => {
             });
         }
 
-        const limit = parsePositiveLimit(req.query?.limit);
+        const limit = parsePositiveLimit(req.query?.limit ?? req.query?.ranking_limit);
         if (limit === null) {
             return res.status(400).json({
                 ok: false,
@@ -78,10 +120,28 @@ const getDashboardReportes = async (req, res) => {
             });
         }
 
+        const medioPagoResult = resolverMedioPago(req.query || {});
+        if (medioPagoResult.error) {
+            return res.status(400).json({
+                ok: false,
+                message: medioPagoResult.error
+            });
+        }
+
+        const origenPedidoResult = resolverOrigenPedido(req.query || {});
+        if (origenPedidoResult.error) {
+            return res.status(400).json({
+                ok: false,
+                message: origenPedidoResult.error
+            });
+        }
+
         const data = await obtenerDashboardReportes({
             desdeDateTime: fechas.desdeDateTime,
             hastaDateTime: fechas.hastaDateTime,
-            limit
+            limit,
+            medioPago: medioPagoResult.medioPago,
+            origenPedido: origenPedidoResult.origenPedido
         });
 
         return res.json({
@@ -89,7 +149,9 @@ const getDashboardReportes = async (req, res) => {
             filtros: {
                 desde: fechas.desde,
                 hasta: fechas.hasta,
-                limit
+                limit,
+                medio_pago: medioPagoResult.medioPago ?? null,
+                origen_pedido: origenPedidoResult.origenPedido ?? null
             },
             data
         });

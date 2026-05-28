@@ -1,5 +1,11 @@
 const { authWithRevalidate, authorizeModule } = require('./authMiddleware');
+const { requireEmpleadosCapability } = require('./empleadosGuards');
 const { MODULES, canAccess, ROLES } = require('../config/permissions');
+const {
+  canViewLiquidaciones,
+  canMutateEmpleado,
+  canOperateAsistenciaMovimientos,
+} = require('../config/empleadosPermissions');
 
 const guard = (module, action = 'read') => [...authWithRevalidate, authorizeModule(module, action)];
 
@@ -30,6 +36,18 @@ module.exports = {
   writeInventario: guard(MODULES.INVENTARIO, 'write'),
   readEmpleados: guard(MODULES.EMPLEADOS, 'read'),
   writeEmpleados: guard(MODULES.EMPLEADOS, 'write'),
+  writeEmpleadosLiquidaciones: [
+    ...guard(MODULES.EMPLEADOS, 'write'),
+    requireEmpleadosCapability(canViewLiquidaciones, 'liquidaciones'),
+  ],
+  mutateEmpleadosMaster: [
+    ...guard(MODULES.EMPLEADOS, 'write'),
+    requireEmpleadosCapability(canMutateEmpleado, 'mutar_empleado'),
+  ],
+  operateEmpleadosAsistenciaMovimientos: [
+    ...guard(MODULES.EMPLEADOS, 'read'),
+    requireEmpleadosCapability(canOperateAsistenciaMovimientos, 'operacion_asistencia_movimientos'),
+  ],
   readGastos: guard(MODULES.GASTOS, 'read'),
   writeGastos: guard(MODULES.GASTOS, 'write'),
   readFondos: guard(MODULES.FONDOS, 'read'),

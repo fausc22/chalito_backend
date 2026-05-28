@@ -20,6 +20,17 @@ const {
     crearLiquidacion: crearLiquidacionService
 } = require('../services/EmpleadosService');
 const { auditarOperacion } = require('../middlewares/auditoriaMiddleware');
+const {
+    sanitizeEmpleado,
+    sanitizeEmpleadosList,
+    sanitizeLiquidacion,
+    sanitizeLiquidacionesList,
+    sanitizeResumenLiquidacion,
+} = require('../utils/empleadosResponseSanitizer');
+const { assertCanMutateEmpleadoMaster } = require('../utils/empleadosAccessAssert');
+
+const rolUsuario = (req) => req.user?.rol;
+const contextoRol = (req) => ({ rol: rolUsuario(req) });
 
 const responderError = (res, error, fallbackMessage) => {
     const status = error?.status || 500;
@@ -45,7 +56,7 @@ const obtenerEmpleados = async (req, res) => {
         const data = await obtenerEmpleadosService(filters);
         res.json({
             success: true,
-            data
+            data: sanitizeEmpleadosList(data, rolUsuario(req))
         });
     } catch (error) {
         console.error('❌ Error al obtener empleados:', error);
@@ -67,7 +78,7 @@ const obtenerEmpleadoPorId = async (req, res) => {
 
         res.json({
             success: true,
-            data
+            data: sanitizeEmpleado(data, rolUsuario(req))
         });
     } catch (error) {
         console.error('❌ Error al obtener empleado por ID:', error);
@@ -77,8 +88,9 @@ const obtenerEmpleadoPorId = async (req, res) => {
 
 const crearEmpleado = async (req, res) => {
     try {
+        assertCanMutateEmpleadoMaster(rolUsuario(req));
         const payload = req.validatedData || req.body;
-        const data = await crearEmpleadoService(payload);
+        const data = await crearEmpleadoService(payload, contextoRol(req));
 
         await auditarOperacion(req, {
             accion: 'CREATE_EMPLEADO',
@@ -96,7 +108,7 @@ const crearEmpleado = async (req, res) => {
         res.status(201).json({
             success: true,
             message: 'Empleado creado exitosamente',
-            data
+            data: sanitizeEmpleado(data, rolUsuario(req))
         });
     } catch (error) {
         console.error('❌ Error al crear empleado:', error);
@@ -114,6 +126,7 @@ const crearEmpleado = async (req, res) => {
 
 const editarEmpleado = async (req, res) => {
     try {
+        assertCanMutateEmpleadoMaster(rolUsuario(req));
         const { id } = req.validatedParams || req.params;
         const payload = req.validatedData || req.body;
 
@@ -125,7 +138,7 @@ const editarEmpleado = async (req, res) => {
             });
         }
 
-        await actualizarEmpleadoService(id, payload);
+        await actualizarEmpleadoService(id, payload, contextoRol(req));
         const empleadoActualizado = await obtenerEmpleadoPorIdService(id);
 
         await auditarOperacion(req, {
@@ -150,7 +163,7 @@ const editarEmpleado = async (req, res) => {
         res.json({
             success: true,
             message: 'Empleado actualizado exitosamente',
-            data: empleadoActualizado
+            data: sanitizeEmpleado(empleadoActualizado, rolUsuario(req))
         });
     } catch (error) {
         console.error('❌ Error al editar empleado:', error);
@@ -168,6 +181,7 @@ const editarEmpleado = async (req, res) => {
 
 const actualizarEstadoEmpleado = async (req, res) => {
     try {
+        assertCanMutateEmpleadoMaster(rolUsuario(req));
         const { id } = req.validatedParams || req.params;
         const { activo } = req.validatedData || req.body;
 
@@ -179,7 +193,7 @@ const actualizarEstadoEmpleado = async (req, res) => {
             });
         }
 
-        await actualizarActivoEmpleadoService(id, activo);
+        await actualizarActivoEmpleadoService(id, activo, contextoRol(req));
         const empleadoActualizado = await obtenerEmpleadoPorIdService(id);
 
         await auditarOperacion(req, {
@@ -194,7 +208,7 @@ const actualizarEstadoEmpleado = async (req, res) => {
         res.json({
             success: true,
             message: activo ? 'Empleado activado exitosamente' : 'Empleado inactivado exitosamente',
-            data: empleadoActualizado
+            data: sanitizeEmpleado(empleadoActualizado, rolUsuario(req))
         });
     } catch (error) {
         console.error('❌ Error al actualizar estado del empleado:', error);
@@ -466,7 +480,7 @@ const obtenerLiquidaciones = async (req, res) => {
         const data = await obtenerLiquidacionesService(filters);
         res.json({
             success: true,
-            data
+            data: sanitizeLiquidacionesList(data, rolUsuario(req))
         });
     } catch (error) {
         console.error('❌ Error al obtener liquidaciones:', error);
@@ -491,7 +505,7 @@ const obtenerResumenLiquidacion = async (req, res) => {
 
         res.json({
             success: true,
-            data
+            data: sanitizeResumenLiquidacion(data, rolUsuario(req))
         });
     } catch (error) {
         console.error('❌ Error al calcular resumen de liquidacion:', error);
@@ -505,7 +519,7 @@ const calcularResumenLiquidacion = async (req, res) => {
 
         res.json({
             success: true,
-            data
+            data: sanitizeResumenLiquidacion(data, rolUsuario(req))
         });
     } catch (error) {
         console.error('❌ Error al calcular resumen de liquidacion (POST):', error);
@@ -527,7 +541,7 @@ const obtenerLiquidacionPorId = async (req, res) => {
 
         res.json({
             success: true,
-            data
+            data: sanitizeLiquidacion(data, rolUsuario(req))
         });
     } catch (error) {
         console.error('❌ Error al obtener liquidacion por ID:', error);
@@ -562,7 +576,7 @@ const crearLiquidacion = async (req, res) => {
         res.status(201).json({
             success: true,
             message: 'Liquidacion creada exitosamente',
-            data
+            data: sanitizeLiquidacion(data, rolUsuario(req))
         });
     } catch (error) {
         console.error('❌ Error al crear liquidacion:', error);
