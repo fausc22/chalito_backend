@@ -2,7 +2,12 @@ const crypto = require('crypto');
 const db = require('./dbPromise');
 const multer = require('multer');
 const axios = require('axios');
-const { uploadImageToCloudinary } = require('../config/cloudinary');
+const {
+    uploadImageToFileServer,
+    deleteImageFromFileServer,
+    resolvePublicIdFromUrl,
+    getFileServerHostname
+} = require('../config/fileStorage');
 const {
     calcularCostoArticuloElaborado: calcularCostoArticuloElaboradoService,
     ERROR_CODES: COSTO_ERROR_CODES
@@ -112,11 +117,11 @@ const sincronizarContenidoElaborado = async (connection, articuloId, ingrediente
 };
 
 // =====================================================
-// ENDPOINT: SUBIR IMAGEN A CLOUDINARY
+// ENDPOINT: SUBIR IMAGEN AL FILE SERVER
 // =====================================================
 
 /**
- * Subir imagen a Cloudinary
+ * Subir imagen al servidor de archivos (files.elchalito.com)
  * POST /articulos/upload-imagen
  * Body: multipart/form-data con campo 'imagen'
  * Retorna: { imagen_url, public_id }
@@ -141,9 +146,8 @@ const uploadImagen = async (req, res) => {
 
         console.log(`📤 Subiendo imagen: ${req.file.originalname} (${(req.file.size / 1024).toFixed(2)}KB)`);
 
-        // Subir a Cloudinary
-        const result = await uploadImageToCloudinary(req.file.buffer, {
-            folder: 'chalito/articulos'
+        const result = await uploadImageToFileServer(req.file.buffer, {
+            mimetype: req.file.mimetype
         });
 
         // Respuesta exitosa
@@ -153,23 +157,13 @@ const uploadImagen = async (req, res) => {
             data: {
                 imagen_url: result.secure_url,
                 public_id: result.public_id,
-                width: result.width,
-                height: result.height,
                 format: result.format,
-                size: result.bytes
+                size: result.size
             }
         });
 
     } catch (error) {
         console.error('❌ Error al subir imagen:', error);
-        
-        // Manejar errores de Cloudinary
-        if (error.http_code) {
-            return res.status(error.http_code).json({
-                error: 'Error de Cloudinary',
-                message: error.message
-            });
-        }
 
         // Error genérico
         res.status(500).json({
@@ -608,6 +602,17 @@ const actualizarArticulo = async (req, res) => {
             return res.status(400).json({ error: 'No hay campos para actualizar' });
         }
 
+        if (imagen_url !== undefined) {
+            const imagenAnterior = articuloActual.imagen_url;
+            const imagenNueva = imagen_url || null;
+            if (imagenAnterior && imagenNueva !== imagenAnterior) {
+                const publicIdAnterior = resolvePublicIdFromUrl(imagenAnterior);
+                if (publicIdAnterior) {
+                    await deleteImageFromFileServer(publicIdAnterior);
+                }
+            }
+        }
+
         if (campos.length > 0) {
             valores.push(id);
             console.log('[articulos][update] Query UPDATE', {
@@ -827,13 +832,14 @@ const eliminarArticulo = async (req, res) => {
 // PROXY DE IMÁGENES CON CACHE HTTP FUERTE (carta online)
 // =====================================================
 
-/** Solo permitir URLs de Cloudinary para evitar SSRF */
-const CLOUDINARY_HOST = 'res.cloudinary.com';
+/** Solo permitir URLs del file server propio para evitar SSRF */
 const isValidImageUrl = (url) => {
     if (!url || typeof url !== 'string') return false;
+    const allowedHost = getFileServerHostname();
+    if (!allowedHost) return false;
     try {
         const parsed = new URL(url);
-        return parsed.protocol === 'https:' && parsed.hostname === CLOUDINARY_HOST;
+        return parsed.protocol === 'https:' && parsed.hostname === allowedHost;
     } catch {
         return false;
     }
