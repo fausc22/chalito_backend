@@ -12,9 +12,11 @@ describe('buildKitchenPayload', () => {
             modalidad: 'DELIVERY',
             estado_pago: 'PENDIENTE',
             estado: 'RECIBIDO',
+            total: 8500,
             cliente_nombre: 'Juan Pérez',
             cliente_telefono: '1112345678',
             cliente_direccion: 'Calle 123',
+            observaciones: 'Timbre roto',
             horario_entrega: '2026-05-19T17:30:00.000Z',
             articulos: [
                 {
@@ -42,6 +44,10 @@ describe('buildKitchenPayload', () => {
         assert.deepEqual(payload.lines[0].modifiers, ['cheddar']);
         assert.equal(payload.lines[0].lineNote, 'sin sal');
         assert.equal(payload.order.paymentStatus, 'PENDIENTE');
+        assert.equal(payload.order.total, 8500);
+        assert.equal(payload.order.totalLabel, '$8.500');
+        assert.equal(payload.order.modalityLabel, 'ENVIO / DELIVERY');
+        assert.equal(payload.order.orderNotes, 'Timbre roto');
     });
 });
 

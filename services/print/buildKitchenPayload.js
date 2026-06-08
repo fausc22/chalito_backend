@@ -9,6 +9,8 @@ const {
     mapExtrasNames,
     buildScheduledLabel,
     normalizeModality,
+    formatModalityLabel,
+    formatMoney,
     normalizePaymentStatus,
     getBusinessBlockAsync,
     buildMeta
@@ -28,6 +30,7 @@ const buildKitchenLines = (articulos = []) =>
 const buildKitchenPayload = async (pedido) => {
     const scheduledLabel = buildScheduledLabel(pedido);
     const modality = normalizeModality(pedido.modalidad);
+    const total = parseFloat(pedido.total);
     const business = await getBusinessBlockAsync();
 
     return {
@@ -42,6 +45,9 @@ const buildKitchenPayload = async (pedido) => {
             createdAtLabel: formatFechaHora(pedido.fecha),
             scheduledLabel,
             modality,
+            modalityLabel: formatModalityLabel(pedido.modalidad),
+            total: Number.isFinite(total) ? total : 0,
+            totalLabel: formatMoney(Number.isFinite(total) ? total : 0),
             paymentStatus: normalizePaymentStatus(pedido.estado_pago),
             orderStatus: pedido.estado || null,
             orderNotes: pedido.observaciones || null

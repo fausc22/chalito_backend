@@ -69,6 +69,17 @@ const normalizeModality = (modalidad) => {
     return 'RETIRO';
 };
 
+const formatModalityLabel = (modalidad) => {
+    const m = normalizeModality(modalidad);
+    return m === 'DELIVERY' ? 'ENVIO / DELIVERY' : 'RETIRO EN LOCAL';
+};
+
+const formatMoney = (value) => {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '$0';
+    return `$${n.toLocaleString('es-AR', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+};
+
 const normalizePaymentStatus = (estadoPago) => {
     const e = String(estadoPago || 'PENDIENTE').trim().toUpperCase();
     return e === 'PAGADO' || e === 'PAID' ? 'PAGADO' : 'PENDIENTE';
@@ -140,6 +151,8 @@ module.exports = {
     mapExtrasNames,
     buildScheduledLabel,
     normalizeModality,
+    formatModalityLabel,
+    formatMoney,
     normalizePaymentStatus,
     getBusinessBlock: getBusinessBlockSync,
     getBusinessBlockAsync,
