@@ -7,44 +7,12 @@ const {
     actualizarConfiguracionOperativa
 } = require('../controllers/configuracionController');
 
-const { authenticateToken } = require('../middlewares/authMiddleware');
+const { readConfiguracion, writeConfiguracion } = require('../middlewares/routeGuards');
 const { apiRateLimiter } = require('../middlewares/rateLimitMiddleware');
 
-/**
- * Rutas de configuración del sistema
- * Todas requieren autenticación y solo ADMIN/GERENTE pueden modificar
- */
-
-// Obtener todas las configuraciones
-router.get('/', apiRateLimiter, authenticateToken, obtenerConfiguraciones);
-
-const validarRolConfiguracion = (req, res, next) => {
-    // Verificar que el usuario tiene permisos (ADMIN o GERENTE)
-    const user = req.user;
-    if (!user || (user.rol !== 'ADMIN' && user.rol !== 'GERENTE')) {
-        return res.status(403).json({
-            success: false,
-            message: 'No tiene permisos para modificar la configuración del sistema'
-        });
-    }
-    next();
-};
-
-// Actualizar configuraciones operativas para UI (bulk)
-router.put('/', apiRateLimiter, authenticateToken, validarRolConfiguracion, actualizarConfiguracionOperativa);
-
-// Obtener una configuración por clave
-router.get('/:clave', apiRateLimiter, authenticateToken, obtenerConfiguracion);
-
-// Actualizar una configuración (requiere rol ADMIN o GERENTE)
-router.put('/:clave', apiRateLimiter, authenticateToken, validarRolConfiguracion, actualizarConfiguracion);
+router.get('/', apiRateLimiter, ...readConfiguracion, obtenerConfiguraciones);
+router.put('/', apiRateLimiter, ...writeConfiguracion, actualizarConfiguracionOperativa);
+router.get('/:clave', apiRateLimiter, ...readConfiguracion, obtenerConfiguracion);
+router.put('/:clave', apiRateLimiter, ...writeConfiguracion, actualizarConfiguracion);
 
 module.exports = router;
-
-
-
-
-
-
-
-

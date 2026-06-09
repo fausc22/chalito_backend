@@ -126,10 +126,37 @@ async function emitirSocketPostWebhook(io, resultado) {
     }
 }
 
+async function aplicarAutoCobroPostMp(io, resultado) {
+    const estado = String(resultado?.estadoPagoInterno || '').toUpperCase();
+    if (
+        !resultado?.pedidoId ||
+        estado !== 'PAGADO' ||
+        (!resultado.esPagoNuevo && !resultado.pagoRecienConfirmadoLegacy)
+    ) {
+        return resultado;
+    }
+    try {
+        const { procesarAprobacionMercadoPago } = require('../services/PedidoPostPagoService');
+        const auto = await procesarAprobacionMercadoPago({
+            pedidoId: resultado.pedidoId,
+            paymentId: resultado.paymentId,
+            resumenPagoMp: resultado.resumenPagoMp,
+            io
+        });
+        if (auto.success && auto.pedido) {
+            resultado.autoCobroSnapshot = { ventaId: auto.ventaId, pedido: auto.pedido };
+        }
+    } catch (err) {
+        console.error(`❌ [MP] Auto-cobro pedido #${resultado.pedidoId}:`, err.message);
+    }
+    return resultado;
+}
+
 async function webhookMercadoPagoController(req, res) {
     try {
-        const resultado = await procesarWebhookMercadoPago(db, req);
+        let resultado = await procesarWebhookMercadoPago(db, req);
         const io = req.app.get('io');
+        resultado = await aplicarAutoCobroPostMp(io, resultado);
         await emitirSocketPostWebhook(io, resultado);
 
         return res.status(200).json({

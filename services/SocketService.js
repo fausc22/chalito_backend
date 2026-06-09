@@ -122,6 +122,17 @@ class SocketService {
         }
     }
 
+    emitVentaCaeObtenido(ventaId, data = null) {
+        if (this.io) {
+            this.io.emit('venta:cae-obtenido', {
+                ventaId,
+                data,
+                timestamp: new Date().toISOString()
+            });
+            console.log(`📡 [SocketService] Evento emitido: venta:cae-obtenido - Venta #${ventaId}`);
+        }
+    }
+
     /**
      * Registrar conexión de cliente
      */

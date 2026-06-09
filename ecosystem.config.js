@@ -3,6 +3,7 @@ module.exports = {
     name: 'chalito-backend-test',
     script: 'server.js',
     cwd: '/opt/api-chalito',
+    // Mantener instances: 1 — el rate limiter usa memoria local por proceso
     instances: 1,
     autorestart: true,
     watch: false,

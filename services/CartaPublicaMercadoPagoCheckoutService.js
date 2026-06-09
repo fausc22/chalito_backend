@@ -8,7 +8,9 @@ const {
     MERCADO_PAGO_CHECKOUT_PUBLIC_URL_ERROR_MESSAGE
 } = require('./mercadoPagoPreferenciaUrlHelper');
 const { calcularTotalesDesdePrecioFinal } = require('./totalesPrecioFinal');
-const { notificarPedidoMercadoPagoAprobado } = require('./pedidoNotificacionWspService');
+const { calcularPricingCompleto } = require('./cartaPedidoPricingService');
+const { redeemCoupon } = require('./couponService');
+const { notificarPedidoMercadoPagoAprobadoPorId } = require('./pedidoNotificacionWspService');
 
 const PROVEEDOR_MERCADOPAGO = 'MERCADOPAGO';
 const MONEDA_ARS = 'ARS';
@@ -72,66 +74,28 @@ async function obtenerExtrasValidos(connection, articuloId, extrasIds = []) {
     return rows;
 }
 
-async function recalcularCarrito(connection, items = []) {
-    const articuloIds = [...new Set(items.map((item) => Number(item.articulo_id)))];
-    const articulosRows = await obtenerArticulosPorIds(connection, articuloIds);
-    const articulosMap = new Map(articulosRows.map((articulo) => [Number(articulo.id), articulo]));
+async function recalcularCarrito(connection, items = [], couponCode = null) {
+    const pricing = await calcularPricingCompleto(connection, items, couponCode);
+    const { desglose, articulosNormalizados, montoDescuento, totalBruto, cupon } = pricing;
 
-    const itemsNormalizados = [];
-
-    for (const item of items) {
-        const articuloId = Number(item.articulo_id);
-        const cantidad = Number(item.cantidad);
-        const articulo = articulosMap.get(articuloId);
-
-        if (!articulo) {
-            throw new Error(`Artículo no encontrado o inactivo: ${articuloId}`);
-        }
-
-        const extrasIds = normalizarExtrasIds(item.extras);
-        const extrasRows = await obtenerExtrasValidos(connection, articuloId, extrasIds);
-
-        if (extrasRows.length !== extrasIds.length) {
-            throw new Error(`Uno o más extras no son válidos para el artículo ${articulo.nombre}`);
-        }
-
-        const extrasSnapshot = extrasRows.map((extra) => ({
-            id: Number(extra.id),
-            nombre: extra.nombre,
-            precio_extra: Number(extra.precio_extra) || 0
-        }));
-
-        const validacionExtras = validarExtrasNoDobleYTriple(extrasSnapshot);
-        if (!validacionExtras.valid) {
-            throw new Error(validacionExtras.message);
-        }
-
-        const precioBase = Number(articulo.precio) || 0;
-        const totalExtras = extrasSnapshot.reduce((sum, extra) => sum + extra.precio_extra, 0);
-        const precioUnitario = precioBase + totalExtras;
-        const subtotal = precioUnitario * cantidad;
-
-        itemsNormalizados.push({
-            articulo_id: articuloId,
-            articulo_nombre: articulo.nombre,
-            cantidad,
-            precio_unitario: precioUnitario,
-            subtotal,
-            observaciones: item.observaciones || null,
-            personalizaciones: extrasSnapshot.length > 0
-                ? construirPersonalizaciones(extrasSnapshot)
-                : null
-        });
-    }
-
-    const totalBase = itemsNormalizados.reduce((sum, item) => sum + item.subtotal, 0);
-    const { subtotal, iva_total, total } = calcularTotalesDesdePrecioFinal(totalBase);
+    const itemsNormalizados = articulosNormalizados.map((item) => ({
+        articulo_id: item.articulo_id,
+        articulo_nombre: item.articulo_nombre,
+        cantidad: item.cantidad,
+        precio_unitario: item.precio_unitario ?? item.precio,
+        subtotal: item.subtotal,
+        observaciones: item.observaciones || null,
+        personalizaciones: item.personalizaciones || null
+    }));
 
     return {
         itemsNormalizados,
-        subtotal,
-        iva_total,
-        total
+        subtotal: desglose.subtotal,
+        iva_total: desglose.iva_total,
+        total: desglose.total,
+        montoDescuento: montoDescuento || 0,
+        subtotalBruto: totalBruto,
+        cupon: cupon || null
     };
 }
 
@@ -152,10 +116,11 @@ async function insertarPedido(connection, payload, resumenCarrito, opciones = {}
             fecha, cliente_nombre, cliente_direccion, cliente_telefono, cliente_email,
             origen_pedido, subtotal, iva_total, total, medio_pago, estado_pago, modalidad, horario_entrega,
             estado, observaciones, monto_con_cuanto_abona, usuario_id, usuario_nombre,
-            prioridad, tiempo_estimado_preparacion, hora_inicio_preparacion, transicion_automatica
+            prioridad, tiempo_estimado_preparacion, hora_inicio_preparacion, transicion_automatica,
+            cupon_id, cupon_codigo, descuento_cupon
         ) VALUES (
             NOW(), ?, ?, ?, ?, 'WEB', ?, ?, ?, ?, ?, ?, ?,
-            'RECIBIDO', ?, NULL, NULL, NULL, ?, 15, NULL, TRUE
+            'RECIBIDO', ?, NULL, NULL, NULL, ?, 15, NULL, TRUE, ?, ?, ?
         )
     `;
 
@@ -172,7 +137,10 @@ async function insertarPedido(connection, payload, resumenCarrito, opciones = {}
         payload.pedido.modalidad,
         horarioEntregaDate,
         payload.pedido.observaciones || null,
-        payload.pedido.prioridad || 'ALTA'
+        payload.pedido.prioridad || 'ALTA',
+        resumenCarrito.cupon?.id ?? null,
+        resumenCarrito.cupon?.codigo ?? null,
+        resumenCarrito.montoDescuento || 0
     ];
 
     const [result] = await connection.execute(query, values);
@@ -389,7 +357,7 @@ async function crearCheckoutMercadoPago(db, payload) {
 
     try {
         await connection.beginTransaction();
-        resumenCarrito = await recalcularCarrito(connection, payload.items);
+        resumenCarrito = await recalcularCarrito(connection, payload.items, payload.couponCode);
         await connection.commit();
     } catch (error) {
         try { await connection.rollback(); } catch (_) { /* noop */ }
@@ -403,11 +371,15 @@ async function crearCheckoutMercadoPago(db, payload) {
 
     const payloadCheckout = {
         payload,
+        couponCode: payload.couponCode || null,
         resumenCarrito: {
             itemsNormalizados: resumenCarrito.itemsNormalizados,
             subtotal: resumenCarrito.subtotal,
             iva_total: resumenCarrito.iva_total,
-            total: resumenCarrito.total
+            total: resumenCarrito.total,
+            montoDescuento: resumenCarrito.montoDescuento,
+            subtotalBruto: resumenCarrito.subtotalBruto,
+            cupon: resumenCarrito.cupon
         }
     };
 
@@ -543,7 +515,8 @@ async function crearPedidoDesdeSesion(connection, sesionRow, resumenPagoMp, paym
         throw new Error('payload_checkout inválido en sesión MP');
     }
 
-    const resumenCarrito = await recalcularCarrito(connection, parsed.payload.items);
+    const couponCode = parsed.couponCode ?? parsed.payload?.couponCode ?? null;
+    const resumenCarrito = await recalcularCarrito(connection, parsed.payload.items, couponCode);
     const montoMp = Number(resumenPagoMp.transaction_amount);
     if (Number.isFinite(montoMp) && Math.abs(montoMp - Number(resumenCarrito.total)) > TOLERANCIA_MONTO_MP_ARS) {
         throw new Error(
@@ -555,6 +528,10 @@ async function crearPedidoDesdeSesion(connection, sesionRow, resumenPagoMp, paym
         estadoPago: ESTADO_PAGO_PAGADO
     });
     await insertarPedidoContenido(connection, pedidoId, resumenCarrito.itemsNormalizados);
+
+    if (resumenCarrito.cupon?.id && resumenCarrito.montoDescuento > 0) {
+        await redeemCoupon(resumenCarrito.cupon.id, pedidoId, resumenCarrito.montoDescuento, connection);
+    }
 
     const fechaAprobadoParseada = resumenPagoMp.date_approved ? new Date(resumenPagoMp.date_approved) : null;
     const fechaAprobadoValida = fechaAprobadoParseada && !Number.isNaN(fechaAprobadoParseada.getTime())
@@ -730,17 +707,7 @@ async function procesarPagoMercadoPagoInterno(db, resumenPagoMp, paymentId) {
                 await connection.commit();
 
                 try {
-                    const [rows] = await db.execute(
-                        `SELECT cliente_telefono, total FROM pedidos WHERE id = ? LIMIT 1`,
-                        [pedidoId]
-                    );
-                    if (rows.length > 0) {
-                        await notificarPedidoMercadoPagoAprobado({
-                            id: pedidoId,
-                            cliente_telefono: rows[0].cliente_telefono,
-                            total: rows[0].total
-                        });
-                    }
+                    await notificarPedidoMercadoPagoAprobadoPorId(pedidoId);
                 } catch (err) {
                     console.warn('⚠️ [WA] No se pudo enviar notificación MP aprobado:', err.message);
                 }
@@ -829,21 +796,7 @@ async function procesarPagoMercadoPagoInterno(db, resumenPagoMp, paymentId) {
         if (estadoPagoInterno === ESTADO_PAGO_PAGADO && estadoAnteriorPago !== ESTADO_PAGO_PAGADO) {
             pagoRecienConfirmadoLegacy = true;
             try {
-                const [rows] = await db.execute(
-                    `SELECT cliente_telefono, total
-                     FROM pedidos
-                     WHERE id = ?
-                     LIMIT 1`,
-                    [pedidoId]
-                );
-
-                if (rows.length > 0) {
-                    await notificarPedidoMercadoPagoAprobado({
-                        id: pedidoId,
-                        cliente_telefono: rows[0].cliente_telefono,
-                        total: rows[0].total
-                    });
-                }
+                await notificarPedidoMercadoPagoAprobadoPorId(pedidoId);
             } catch (err) {
                 console.warn('⚠️ [WA] No se pudo enviar notificación MP aprobado:', err.message);
             }

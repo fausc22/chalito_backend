@@ -14,6 +14,9 @@ const {
   proxyImagenArticulo,
 } = require('../controllers/articulosController');
 const { crearPedidoCarta } = require('../controllers/cartaPublicaPedidosController');
+const { validarCuponCarta } = require('../controllers/cartaPublicaCuponesController');
+const { obtenerEstadoPublico } = require('../controllers/tiendaOnlineController');
+const { obtenerBrandingPublico } = require('../controllers/cartaPublicaBrandingController');
 const {
   crearCheckoutMercadoPagoController,
   obtenerEstadoPagoPedidoController,
@@ -28,6 +31,7 @@ const { apiRateLimiter } = require('../middlewares/rateLimitMiddleware');
 const {
   crearPedidoCartaSchema,
   checkoutMercadoPagoSchema,
+  validarCuponSchema,
   validate
 } = require('../validators/cartaPublicaPedidosValidators');
 
@@ -65,6 +69,15 @@ router.get('/articulos/:id', apiRateLimiter, async (req, res) => {
   };
   return obtenerArticuloPorId(req, res);
 });
+
+// GET /carta-publica/estado-tienda - Estado abierto/cerrado del canal online (público)
+router.get('/estado-tienda', apiRateLimiter, obtenerEstadoPublico);
+
+// GET /carta-publica/branding - Nombre, logo y colores web (público)
+router.get('/branding', apiRateLimiter, obtenerBrandingPublico);
+
+// POST /carta-publica/cupones/validar - Preview de cupón (sin redimir)
+router.post('/cupones/validar', apiRateLimiter, validate(validarCuponSchema), validarCuponCarta);
 
 // POST /carta-publica/pedidos - Crear pedido desde carta online (público)
 router.post('/pedidos', apiRateLimiter, validate(crearPedidoCartaSchema), crearPedidoCarta);

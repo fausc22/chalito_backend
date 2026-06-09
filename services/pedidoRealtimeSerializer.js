@@ -1,3 +1,4 @@
+const db = require('../controllers/dbPromise');
 const { calcularTotalesDesdePrecioFinal, obtenerTotalFinalDesdeRegistro } = require('./totalesPrecioFinal');
 
 const normalizarTotalesPedido = (pedido = {}) => {
@@ -27,23 +28,32 @@ function enrichPedidoRealtime(pedido = {}) {
     };
 }
 
-async function buildPedidoSnapshotById({ pedidoId, connection, includeArticulos = true }) {
-    const [pedidoRows] = await connection.execute('SELECT * FROM pedidos WHERE id = ?', [pedidoId]);
-    if (pedidoRows.length === 0) return null;
+async function buildPedidoSnapshotById({ pedidoId, connection = null, includeArticulos = true }) {
+    const dbConn = connection || await db.getConnection();
+    const releaseAfter = !connection;
 
-    let articulos = [];
-    if (includeArticulos) {
-        const [articulosRows] = await connection.execute(
-            'SELECT * FROM pedidos_contenido WHERE pedido_id = ?',
-            [pedidoId]
-        );
-        articulos = articulosRows;
+    try {
+        const [pedidoRows] = await dbConn.execute('SELECT * FROM pedidos WHERE id = ?', [pedidoId]);
+        if (pedidoRows.length === 0) return null;
+
+        let articulos = [];
+        if (includeArticulos) {
+            const [articulosRows] = await dbConn.execute(
+                'SELECT * FROM pedidos_contenido WHERE pedido_id = ?',
+                [pedidoId]
+            );
+            articulos = articulosRows;
+        }
+
+        return enrichPedidoRealtime({
+            ...pedidoRows[0],
+            ...(includeArticulos ? { articulos } : {})
+        });
+    } finally {
+        if (releaseAfter) {
+            dbConn.release();
+        }
     }
-
-    return enrichPedidoRealtime({
-        ...pedidoRows[0],
-        ...(includeArticulos ? { articulos } : {})
-    });
 }
 
 module.exports = {

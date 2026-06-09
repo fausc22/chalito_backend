@@ -23,9 +23,12 @@ const crearGasto = async (req, res) => {
             descripcion,
             monto,
             forma_pago = 'EFECTIVO',
-            cuenta_id,
             observaciones
         } = req.validatedData || req.body;
+
+        const CuentasSistema = require('../services/CuentasSistemaService');
+        const cuentaX = await CuentasSistema.obtenerCuentaX(connection);
+        const cuenta_id = cuentaX.id;
         
         const usuario = req.user || {};
         
@@ -44,32 +47,7 @@ const crearGasto = async (req, res) => {
             });
         }
         
-        // Validar que cuenta_id es obligatorio
-        if (!cuenta_id) {
-            await connection.rollback();
-            connection.release();
-            return res.status(400).json({
-                success: false,
-                message: 'La cuenta de fondos es obligatoria'
-            });
-        }
-        
-        // Verificar que la cuenta existe y está activa
-        const [cuenta] = await connection.execute(
-            'SELECT id, nombre, saldo FROM cuentas_fondos WHERE id = ? AND activa = 1',
-            [cuenta_id]
-        );
-        
-        if (cuenta.length === 0) {
-            await connection.rollback();
-            connection.release();
-            return res.status(404).json({
-                success: false,
-                message: 'Cuenta de fondos no encontrada o inactiva'
-            });
-        }
-        
-        const saldoAnteriorValor = parseFloat(cuenta[0].saldo) || 0;
+        const saldoAnteriorValor = parseFloat(cuentaX.saldo) || 0;
         const montoNum = parseFloat(monto);
         
         // Calcular nuevo saldo (puede quedar negativo)

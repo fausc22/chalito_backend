@@ -4,10 +4,9 @@ const router = express.Router();
 const inventarioController = require('../controllers/inventarioController');
 const stockSemanalRoutes = require('./stockSemanalRoutes');
 const { middlewareAuditoria } = require('../middlewares/auditoriaMiddleware');
-const { authenticateToken, authorizeRole } = require('../middlewares/authMiddleware');
+const { writeInventario } = require('../middlewares/routeGuards');
 
-// ✅ Middleware para solo ADMIN y GERENTE
-const soloAdminGerente = [authenticateToken, authorizeRole(['ADMIN', 'GERENTE'])];
+const soloAdminGerente = writeInventario;
 
 // =====================================================
 // DEPRECACIÓN RUTAS LEGACY DE ARTÍCULOS

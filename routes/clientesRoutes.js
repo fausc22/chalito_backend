@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 
-const { authenticateToken, authorizeRole } = require('../middlewares/authMiddleware');
+const { readClientes, writeClientes, deleteClientes } = require('../middlewares/routeGuards');
 const { apiRateLimiter } = require('../middlewares/rateLimitMiddleware');
 const {
   listarClientes,
@@ -12,52 +12,11 @@ const {
   eliminarCliente,
 } = require('../controllers/clientesController');
 
-router.get(
-  '/',
-  apiRateLimiter,
-  authenticateToken,
-  authorizeRole(['ADMIN', 'GERENTE']),
-  listarClientes
-);
-
-router.get(
-  '/sugerencias',
-  apiRateLimiter,
-  authenticateToken,
-  authorizeRole(['ADMIN', 'GERENTE', 'CAJERO']),
-  sugerenciasClientes
-);
-
-router.get(
-  '/:id',
-  apiRateLimiter,
-  authenticateToken,
-  authorizeRole(['ADMIN', 'GERENTE', 'CAJERO']),
-  obtenerClientePorId
-);
-
-router.get(
-  '/:id/historial',
-  apiRateLimiter,
-  authenticateToken,
-  authorizeRole(['ADMIN', 'GERENTE', 'CAJERO']),
-  obtenerHistorialCliente
-);
-
-router.put(
-  '/:id',
-  apiRateLimiter,
-  authenticateToken,
-  authorizeRole(['ADMIN', 'GERENTE']),
-  actualizarCliente
-);
-
-router.delete(
-  '/:id',
-  apiRateLimiter,
-  authenticateToken,
-  authorizeRole(['ADMIN']),
-  eliminarCliente
-);
+router.get('/', apiRateLimiter, ...readClientes, listarClientes);
+router.get('/sugerencias', apiRateLimiter, ...readClientes, sugerenciasClientes);
+router.get('/:id', apiRateLimiter, ...readClientes, obtenerClientePorId);
+router.get('/:id/historial', apiRateLimiter, ...readClientes, obtenerHistorialCliente);
+router.put('/:id', apiRateLimiter, ...writeClientes, actualizarCliente);
+router.delete('/:id', apiRateLimiter, ...deleteClientes, eliminarCliente);
 
 module.exports = router;

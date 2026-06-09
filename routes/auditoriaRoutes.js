@@ -1,60 +1,18 @@
-// routes/auditoriaRoutes.js - VERSIÓN FINAL
 const express = require('express');
 const router = express.Router();
 const auditoriaController = require('../controllers/auditoriaController');
-const { middlewareAuditoria } = require('../middlewares/auditoriaMiddleware');
-const { authenticateToken, authorizeRole } = require('../middlewares/authMiddleware');
+const { readAuditoria } = require('../middlewares/routeGuards');
+const { apiRateLimiter } = require('../middlewares/rateLimitMiddleware');
 
-// ✅ Middleware para solo gerentes
-const soloGerentes = authorizeRole(['GERENTE']);
+router.get('/test-simple', apiRateLimiter, ...readAuditoria, auditoriaController.obtenerAuditoriaSimple);
 
-// ✅ RUTA DE PRUEBA ULTRA SIMPLE (para testing)
-router.get('/test-simple', 
-    authenticateToken,
-    soloGerentes,
-    auditoriaController.obtenerAuditoriaSimple
-);
+router.get('/', apiRateLimiter, ...readAuditoria, auditoriaController.obtenerAuditoria);
+router.get('/detalle/:id', apiRateLimiter, ...readAuditoria, auditoriaController.obtenerDetalleAuditoria);
+router.get('/datos-filtros', apiRateLimiter, ...readAuditoria, auditoriaController.obtenerDatosFiltros);
+router.get('/estadisticas', apiRateLimiter, ...readAuditoria, auditoriaController.obtenerEstadisticasSimples);
 
-// ✅ RUTAS PRINCIPALES
-
-// Obtener registros de auditoría con filtros y paginación
-router.get('/', 
-    authenticateToken,
-    soloGerentes,
-    
-    auditoriaController.obtenerAuditoria
-);
-
-// Obtener detalle completo de un registro específico
-router.get('/detalle/:id',
-    authenticateToken,
-    soloGerentes,
-    
-    auditoriaController.obtenerDetalleAuditoria
-);
-
-// Obtener datos únicos para filtros
-router.get('/datos-filtros',
-    authenticateToken,
-    soloGerentes,
-    
-    auditoriaController.obtenerDatosFiltros
-);
-
-// Obtener estadísticas simples
-router.get('/estadisticas',
-    authenticateToken,
-    soloGerentes,
-    
-    auditoriaController.obtenerEstadisticasSimples
-);
-
-// ✅ RUTA DE DEBUG (solo en desarrollo)
 if (process.env.NODE_ENV === 'development') {
-    router.get('/debug',
-        authenticateToken,
-        soloGerentes,
-        async (req, res) => {
+    router.get('/debug', apiRateLimiter, ...readAuditoria, async (req, res) => {
             try {
                 const dbStatus = require('../controllers/dbPromise').getStatus();
                 const poolStats = await require('../controllers/dbPromise').getPoolStats();

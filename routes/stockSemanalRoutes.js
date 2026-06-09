@@ -1,7 +1,7 @@
 const express = require('express');
 
 const router = express.Router();
-const { authenticateToken, authorizeRole } = require('../middlewares/authMiddleware');
+const { writeInventario } = require('../middlewares/routeGuards');
 const { middlewareAuditoria } = require('../middlewares/auditoriaMiddleware');
 const { apiRateLimiter } = require('../middlewares/rateLimitMiddleware');
 const stockSemanalController = require('../controllers/stockSemanalController');
@@ -20,7 +20,7 @@ const {
     validateQuery
 } = require('../validators/stockSemanalValidators');
 
-const soloAdminGerente = [authenticateToken, authorizeRole(['ADMIN', 'GERENTE'])];
+const soloAdminGerente = writeInventario;
 
 /**
  * Stock semanal — montado bajo app.use('/inventario', inventarioRoutes).

@@ -2,6 +2,7 @@ const db = require('./dbPromise');
 const { auditarOperacion, obtenerDatosAnteriores } = require('../middlewares/auditoriaMiddleware');
 const KitchenCapacityService = require('../services/KitchenCapacityService');
 const PrintService = require('../services/PrintService');
+const { mapPrintError } = require('../services/print/printPayloadShared');
 const TimeCalculationService = require('../services/TimeCalculationService');
 const { validarExtrasNoDobleYTriple, construirPersonalizaciones } = require('../services/PersonalizacionesService');
 const { OrderQueueEngine } = require('../services/OrderQueueEngine');
@@ -404,6 +405,78 @@ const obtenerPedidos = async (req, res) => {
     }
 };
 
+const attachArticulosBatch = async (pedidos = []) => {
+    if (!pedidos.length) return [];
+
+    const ids = pedidos.map((p) => p.id);
+    const placeholders = ids.map(() => '?').join(',');
+    const [articulosRows] = await db.execute(
+        `SELECT * FROM pedidos_contenido WHERE pedido_id IN (${placeholders})`,
+        ids
+    );
+
+    const articulosByPedidoId = {};
+    for (const row of articulosRows) {
+        const pedidoId = row.pedido_id;
+        if (!articulosByPedidoId[pedidoId]) {
+            articulosByPedidoId[pedidoId] = [];
+        }
+        articulosByPedidoId[pedidoId].push(normalizarItemPedidoParaDetalle(row));
+    }
+
+    return pedidos.map((pedido) =>
+        enrichPedidoRealtime({
+            ...pedido,
+            articulos: articulosByPedidoId[pedido.id] || []
+        })
+    );
+};
+
+/**
+ * Listar pedidos entregados y pagados (historial paginado)
+ * GET /pedidos/entregados?page=1&limit=20
+ */
+const obtenerPedidosEntregados = async (req, res) => {
+    try {
+        const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+        const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 20));
+        const offset = (page - 1) * limit;
+
+        const whereClause = `WHERE estado = 'ENTREGADO' AND estado_pago = 'PAGADO'`;
+
+        const [[{ total }]] = await db.execute(
+            `SELECT COUNT(*) AS total FROM pedidos ${whereClause}`
+        );
+
+        const [pedidos] = await db.execute(
+            `SELECT * FROM pedidos ${whereClause}
+             ORDER BY COALESCE(fecha_modificacion, fecha) DESC, id DESC
+             LIMIT ? OFFSET ?`,
+            [limit, offset]
+        );
+
+        const pedidosConArticulos = await attachArticulosBatch(pedidos);
+        const totalPages = Math.max(1, Math.ceil(total / limit));
+
+        res.json({
+            success: true,
+            data: pedidosConArticulos,
+            pagination: {
+                page,
+                limit,
+                total,
+                totalPages
+            }
+        });
+    } catch (error) {
+        console.error('❌ Error al obtener pedidos entregados:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error al obtener pedidos entregados'
+        });
+    }
+};
+
 /**
  * Obtener un pedido por ID
  * GET /pedidos/:id
@@ -704,6 +777,12 @@ const actualizarEstadoPedido = async (req, res) => {
             
             await connection.commit();
 
+            const io = req.app.get('io');
+            if (estado === 'ENTREGADO' && datosAnteriores.estado !== 'ENTREGADO') {
+                const { encolarCaeTrasEntregaPedido } = require('../services/ArcaFacturacionService');
+                await encolarCaeTrasEntregaPedido(id, io);
+            }
+
             // Obtener snapshot consistente post-commit para respuesta y eventos
             const pedidoActualizado = await buildPedidoSnapshotById({
                 pedidoId: id,
@@ -722,7 +801,6 @@ const actualizarEstadoPedido = async (req, res) => {
             });
             
             // Emitir evento WebSocket (Fase 3)
-            const io = req.app.get('io');
             if (io) {
                 const { getInstance: getSocketService } = require('../services/SocketService');
                 const socketService = getSocketService(io);
@@ -768,6 +846,96 @@ const actualizarEstadoPedido = async (req, res) => {
  * Actualizar observaciones de pedido
  * PUT /pedidos/:id/observaciones
  */
+/**
+ * Actualizar horario de entrega (programado / cuanto antes)
+ * PUT /pedidos/:id/horario-entrega
+ */
+const actualizarHorarioEntrega = async (req, res) => {
+    try {
+        const { id } = req.validatedParams || req.params;
+        const { horario_entrega: horarioEntrega } = req.validatedData || req.body;
+
+        const datosAnteriores = await obtenerDatosAnteriores('pedidos', id);
+
+        if (!datosAnteriores) {
+            return res.status(404).json({
+                success: false,
+                message: 'Pedido no encontrado'
+            });
+        }
+
+        const estado = String(datosAnteriores.estado || '').toUpperCase();
+        if (estado === 'ENTREGADO' || estado === 'CANCELADO') {
+            return res.status(409).json({
+                success: false,
+                message: 'No se puede modificar el horario de un pedido entregado o cancelado'
+            });
+        }
+
+        const prioridad = horarioEntrega ? 'NORMAL' : 'ALTA';
+        const tiempoEstimado = datosAnteriores.tiempo_estimado_preparacion || 15;
+        let horaInicioPreparacion = null;
+
+        if (horarioEntrega) {
+            const horarioEntregaDate = new Date(horarioEntrega);
+            if (Number.isNaN(horarioEntregaDate.getTime())) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Horario de entrega inválido'
+                });
+            }
+            horaInicioPreparacion = new Date(
+                horarioEntregaDate.getTime() - tiempoEstimado * 60 * 1000
+            );
+        }
+
+        await db.execute(
+            `UPDATE pedidos
+             SET horario_entrega = ?,
+                 prioridad = ?,
+                 hora_inicio_preparacion = ?
+             WHERE id = ?`,
+            [horarioEntrega || null, prioridad, horaInicioPreparacion, id]
+        );
+
+        await auditarOperacion(req, {
+            accion: 'UPDATE',
+            tabla: 'pedidos',
+            registroId: id,
+            datosAnteriores,
+            datosNuevos: {
+                ...datosAnteriores,
+                horario_entrega: horarioEntrega || null,
+                prioridad,
+                hora_inicio_preparacion: horaInicioPreparacion
+            }
+        });
+
+        const pedidoActualizado = await buildPedidoSnapshotById({ pedidoId: id });
+
+        const io = req.app.get('io');
+        if (io && pedidoActualizado) {
+            const { getSocketService } = require('../services/SocketService');
+            const socketService = getSocketService(io);
+            if (socketService) {
+                socketService.emitPedidoActualizado(id, pedidoActualizado);
+            }
+        }
+
+        res.json({
+            success: true,
+            message: 'Horario de entrega actualizado correctamente',
+            data: pedidoActualizado
+        });
+    } catch (error) {
+        console.error('❌ Error al actualizar horario de entrega:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error al actualizar horario de entrega'
+        });
+    }
+};
+
 const actualizarObservaciones = async (req, res) => {
         try {
             const { id } = req.validatedParams || req.params;
@@ -1357,6 +1525,12 @@ const forzarEstadoPedido = async (req, res) => {
             connection,
             includeArticulos: true
         });
+
+        const io = req.app.get('io');
+        if (estado === 'ENTREGADO' && datosAnteriores.estado !== 'ENTREGADO') {
+            const { encolarCaeTrasEntregaPedido } = require('../services/ArcaFacturacionService');
+            await encolarCaeTrasEntregaPedido(id, io);
+        }
         
         // Auditoría especial para bypass
         await auditarOperacion(req, {
@@ -1369,7 +1543,6 @@ const forzarEstadoPedido = async (req, res) => {
         });
 
         // Emitir eventos socket consistentes con /:id/estado
-        const io = req.app.get('io');
         if (io && pedidoActualizado) {
             const { getInstance: getSocketService } = require('../services/SocketService');
             const socketService = getSocketService(io);
@@ -1617,17 +1790,11 @@ const imprimirComanda = async (req, res) => {
         });
     } catch (error) {
         console.error('❌ Error al obtener datos de comanda para impresión:', error);
-        
-        if (error.message.includes('no encontrado')) {
-            return res.status(404).json({
-                success: false,
-                message: error.message
-            });
-        }
-        
-        res.status(500).json({
+        const mapped = mapPrintError(error);
+        return res.status(mapped.status).json({
             success: false,
-            message: 'Error al obtener datos de comanda para impresión',
+            message: mapped.message,
+            code: mapped.code,
             error: process.env.NODE_ENV === 'development' ? error.message : undefined
         });
     }
@@ -1645,8 +1812,6 @@ const imprimirComanda = async (req, res) => {
  * - Emite evento pedido:cobrado
  */
 const cobrarPedido = async (req, res) => {
-    const connection = await db.getConnection();
-
     try {
         const { id } = req.validatedParams || req.params;
         if (req.body?.descuento !== undefined && req.body?.descuento_porcentaje === undefined) {
@@ -1657,258 +1822,42 @@ const cobrarPedido = async (req, res) => {
             });
         }
 
-        const { medio_pago, cuenta_id, tipo_factura, descuento_porcentaje = 0 } = req.validatedData || req.body || {};
-        const usuario = req.user || {};
+        const { medio_pago, descuento_porcentaje = 0 } = req.validatedData || req.body || {};
+        const { cobrarPedidoIdempotente } = require('../services/PedidoCobroService');
 
-        await connection.beginTransaction();
-
-        // Lock row para evitar race condition (doble cobro)
-        const [pedidos] = await connection.execute(
-            'SELECT * FROM pedidos WHERE id = ? FOR UPDATE',
-            [id]
-        );
-
-        if (pedidos.length === 0) {
-            await connection.rollback();
-            return res.status(404).json({
-                success: false,
-                message: 'Pedido no encontrado'
-            });
-        }
-
-            const pedido = enrichPedidoRealtime(pedidos[0]);
-
-        // Solo bloquear cobro de pedidos cancelados
-        if (pedido.estado === 'CANCELADO') {
-            await connection.rollback();
-            return res.status(400).json({
-                success: false,
-                message: 'No se puede cobrar un pedido cancelado',
-                code: 'PEDIDO_CANCELADO',
-                estado_actual: pedido.estado
-            });
-        }
-
-        // Idempotencia: si ya está cobrado, devolver éxito con venta existente (no duplicar)
-        if (pedido.estado_pago === 'PAGADO') {
-            await connection.rollback();
-            const { buscarVentaAsociada } = require('../services/PrintService');
-            const ventaExistente = await buscarVentaAsociada(id);
-            const [ped] = await connection.execute('SELECT * FROM pedidos WHERE id = ?', [id]);
-            const [arts] = await connection.execute('SELECT * FROM pedidos_contenido WHERE pedido_id = ?', [id]);
-                const pedidoCompleto = enrichPedidoRealtime({ ...ped[0], articulos: arts });
-            return res.json({
-                success: true,
-                message: 'Pedido ya estaba cobrado',
-                data: {
-                    pedido: pedidoCompleto,
-                    venta_id: ventaExistente?.id,
-                    pagado: true
-                }
-            });
-        }
-        
-        // Obtener artículos del pedido
-        const [articulosPedido] = await connection.execute(
-            'SELECT * FROM pedidos_contenido WHERE pedido_id = ?',
-            [id]
-        );
-        
-        if (articulosPedido.length === 0) {
-            await connection.rollback();
-            return res.status(400).json({
-                success: false,
-                message: 'El pedido no tiene artículos'
-            });
-        }
-        
-        const totalPedidoCobro = obtenerTotalFinalDesdeRegistro(pedido);
-
-        const porcentajeNormalizado = Number(descuento_porcentaje);
-        if (!Number.isFinite(porcentajeNormalizado) || porcentajeNormalizado < 0 || porcentajeNormalizado > 100) {
-            await connection.rollback();
-            return res.status(400).json({
-                success: false,
-                message: 'El descuento_porcentaje debe estar entre 0 y 100',
-                code: 'DESCUENTO_PORCENTAJE_INVALIDO'
-            });
-        }
-
-        const totalesVenta = calcularTotalesConDescuentoPorcentaje(totalPedidoCobro, porcentajeNormalizado);
-        if (totalesVenta.total < 0) {
-            await connection.rollback();
-            return res.status(400).json({
-                success: false,
-                message: 'El total final no puede ser negativo',
-                code: 'TOTAL_FINAL_NEGATIVO'
-            });
-        }
-
-        // ✅ Crear venta basada en el pedido
-        let ventaResult;
-        try {
-            const ventaQueryConPedido = `
-                INSERT INTO ventas (
-                    pedido_id, cliente_id, fecha, cliente_nombre, cliente_direccion, cliente_telefono, cliente_email,
-                    subtotal, iva_total, descuento, total, medio_pago, cuenta_id,
-                    estado, observaciones, tipo_factura, usuario_id, usuario_nombre
-                ) VALUES (?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'FACTURADA', ?, ?, ?, ?)
-            `;
-            [ventaResult] = await connection.execute(ventaQueryConPedido, [
-                id, pedido.cliente_id || null, pedido.cliente_nombre, pedido.cliente_direccion, pedido.cliente_telefono,
-                pedido.cliente_email, totalesVenta.subtotal, totalesVenta.iva_total, totalesVenta.descuento, totalesVenta.total,
-                medio_pago || pedido.medio_pago || 'EFECTIVO', cuenta_id || null,
-                pedido.observaciones, tipo_factura || null, usuario.id || null,
-                usuario.nombre || usuario.usuario || null
-            ]);
-        } catch (err) {
-            if (err.code === 'ER_BAD_FIELD_ERROR' && err.message && err.message.includes('pedido_id')) {
-                const ventaQuerySinPedido = `
-                    INSERT INTO ventas (
-                        cliente_id, fecha, cliente_nombre, cliente_direccion, cliente_telefono, cliente_email,
-                        subtotal, iva_total, descuento, total, medio_pago, cuenta_id,
-                        estado, observaciones, tipo_factura, usuario_id, usuario_nombre
-                    ) VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'FACTURADA', ?, ?, ?, ?)
-                `;
-                [ventaResult] = await connection.execute(ventaQuerySinPedido, [
-                    pedido.cliente_id || null, pedido.cliente_nombre, pedido.cliente_direccion, pedido.cliente_telefono,
-                    pedido.cliente_email, totalesVenta.subtotal, totalesVenta.iva_total, totalesVenta.descuento, totalesVenta.total,
-                    medio_pago || pedido.medio_pago || 'EFECTIVO', cuenta_id || null,
-                    pedido.observaciones, tipo_factura || null, usuario.id || null,
-                    usuario.nombre || usuario.usuario || null
-                ]);
-            } else {
-                throw err;
-            }
-        }
-        const ventaId = ventaResult.insertId;
-        
-        // Insertar artículos de la venta
-        const articuloVentaQuery = `
-            INSERT INTO ventas_contenido (
-                venta_id, articulo_id, articulo_nombre, cantidad, precio, subtotal
-            ) VALUES (?, ?, ?, ?, ?, ?)
-        `;
-        
-        for (const articulo of articulosPedido) {
-            await connection.execute(articuloVentaQuery, [
-                ventaId,
-                articulo.articulo_id,
-                articulo.articulo_nombre,
-                articulo.cantidad,
-                articulo.precio,
-                articulo.subtotal
-            ]);
-        }
-        
-        // ✅ Actualizar estado_pago del pedido a PAGADO
-        const totalesPedidoNormalizados = calcularTotalesDesdePrecioFinal(totalPedidoCobro);
-        await connection.execute(
-            'UPDATE pedidos SET estado_pago = ?, medio_pago = ?, subtotal = ?, iva_total = ?, total = ?, fecha_modificacion = NOW() WHERE id = ?',
-            [
-                'PAGADO',
-                medio_pago || pedido.medio_pago || 'EFECTIVO',
-                totalesPedidoNormalizados.subtotal,
-                totalesPedidoNormalizados.iva_total,
-                totalesPedidoNormalizados.total,
-                id
-            ]
-        );
-        
-        // Si hay cuenta_id, actualizar saldo
-        if (cuenta_id) {
-            const [saldoAnterior] = await connection.execute(
-                'SELECT saldo FROM cuentas_fondos WHERE id = ?',
-                [cuenta_id]
-            );
-            
-            if (saldoAnterior.length > 0) {
-                const saldoAnteriorValor = parseFloat(saldoAnterior[0].saldo) || 0;
-                const saldoNuevoValor = saldoAnteriorValor + totalesVenta.total;
-                
-                await connection.execute(
-                    'UPDATE cuentas_fondos SET saldo = ? WHERE id = ?',
-                    [saldoNuevoValor, cuenta_id]
-                );
-                
-                await connection.execute(
-                    `INSERT INTO movimientos_fondos (
-                        fecha, cuenta_id, tipo, origen, referencia_id, monto,
-                        saldo_anterior, saldo_nuevo
-                    ) VALUES (NOW(), ?, 'INGRESO', ?, ?, ?, ?, ?)`,
-                    [
-                        cuenta_id,
-                        `Venta #${ventaId} (Pedido #${id})`,
-                        ventaId,
-                        totalesVenta.total,
-                        saldoAnteriorValor,
-                        saldoNuevoValor
-                    ]
-                );
-            }
-        }
-        
-        await connection.commit();
-
-        // Obtener pedido completo (con articulos) para respuesta consistente
-        const pedidoActualizado = await buildPedidoSnapshotById({
+        const result = await cobrarPedidoIdempotente({
             pedidoId: id,
-            connection,
-            includeArticulos: true
+            medioPago: medio_pago,
+            descuentoPorcentaje: descuento_porcentaje,
+            usuario: req.user || {},
+            req
         });
 
-        // Auditoría
-        await auditarOperacion(req, {
-            accion: 'COBRAR_PEDIDO',
-            tabla: 'pedidos',
-            registroId: id,
-            datosAnteriores: pedido,
-            datosNuevos: { ...pedido, estado_pago: 'PAGADO' },
-            detallesAdicionales: `Pedido cobrado - Venta #${ventaId} creada - Total: $${totalesVenta.total}`
-        });
-        
-        // Emitir eventos WebSocket
-        const io = req.app.get('io');
-        if (io) {
-            const { getInstance: getSocketService } = require('../services/SocketService');
-            const socketService = getSocketService(io);
-            if (socketService) {
-                socketService.emitPedidoCobrado(id, ventaId, pedidoActualizado);
-                socketService.emitPedidoActualizado(id, pedidoActualizado);
-                    socketService.emitVentaCreada(ventaId, { venta_id: ventaId, pedido_id: id, total: totalesVenta.total });
-            }
+        if (!result.success) {
+            return res.status(result.status || 500).json({
+                success: false,
+                message: result.message,
+                code: result.code,
+                estado_actual: result.estado_actual
+            });
         }
 
-        // Si era WEB con pago digital, al pasar a PAGADO habilitar ingreso al flujo automático
-        try {
-            const activacion = await OrderQueueEngine.activarFlujoSiCorrespondeTrasPago(id);
-            if (activacion.activado) {
-                console.log(`💳 [pedidosController] Pedido #${id} pagado: se habilitó flujo automático (${activacion.resultado?.mensaje || 'sin cambios'})`);
-            }
-        } catch (activationError) {
-            console.error(`⚠️ [pedidosController] Error activando flujo automático post-pago para pedido #${id}:`, activationError.message);
-        }
-
-        res.json({
+        return res.json({
             success: true,
-            message: 'Pedido cobrado exitosamente',
+            message: result.cobroNuevo ? 'Pedido cobrado exitosamente' : 'Pedido ya estaba cobrado',
             data: {
-                pedido: pedidoActualizado,
-                venta_id: ventaId,
+                pedido: result.pedido,
+                venta_id: result.ventaId,
                 pagado: true
             }
         });
-        
     } catch (error) {
-        await connection.rollback();
         console.error('❌ Error al cobrar pedido:', error);
         res.status(500).json({
             success: false,
             message: 'Error al cobrar pedido',
             error: process.env.NODE_ENV === 'development' ? error.message : undefined
         });
-    } finally {
-        connection.release();
     }
 };
 
@@ -1928,34 +1877,11 @@ const imprimirTicket = async (req, res) => {
         });
     } catch (error) {
         console.error('❌ Error al obtener datos de ticket para impresión:', error);
-        
-        // Errores específicos de validación de negocio
-        if (error.message.includes('no está pagado')) {
-            return res.status(400).json({
-                success: false,
-                message: error.message,
-                code: 'PEDIDO_NO_PAGADO'
-            });
-        }
-        
-        if (error.message.includes('No existe una venta asociada')) {
-            return res.status(404).json({
-                success: false,
-                message: error.message,
-                code: 'VENTA_NO_ENCONTRADA'
-            });
-        }
-        
-        if (error.message.includes('no encontrado')) {
-            return res.status(404).json({
-                success: false,
-                message: error.message
-            });
-        }
-        
-        res.status(500).json({
+        const mapped = mapPrintError(error);
+        return res.status(mapped.status).json({
             success: false,
-            message: 'Error al obtener datos de ticket para impresión',
+            message: mapped.message,
+            code: mapped.code,
             error: process.env.NODE_ENV === 'development' ? error.message : undefined
         });
     }
@@ -1964,10 +1890,12 @@ const imprimirTicket = async (req, res) => {
 module.exports = {
     crearPedido,
     obtenerPedidos,
+    obtenerPedidosEntregados,
     obtenerPedidoPorId,
     actualizarPedido,
     actualizarEstadoPedido,
     actualizarObservaciones,
+    actualizarHorarioEntrega,
     eliminarPedido,
     agregarArticulo,
     obtenerCapacidadCocina,

@@ -18,6 +18,7 @@ const obtenerCuentas = async (req, res) => {
             `SELECT 
                 id, nombre, descripcion, saldo, activa, fecha_creacion
             FROM cuentas_fondos
+            WHERE es_sistema = 0
             ORDER BY activa DESC, nombre ASC`
         );
         

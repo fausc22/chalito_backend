@@ -66,6 +66,12 @@ BACKEND_URL=http://localhost:3001
 MP_ACCESS_TOKEN=TEST-xxxxxxxxxxxxxxxxxxxx
 # Firma de webhooks (obligatorio en producción): panel Mercado Pago → Webhooks
 MP_WEBHOOK_SECRET=tu_clave_secreta_webhook
+
+# Datos en tickets impresos (PrintPayload v1)
+NOMBRE_NEGOCIO=El Chalito
+DIRECCION_NEGOCIO=
+TELEFONO_NEGOCIO=
+CUIT_NEGOCIO=
 ```
 
 > Recomendacion: no subir secretos ni credenciales reales al repositorio.

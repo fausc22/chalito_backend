@@ -27,6 +27,8 @@ Ejecutar siempre por nombre de archivo (prefijo numerico):
 3. `003_articulos_controla_stock.sql`
 4. `004_clientes.sql`
 5. `005_checkout_sesiones_mp.sql`
+6. `006_*` (configuracion / rename tablas, segun archivos presentes)
+7. `007_arca_fondos_sistema.sql` -> cuentas sistema X/ARCA, campos fiscales en ventas, `arca_solicitudes_log`
 
 ## Que hace cada archivo
 
@@ -52,6 +54,14 @@ Ejecutar siempre por nombre de archivo (prefijo numerico):
 En `seeds/`, `002_stock_semanal_insumos_default.sql` vuelve a asegurar los 5 insumos por nombre si faltan (idempotente). Si ya ejecutaste la migracion 002 completa, los datos suelen estar cargados y el seed no duplica filas.
 
 ## Script recomendado (Node.js)
+
+Ejecutar todas las migraciones pendientes:
+
+```bash
+npm run migrate
+```
+
+(usa `scripts/runMigrations.js`).
 
 Tambien existe `scripts/runMigrations.js`, que:
 - Lee los archivos de `migrations/`

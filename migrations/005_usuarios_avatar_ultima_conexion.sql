@@ -30,4 +30,4 @@ SET @sql_add_ultima_conexion := IF(
 );
 PREPARE stmt_add_ultima_conexion FROM @sql_add_ultima_conexion;
 EXECUTE stmt_add_ultima_conexion;
-DEALLOCATE PREPARE stmt_add_ultima_conexion;
+DEALLOCATE PREPARE stmt_add_ultima_conexion;  

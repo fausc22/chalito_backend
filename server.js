@@ -7,6 +7,10 @@ const axios = require('axios');
 const cookieParser = require('cookie-parser');
 const http = require('http');
 const { Server } = require('socket.io');
+const { resolveAllowedOrigins, resolveSocketOrigins } = require('./lib/corsOrigins');
+const { preloadBillingController } = require('./lib/billingControllerLoader');
+
+preloadBillingController();
 
 
 const port = process.env.PORT;
@@ -18,9 +22,7 @@ const server = http.createServer(app);
 // Configurar Socket.IO
 const io = new Server(server, {
     cors: {
-        origin: process.env.NODE_ENV === 'development' 
-            ? ['http://localhost:3000', /^http:\/\/localhost:\d+$/]
-            : process.env.FRONTEND_URL || 'http://localhost:3000',
+        origin: resolveSocketOrigins(),
         methods: ['GET', 'POST'],
         credentials: true
     },
@@ -87,6 +89,8 @@ const pedidosRoutes = require('./routes/pedidosRoutes');
 const ventasRoutes = require('./routes/ventasRoutes');
 const comandasRoutes = require('./routes/comandasRoutes');
 const configuracionRoutes = require('./routes/configuracionRoutes');
+const tiendaOnlineRoutes = require('./routes/tiendaOnlineRoutes');
+const cuponesRoutes = require('./routes/cuponesRoutes');
 const usuariosRoutes = require('./routes/usuariosRoutes');
 const healthRoutes = require('./routes/healthRoutes');
 const metricsRoutes = require('./routes/metricsRoutes');
@@ -96,11 +100,19 @@ const gastosRoutes = require('./routes/gastosRoutes');
 const empleadosRoutes = require('./routes/empleadosRoutes');
 const reportesRoutes = require('./routes/reportes.routes');
 const clientesRoutes = require('./routes/clientesRoutes');
+const arcaRoutes = require('./routes/arcaRoutes');
 
 // Importar worker de cola de pedidos
 const OrderQueueWorker = require('./workers/OrderQueueWorker');
 const MercadoPagoWorker = require('./workers/MercadoPagoWorker');
-const { iniciarWhatsApp } = require('./services/whatsappService');
+const ArcaCaeWorker = require('./workers/ArcaCaeWorker');
+const {
+    iniciarWhatsApp,
+    cerrarWhatsApp,
+    shouldAutoStartOnBoot
+} = require('./services/whatsappService');
+const whatsappRoutes = require('./routes/whatsappRoutes');
+const mercadoPagoAdminRoutes = require('./routes/mercadoPagoAdminRoutes');
 
 // Envolver start/stop para sincronizar estado sin tocar la lógica del worker
 const originalWorkerStart = OrderQueueWorker.start.bind(OrderQueueWorker);
@@ -130,12 +142,7 @@ emitWorkerStatus(io, Boolean(OrderQueueWorker.isRunning));
 // ============================================
 // CORS
 // ============================================
-const allowedOrigins = [
-    'http://localhost:3000',
-    'http://localhost:3001',
-    'https://chalito-carta.vercel.app',
-    'https://chalito-beta.vercel.app'
-];
+const allowedOrigins = resolveAllowedOrigins();
 
 const { middlewareAuditoria } = require('./middlewares/auditoriaMiddleware');
 
@@ -143,7 +150,7 @@ app.use(cors({
     origin: (origin, callback) => {
         if (!origin) return callback(null, true);
 
-        if (allowedOrigins.filter(Boolean).includes(origin)) {
+        if (allowedOrigins.includes(origin)) {
             callback(null, true);
         } else {
             console.warn(`⚠️ [CORS] Origen no permitido: ${origin}`);
@@ -212,6 +219,10 @@ app.use('/pedidos', pedidosRoutes);
 app.use('/ventas', ventasRoutes);
 app.use('/comandas', comandasRoutes);
 app.use('/configuracion-sistema', configuracionRoutes);
+app.use('/configuracion/tienda-online', tiendaOnlineRoutes);
+app.use('/configuracion/cupones', cuponesRoutes);
+app.use('/configuracion/whatsapp', whatsappRoutes);
+app.use('/configuracion/mercadopago', mercadoPagoAdminRoutes);
 app.use('/usuarios', usuariosRoutes);
 app.use('/health', healthRoutes);
 app.use('/metrics', metricsRoutes);
@@ -223,6 +234,7 @@ app.use('/empleados', empleadosRoutes);
 app.use('/reportes', reportesRoutes);
 app.use('/clientes', clientesRoutes);
 app.use('/api/clientes', clientesRoutes);
+app.use('/arca', arcaRoutes);
 
 // Middleware global de manejo de errores
 app.use((error, req, res, next) => {
@@ -309,11 +321,20 @@ server.listen(port, '0.0.0.0', () => {
         } catch (error) {
             console.error('❌ Error iniciando MercadoPagoWorker:', error);
         }
+        try {
+            ArcaCaeWorker.start();
+        } catch (error) {
+            console.error('❌ Error iniciando ArcaCaeWorker:', error);
+        }
     }, 3000); // Esperar 3 segundos después del inicio del servidor
 
-    iniciarWhatsApp().catch((err) => {
-        console.warn('⚠️ WhatsApp no disponible al arranque (escanear QR):', err.message);
-    });
+    if (shouldAutoStartOnBoot()) {
+        iniciarWhatsApp().catch((err) => {
+            console.warn('⚠️ WhatsApp no disponible al arranque:', err.message);
+        });
+    } else {
+        console.log('💡 WhatsApp: conectá desde Configuración > Integraciones cuando lo necesites');
+    }
 });
 
 // Exportar io para usar en otros módulos
@@ -322,8 +343,10 @@ app.set('io', io);
 // Manejar cierre graceful del servidor
 process.on('SIGTERM', () => {
     console.log('🛑 SIGTERM recibido, cerrando servidor gracefully...');
+    cerrarWhatsApp().catch(() => {});
     OrderQueueWorker.stop();
     MercadoPagoWorker.stop();
+    ArcaCaeWorker.stop();
     if (workerHeartbeatInterval) {
         clearInterval(workerHeartbeatInterval);
         workerHeartbeatInterval = null;
@@ -338,8 +361,10 @@ process.on('SIGTERM', () => {
 
 process.on('SIGINT', () => {
     console.log('🛑 SIGINT recibido, cerrando servidor gracefully...');
+    cerrarWhatsApp().catch(() => {});
     OrderQueueWorker.stop();
     MercadoPagoWorker.stop();
+    ArcaCaeWorker.stop();
     if (workerHeartbeatInterval) {
         clearInterval(workerHeartbeatInterval);
         workerHeartbeatInterval = null;

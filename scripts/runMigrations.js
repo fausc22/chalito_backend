@@ -41,6 +41,32 @@ function splitSqlStatements(sql) {
     return statements;
 }
 
+async function ensureMigrationsTable(connection) {
+    await connection.query(`
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            id INT NOT NULL AUTO_INCREMENT,
+            filename VARCHAR(255) NOT NULL,
+            executed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            UNIQUE KEY uq_schema_migrations_filename (filename)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+    `);
+}
+
+async function getAppliedMigrations(connection) {
+    const [rows] = await connection.query(
+        'SELECT filename FROM schema_migrations ORDER BY filename'
+    );
+    return new Set(rows.map((row) => row.filename));
+}
+
+async function markMigrationApplied(connection, fileName) {
+    await connection.query(
+        'INSERT INTO schema_migrations (filename) VALUES (?)',
+        [fileName]
+    );
+}
+
 async function runMigrations() {
     const migrationsDir = path.resolve(__dirname, '../migrations');
     console.log(`Buscando migraciones en: ${migrationsDir}`);
@@ -58,7 +84,19 @@ async function runMigrations() {
 
     const connection = await db.getConnection();
     try {
+        await ensureMigrationsTable(connection);
+        const applied = await getAppliedMigrations(connection);
+
+        let executedCount = 0;
+        let skippedCount = 0;
+
         for (const fileName of migrationFiles) {
+            if (applied.has(fileName)) {
+                console.log(`- Omitida (ya aplicada): ${fileName}`);
+                skippedCount += 1;
+                continue;
+            }
+
             const fullPath = path.join(migrationsDir, fileName);
             console.log(`\nEjecutando migracion: ${fileName}`);
 
@@ -67,6 +105,8 @@ async function runMigrations() {
 
             if (!statements.length) {
                 console.log(`- ${fileName} no contiene sentencias ejecutables.`);
+                await markMigrationApplied(connection, fileName);
+                executedCount += 1;
                 continue;
             }
 
@@ -75,13 +115,17 @@ async function runMigrations() {
                 await connection.query(statement);
             }
 
+            await markMigrationApplied(connection, fileName);
             console.log(`- Migracion completada: ${fileName}`);
+            executedCount += 1;
         }
+
+        console.log(
+            `\nMigraciones finalizadas. Ejecutadas: ${executedCount}, omitidas: ${skippedCount}.`
+        );
     } finally {
         connection.release();
     }
-
-    console.log('\nMigraciones finalizadas correctamente.');
 }
 
 runMigrations()
