@@ -1,5 +1,5 @@
 /**
- * PrintPayload v1 — ticket de cliente (58mm, con precios)
+ * PrintPayload v1 — factura oficial ARCA (58mm, con precios y datos fiscales)
  */
 
 const { calcularTotalesDesdePrecioFinal } = require('../totalesPrecioFinal');
@@ -11,6 +11,9 @@ const {
     buildMeta
 } = require('./printPayloadShared');
 
+const TIPO_CMP_FACTURA_B = 6;
+const TIPO_CMP_FACTURA_C = 11;
+
 const formatMedioPago = (medio) => {
     const m = String(medio || 'EFECTIVO').trim().toUpperCase();
     const labels = {
@@ -18,9 +21,16 @@ const formatMedioPago = (medio) => {
         DEBITO: 'Débito',
         CREDITO: 'Crédito',
         TRANSFERENCIA: 'Transferencia',
+        TRANSFERENCIA_FACTURADA: 'Transferencia',
         MERCADOPAGO: 'Mercado Pago'
     };
     return labels[m] || m;
+};
+
+const resolverTipoCmp = (tipoFactura) => {
+    const t = String(tipoFactura || 'C').trim().toUpperCase();
+    if (t === 'B') return TIPO_CMP_FACTURA_B;
+    return TIPO_CMP_FACTURA_C;
 };
 
 /**
@@ -36,6 +46,8 @@ const buildCustomerPayload = async (pedido, venta, articulosVenta) => {
         : (Number.isFinite(subtotalVentaBase) ? subtotalVentaBase : 0);
     const totalesVenta = calcularTotalesDesdePrecioFinal(totalFinalVenta);
     const descuento = parseFloat(venta.descuento || 0);
+    const tipoFactura = String(venta.tipo_factura || 'C').trim().toUpperCase();
+    const esFacturaC = tipoFactura === 'C';
 
     const lines = articulosVenta.map((articulo) => {
         const qty = articulo.cantidad || 1;
@@ -51,7 +63,7 @@ const buildCustomerPayload = async (pedido, venta, articulosVenta) => {
         };
     });
 
-    const tieneCae = Boolean(venta.cae_id) && venta.tipo_factura === 'B';
+    const tieneCae = Boolean(venta.cae_id) && (tipoFactura === 'B' || tipoFactura === 'C');
     const puntoVenta = venta.punto_venta || parseInt(process.env.DEFAULT_PUNTO_VENTA, 10) || 1;
     let voucherNumber = null;
     if (venta.numero_factura) {
@@ -73,7 +85,7 @@ const buildCustomerPayload = async (pedido, venta, articulosVenta) => {
             saleNumber: venta.id,
             createdAt: venta.fecha,
             createdAtLabel: formatFechaHora(venta.fecha),
-            invoiceType: venta.tipo_factura || null
+            invoiceType: tipoFactura
         },
         customer: {
             name: venta.cliente_nombre || 'Cliente',
@@ -83,11 +95,12 @@ const buildCustomerPayload = async (pedido, venta, articulosVenta) => {
         },
         lines,
         totals: {
-            subtotal: totalesVenta.subtotal,
-            tax: totalesVenta.iva_total,
+            subtotal: esFacturaC ? totalesVenta.total : totalesVenta.subtotal,
+            tax: esFacturaC ? 0 : totalesVenta.iva_total,
             discount: descuento,
             total: totalesVenta.total,
-            paymentMethod: formatMedioPago(venta.medio_pago)
+            paymentMethod: formatMedioPago(venta.medio_pago),
+            hideTaxBreakdown: esFacturaC
         },
         meta: buildMeta()
     };
@@ -96,25 +109,20 @@ const buildCustomerPayload = async (pedido, venta, articulosVenta) => {
         const cuitEmisor = String(process.env.AFIP_CUIT || process.env.CUIT_NEGOCIO || '').replace(/\D/g, '');
         const fechaVenta = venta.fecha ? new Date(venta.fecha) : new Date();
         const fechaQr = fechaVenta.toISOString().slice(0, 10);
+        const tipoCmp = resolverTipoCmp(tipoFactura);
         payload.fiscal = {
             isElectronic: true,
-            invoiceType: 'B',
+            invoiceType: tipoFactura,
             pointOfSale: puntoVenta,
             voucherNumber,
             voucherLabel: venta.numero_factura || null,
             cae: venta.cae_id,
             caeExpiresAt: venta.cae_fecha || null,
             caeEstado: venta.cae_estado || 'OK',
-            tipoCmp: 6,
+            tipoCmp,
             cuitEmisor,
             fechaQr,
             importe: totalesVenta.total
-        };
-    } else if (venta.cae_estado === 'PENDIENTE') {
-        payload.fiscal = {
-            isElectronic: false,
-            caeEstado: 'PENDIENTE',
-            pendingMessage: 'CAE pendiente de autorización ARCA'
         };
     }
 

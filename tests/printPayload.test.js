@@ -1,5 +1,16 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
+
+// Evitar conexión MySQL en tests de payload (branding)
+require.cache[require.resolve('../services/brandingSettingsService')] = {
+    id: require.resolve('../services/brandingSettingsService'),
+    filename: require.resolve('../services/brandingSettingsService'),
+    loaded: true,
+    exports: {
+        getSettings: async () => ({ nombreNegocio: 'El Chalito Test' })
+    }
+};
+
 const { buildKitchenPayload } = require('../services/print/buildKitchenPayload');
 const { buildCustomerPayload } = require('../services/print/buildCustomerPayload');
 const { mapPrintError, PrintErrorCodes } = require('../services/print/printPayloadShared');
@@ -48,6 +59,7 @@ describe('buildKitchenPayload', () => {
         assert.equal(payload.order.totalLabel, '$8.500');
         assert.equal(payload.order.modalityLabel, 'ENVIO / DELIVERY');
         assert.equal(payload.order.orderNotes, 'Timbre roto');
+        assert.ok(!String(payload.order.scheduledLabel).includes('PARA'));
     });
 });
 
@@ -86,6 +98,44 @@ describe('buildCustomerPayload', () => {
         assert.equal(payload.lines[0].lineTotal, 3000);
         assert.equal(payload.order.saleId, 99);
     });
+
+    it('Factura C sin desglose IVA y con bloque fiscal', async () => {
+        const payload = await buildCustomerPayload(
+            { id: 10 },
+            {
+                id: 100,
+                fecha: '2026-05-19T15:00:00.000Z',
+                total: 1210,
+                subtotal: 1210,
+                descuento: 0,
+                medio_pago: 'DEBITO',
+                cliente_nombre: 'Cliente',
+                tipo_factura: 'C',
+                cae_id: '12345678901234',
+                cae_estado: 'OK',
+                cae_fecha: '2026-05-26',
+                numero_factura: 'C 0001-00000123',
+                punto_venta: 1
+            },
+            [
+                {
+                    articulo_id: 1,
+                    articulo_nombre: 'Empanada',
+                    cantidad: 1,
+                    precio: 1210,
+                    subtotal: 1210
+                }
+            ]
+        );
+
+        assert.equal(payload.order.invoiceType, 'C');
+        assert.equal(payload.totals.hideTaxBreakdown, true);
+        assert.equal(payload.totals.tax, 0);
+        assert.equal(payload.totals.subtotal, payload.totals.total);
+        assert.ok(payload.fiscal);
+        assert.equal(payload.fiscal.tipoCmp, 11);
+        assert.equal(payload.fiscal.invoiceType, 'C');
+    });
 });
 
 describe('mapPrintError', () => {
@@ -98,5 +148,15 @@ describe('mapPrintError', () => {
     it('mapea pedido no pagado', () => {
         const r = mapPrintError(new Error('El pedido 1 no está pagado. Estado actual: DEBE'));
         assert.equal(r.code, PrintErrorCodes.PEDIDO_NOT_PAID);
+    });
+
+    it('mapea pedido no entregado', () => {
+        const r = mapPrintError(new Error('El pedido 1 no está entregado. La factura ARCA solo puede imprimirse cuando el pedido está ENTREGADO.'));
+        assert.equal(r.code, PrintErrorCodes.PEDIDO_NO_ENTREGADO);
+    });
+
+    it('mapea CAE pendiente', () => {
+        const r = mapPrintError(new Error('CAE pendiente de autorización ARCA para el pedido 1. Reintentá en unos minutos.'));
+        assert.equal(r.code, PrintErrorCodes.CAE_PENDIENTE);
     });
 });

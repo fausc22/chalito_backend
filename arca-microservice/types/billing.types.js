@@ -140,8 +140,25 @@ export function validarCombinaciónComprobanteIVA(tipoComprobante, condicionIVA)
   if ([6, 7, 8].includes(tipoComprobante)) {
     return [CONDICIONES_IVA.CONSUMIDOR_FINAL, CONDICIONES_IVA.EXENTO].includes(condicionIVA);
   }
+
+  // Factura C (monotributista emisor): Consumidor Final y demás receptores habituales
+  if ([11, 12, 13].includes(tipoComprobante)) {
+    return [
+      CONDICIONES_IVA.CONSUMIDOR_FINAL,
+      CONDICIONES_IVA.EXENTO,
+      CONDICIONES_IVA.MONOTRIBUTO,
+      CONDICIONES_IVA.RESPONSABLE_INSCRIPTO
+    ].includes(condicionIVA);
+  }
   
   return true;
+}
+
+/**
+ * Comprobantes tipo C (monotributista emisor): no discriminan IVA
+ */
+export function esComprobanteC(tipoComprobante) {
+  return [TIPOS_COMPROBANTE.FACTURA_C, TIPOS_COMPROBANTE.NOTA_DEBITO_C, TIPOS_COMPROBANTE.NOTA_CREDITO_C].includes(tipoComprobante);
 }
 
 /**
@@ -200,6 +217,7 @@ export default {
   getNombreComprobante,
   validarCombinaciónComprobanteIVA,
   esExento,
+  esComprobanteC,
   determinarTipoDocumento,
   esNotaCredito,
   esNotaDebito,

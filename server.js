@@ -7,6 +7,10 @@ const axios = require('axios');
 const cookieParser = require('cookie-parser');
 const http = require('http');
 const { Server } = require('socket.io');
+const { resolveAllowedOrigins, resolveSocketOrigins } = require('./lib/corsOrigins');
+const { preloadBillingController } = require('./lib/billingControllerLoader');
+
+preloadBillingController();
 
 
 const port = process.env.PORT;
@@ -18,9 +22,7 @@ const server = http.createServer(app);
 // Configurar Socket.IO
 const io = new Server(server, {
     cors: {
-        origin: process.env.NODE_ENV === 'development' 
-            ? ['http://localhost:3000', /^http:\/\/localhost:\d+$/]
-            : process.env.FRONTEND_URL || 'http://localhost:3000',
+        origin: resolveSocketOrigins(),
         methods: ['GET', 'POST'],
         credentials: true
     },
@@ -140,12 +142,7 @@ emitWorkerStatus(io, Boolean(OrderQueueWorker.isRunning));
 // ============================================
 // CORS
 // ============================================
-const allowedOrigins = [
-    'http://localhost:3000',
-    'http://localhost:3001',
-    'https://chalito-carta.vercel.app',
-    'https://chalito-beta.vercel.app'
-];
+const allowedOrigins = resolveAllowedOrigins();
 
 const { middlewareAuditoria } = require('./middlewares/auditoriaMiddleware');
 
@@ -153,7 +150,7 @@ app.use(cors({
     origin: (origin, callback) => {
         if (!origin) return callback(null, true);
 
-        if (allowedOrigins.filter(Boolean).includes(origin)) {
+        if (allowedOrigins.includes(origin)) {
             callback(null, true);
         } else {
             console.warn(`⚠️ [CORS] Origen no permitido: ${origin}`);

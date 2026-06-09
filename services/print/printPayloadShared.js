@@ -58,7 +58,7 @@ const buildScheduledLabel = (pedido) => {
 
     if (horario) {
         const hhmm = formatHora(horario);
-        return hhmm ? `PARA ${hhmm}` : 'CUANTO ANTES';
+        return hhmm ? hhmm : 'CUANTO ANTES';
     }
     return 'CUANTO ANTES';
 };
@@ -118,6 +118,8 @@ const PrintErrorCodes = {
     PEDIDO_NOT_FOUND: 'PEDIDO_NOT_FOUND',
     PEDIDO_NO_ITEMS: 'PEDIDO_NO_ITEMS',
     PEDIDO_NOT_PAID: 'PEDIDO_NOT_PAID',
+    PEDIDO_NO_ENTREGADO: 'PEDIDO_NO_ENTREGADO',
+    CAE_PENDIENTE: 'CAE_PENDIENTE',
     NO_SALE_FOR_TICKET: 'NO_SALE_FOR_TICKET',
     SALE_NO_ITEMS: 'SALE_NO_ITEMS',
     PRINT_DATA_ERROR: 'PRINT_DATA_ERROR'
@@ -133,6 +135,12 @@ const mapPrintError = (error) => {
     }
     if (msg.includes('no está pagado')) {
         return { code: PrintErrorCodes.PEDIDO_NOT_PAID, message: msg, status: 400 };
+    }
+    if (msg.includes('no está entregado') || msg.includes('ENTREGADO')) {
+        return { code: PrintErrorCodes.PEDIDO_NO_ENTREGADO, message: msg, status: 400 };
+    }
+    if (msg.includes('CAE pendiente') || msg.includes('cae pendiente')) {
+        return { code: PrintErrorCodes.CAE_PENDIENTE, message: msg, status: 400 };
     }
     if (msg.includes('No existe una venta')) {
         return { code: PrintErrorCodes.NO_SALE_FOR_TICKET, message: msg, status: 400 };

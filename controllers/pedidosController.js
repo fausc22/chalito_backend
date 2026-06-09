@@ -777,6 +777,12 @@ const actualizarEstadoPedido = async (req, res) => {
             
             await connection.commit();
 
+            const io = req.app.get('io');
+            if (estado === 'ENTREGADO' && datosAnteriores.estado !== 'ENTREGADO') {
+                const { encolarCaeTrasEntregaPedido } = require('../services/ArcaFacturacionService');
+                await encolarCaeTrasEntregaPedido(id, io);
+            }
+
             // Obtener snapshot consistente post-commit para respuesta y eventos
             const pedidoActualizado = await buildPedidoSnapshotById({
                 pedidoId: id,
@@ -795,7 +801,6 @@ const actualizarEstadoPedido = async (req, res) => {
             });
             
             // Emitir evento WebSocket (Fase 3)
-            const io = req.app.get('io');
             if (io) {
                 const { getInstance: getSocketService } = require('../services/SocketService');
                 const socketService = getSocketService(io);
@@ -1520,6 +1525,12 @@ const forzarEstadoPedido = async (req, res) => {
             connection,
             includeArticulos: true
         });
+
+        const io = req.app.get('io');
+        if (estado === 'ENTREGADO' && datosAnteriores.estado !== 'ENTREGADO') {
+            const { encolarCaeTrasEntregaPedido } = require('../services/ArcaFacturacionService');
+            await encolarCaeTrasEntregaPedido(id, io);
+        }
         
         // Auditoría especial para bypass
         await auditarOperacion(req, {
@@ -1532,7 +1543,6 @@ const forzarEstadoPedido = async (req, res) => {
         });
 
         // Emitir eventos socket consistentes con /:id/estado
-        const io = req.app.get('io');
         if (io && pedidoActualizado) {
             const { getInstance: getSocketService } = require('../services/SocketService');
             const socketService = getSocketService(io);

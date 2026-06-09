@@ -41,9 +41,11 @@ class ArcaCaeWorker {
       const [pendientes] = await db.query(
         `SELECT v.id
          FROM ventas v
+         LEFT JOIN pedidos p ON p.id = v.pedido_id
          WHERE v.cae_estado IN ('PENDIENTE', 'ERROR')
-           AND v.tipo_factura = 'B'
+           AND v.tipo_factura = 'C'
            AND v.estado = 'FACTURADA'
+           AND (v.pedido_id IS NULL OR p.estado = 'ENTREGADO')
          ORDER BY v.id ASC
          LIMIT ${limit}`
       );

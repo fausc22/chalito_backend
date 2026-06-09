@@ -2,69 +2,55 @@ const express = require('express');
 const router = express.Router();
 const QRCode = require('qrcode');
 const { readConfiguracion, writeConfiguracion } = require('../middlewares/routeGuards');
+const { apiRateLimiter } = require('../middlewares/rateLimitMiddleware');
 const { middlewareAuditoria } = require('../middlewares/auditoriaMiddleware');
+const { getBillingController } = require('../lib/billingControllerLoader');
 
-// ✅ Importar controlador de integración
 const arcaIntegrationController = require('../controllers/arcaIntegrationController');
 
-// Importar el controlador del microservicio ARCA
-let billingController;
-
-// Cargar el controlador de forma asíncrona
-(async () => {
-  const module = await import('../arca-microservice/controllers/billing.controller.js');
-  billingController = module.default;
-})();
-
-// Middleware para verificar que el controlador esté cargado
-const verificarControlador = (req, res, next) => {
+const verificarControlador = async (req, res, next) => {
+  const billingController = await getBillingController();
   if (!billingController) {
     return res.status(503).json({
       success: false,
       error: 'Servicio ARCA no disponible. Intente nuevamente en unos segundos.'
     });
   }
+  req.billingController = billingController;
   next();
 };
 
+const withBillingHandler = (handlerName) => async (req, res) => {
+  const billingController = req.billingController || (await getBillingController());
+  if (!billingController || typeof billingController[handlerName] !== 'function') {
+    return res.status(503).json({
+      success: false,
+      error: 'Servicio ARCA no disponible. Intente nuevamente en unos segundos.'
+    });
+  }
+  return billingController[handlerName](req, res);
+};
+
 // ============================================
-// ✅ RUTAS DE INTEGRACIÓN (PRINCIPALES)
+// RUTAS DE INTEGRACIÓN (PRINCIPALES)
 // ============================================
 
-/**
- * ✅ SOLICITAR CAE PARA UNA VENTA
- * POST /arca/solicitar-cae
- * 
- * Body: { ventaId: number }
- */
 router.post('/solicitar-cae',
+  apiRateLimiter,
   ...writeConfiguracion,
   middlewareAuditoria({ accion: 'INSERT', tabla: 'ventas', incluirBody: true }),
   arcaIntegrationController.verificarARCA,
   arcaIntegrationController.solicitarCAE
 );
 
-/**
- * ✅ SOLICITAR CAE EN BATCH (MÚLTIPLES VENTAS)
- * POST /arca/solicitar-cae-batch
- * 
- * Body: { ventasIds: number[] }
- * 
- * Solicita CAE para múltiples ventas de forma secuencial.
- * Cada solicitud consulta ARCA para obtener el siguiente número disponible,
- * por lo que maneja correctamente rechazos y mantiene la numeración válida.
- */
 router.post('/solicitar-cae-batch',
+  apiRateLimiter,
   ...writeConfiguracion,
   middlewareAuditoria({ accion: 'INSERT', tabla: 'ventas', incluirBody: true }),
   arcaIntegrationController.verificarARCA,
   arcaIntegrationController.solicitarCAEBatch
 );
 
-/**
- * ✅ HEALTH CHECK DEL SERVICIO
- * GET /arca/health
- */
 router.get('/health',
   arcaIntegrationController.healthCheck
 );
@@ -73,232 +59,142 @@ router.get('/health',
 // RUTAS DEL MICROSERVICIO ARCA (DIRECTAS)
 // ============================================
 
-/**
- * CREAR FACTURA CONSUMIDOR FINAL
- * POST /arca/facturas/consumidor-final
- */
-router.post('/facturas/consumidor-final', 
+router.post('/facturas/consumidor-final',
+  apiRateLimiter,
   ...writeConfiguracion,
-  verificarControlador, 
-  (req, res) => billingController.crearFacturaConsumidorFinal(req, res)
+  verificarControlador,
+  async (req, res) => withBillingHandler('crearFacturaConsumidorFinal')(req, res)
 );
 
-/**
- * CREAR FACTURA A RESPONSABLE INSCRIPTO
- * POST /arca/facturas/responsable-inscripto
- */
-router.post('/facturas/responsable-inscripto', 
+router.post('/facturas/responsable-inscripto',
+  apiRateLimiter,
   ...writeConfiguracion,
-  verificarControlador, 
-  (req, res) => billingController.crearFacturaResponsableInscripto(req, res)
+  verificarControlador,
+  async (req, res) => withBillingHandler('crearFacturaResponsableInscripto')(req, res)
 );
 
-/**
- * OBTENER TIPOS DE COMPROBANTES
- * GET /arca/tipos-comprobante
- */
-router.get('/tipos-comprobante', 
-  verificarControlador, 
-  (req, res) => billingController.obtenerTiposComprobante(req, res)
+router.get('/tipos-comprobante',
+  apiRateLimiter,
+  ...readConfiguracion,
+  verificarControlador,
+  (req, res) => withBillingHandler('obtenerTiposComprobante')(req, res)
 );
 
-/**
- * OBTENER ALÍCUOTAS DE IVA
- * GET /arca/alicuotas-iva
- */
-router.get('/alicuotas-iva', 
-  verificarControlador, 
-  (req, res) => billingController.obtenerAlicuotasIVA(req, res)
+router.get('/alicuotas-iva',
+  apiRateLimiter,
+  ...readConfiguracion,
+  verificarControlador,
+  (req, res) => withBillingHandler('obtenerAlicuotasIVA')(req, res)
 );
 
-/**
- * OBTENER CONDICIONES IVA
- * GET /arca/condiciones-iva
- */
-router.get('/condiciones-iva', 
-  verificarControlador, 
-  (req, res) => billingController.obtenerCondicionesIVA(req, res)
+router.get('/condiciones-iva',
+  apiRateLimiter,
+  ...readConfiguracion,
+  verificarControlador,
+  (req, res) => withBillingHandler('obtenerCondicionesIVA')(req, res)
 );
 
-/**
- * ✅ GENERAR QR PARA FACTURA ELECTRÓNICA
- * POST /arca/generar-qr
- */
-router.post('/generar-qr', async (req, res) => {
-  try {
-    const datosQR = req.body; // Ya viene en el formato correcto desde pdfGenerator
-    
-    console.log('📱 Generando QR con datos:', JSON.stringify(datosQR, null, 2));
+router.post('/generar-qr',
+  apiRateLimiter,
+  ...readConfiguracion,
+  async (req, res) => {
+    try {
+      const datosQR = req.body;
 
-    // ✅ VALIDAR DATOS OBLIGATORIOS según especificación ARCA
-    const camposRequeridos = ['ver', 'fecha', 'cuit', 'ptoVta', 'tipoCmp', 'nroCmp', 'importe', 'moneda', 'ctz', 'tipoCodAut', 'codAut'];
-    const camposFaltantes = camposRequeridos.filter(campo => !datosQR.hasOwnProperty(campo));
-    
-    if (camposFaltantes.length > 0) {
-      console.error('❌ Faltan campos obligatorios:', camposFaltantes);
-      return res.status(400).json({
+      const camposRequeridos = ['ver', 'fecha', 'cuit', 'ptoVta', 'tipoCmp', 'nroCmp', 'importe', 'moneda', 'ctz', 'tipoCodAut', 'codAut'];
+      const camposFaltantes = camposRequeridos.filter((campo) => !Object.prototype.hasOwnProperty.call(datosQR, campo));
+
+      if (camposFaltantes.length > 0) {
+        return res.status(400).json({
+          success: false,
+          error: `Faltan datos obligatorios: ${camposFaltantes.join(', ')}`
+        });
+      }
+
+      const jsonComprobante = {
+        ver: parseInt(datosQR.ver, 10),
+        fecha: datosQR.fecha,
+        cuit: parseInt(datosQR.cuit, 10),
+        ptoVta: parseInt(datosQR.ptoVta, 10),
+        tipoCmp: parseInt(datosQR.tipoCmp, 10),
+        nroCmp: parseInt(datosQR.nroCmp, 10),
+        importe: parseFloat(datosQR.importe),
+        moneda: datosQR.moneda,
+        ctz: parseFloat(datosQR.ctz),
+        tipoDocRec: parseInt(datosQR.tipoDocRec, 10),
+        nroDocRec: parseInt(datosQR.nroDocRec, 10),
+        tipoCodAut: datosQR.tipoCodAut,
+        codAut: parseInt(datosQR.codAut, 10)
+      };
+
+      const jsonString = JSON.stringify(jsonComprobante);
+      const base64Data = Buffer.from(jsonString, 'utf8').toString('base64');
+      const qrUrl = `https://www.arca.gob.ar/fe/qr/?p=${base64Data}`;
+
+      const qrBase64 = await QRCode.toDataURL(qrUrl, {
+        errorCorrectionLevel: 'M',
+        type: 'image/png',
+        width: 200,
+        margin: 1
+      });
+
+      res.json({
+        success: true,
+        qrBase64,
+        qrUrl,
+        qrData: jsonComprobante
+      });
+    } catch (error) {
+      console.error('❌ Error generando QR:', error);
+      res.status(500).json({
         success: false,
-        error: `Faltan datos obligatorios: ${camposFaltantes.join(', ')}`
+        error: 'Error generando código QR',
+        details: error.message
       });
     }
-
-    // ✅ CONSTRUIR JSON según especificación ARCA (versión 1)
-    const jsonComprobante = {
-      ver: parseInt(datosQR.ver),                      // Versión del formato
-      fecha: datosQR.fecha,                            // YYYY-MM-DD (RFC3339)
-      cuit: parseInt(datosQR.cuit),                    // CUIT emisor (11 dígitos)
-      ptoVta: parseInt(datosQR.ptoVta),                // Punto de venta (hasta 5 dígitos)
-      tipoCmp: parseInt(datosQR.tipoCmp),              // Tipo comprobante (hasta 3 dígitos)
-      nroCmp: parseInt(datosQR.nroCmp),                // Número comprobante (hasta 8 dígitos)
-      importe: parseFloat(datosQR.importe),            // Importe total (decimal)
-      moneda: datosQR.moneda,                          // Moneda (3 caracteres)
-      ctz: parseFloat(datosQR.ctz),                    // Cotización
-      tipoDocRec: parseInt(datosQR.tipoDocRec),        // Tipo doc receptor (hasta 2 dígitos)
-      nroDocRec: parseInt(datosQR.nroDocRec),          // Número doc receptor (hasta 20 dígitos)
-      tipoCodAut: datosQR.tipoCodAut,                  // Tipo autorización ("E" o "A")
-      codAut: parseInt(datosQR.codAut)                 // CAE (14 dígitos)
-    };
-
-    console.log('📋 JSON construido:', JSON.stringify(jsonComprobante, null, 2));
-
-    // ✅ CODIFICAR EN BASE64
-    const jsonString = JSON.stringify(jsonComprobante);
-    const base64Data = Buffer.from(jsonString, 'utf8').toString('base64');
-    
-    console.log('🔐 Datos codificados en Base64');
-    
-    // ✅ CONSTRUIR URL SEGÚN ESPECIFICACIÓN ARCA
-    const qrUrl = `https://www.arca.gob.ar/fe/qr/?p=${base64Data}`;
-    
-    console.log('🔗 URL del QR:', qrUrl);
-    
-    // ✅ GENERAR IMAGEN QR
-    const qrBase64 = await QRCode.toDataURL(qrUrl, {
-      errorCorrectionLevel: 'M',
-      type: 'image/png',
-      width: 200,
-      margin: 1
-    });
-
-    console.log('✅ QR generado exitosamente');
-
-    res.json({ 
-      success: true, 
-      qrBase64,
-      qrUrl,
-      qrData: jsonComprobante
-    });
-
-  } catch (error) {
-    console.error('❌ Error generando QR:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Error generando código QR',
-      details: error.message 
-    });
   }
-});
-
-
-
-/**
- * CREAR NOTA DE CRÉDITO A
- * POST /arca/notas-credito/tipo-a
- * 
- * Body: {
- *   facturaAsociada: { tipo: number, puntoVenta: number, numero: number, cuit?: string, fecha?: number },
- *   cuit: string,
- *   items: Array<{ descripcion, cantidad, precioUnitario, alicuotaIVA }>,
- *   opciones?: { concepto?, condicionIVA?, puntoVenta?, observaciones? }
- * }
- */
-router.post('/notas-credito/tipo-a', 
-  ...writeConfiguracion,
-  verificarControlador, 
-  (req, res) => billingController.crearNotaCreditoA(req, res)
 );
 
-/**
- * CREAR NOTA DE CRÉDITO B
- * POST /arca/notas-credito/tipo-b
- * 
- * Body: {
- *   facturaAsociada: { tipo: number, puntoVenta: number, numero: number, fecha?: number },
- *   items: Array<{ descripcion, cantidad, precioUnitario, alicuotaIVA }>,
- *   opciones?: { dni?, concepto?, condicionIVA?, puntoVenta?, observaciones? }
- * }
- */
-router.post('/notas-credito/tipo-b', 
+router.post('/notas-credito/tipo-a',
+  apiRateLimiter,
   ...writeConfiguracion,
-  verificarControlador, 
-  (req, res) => billingController.crearNotaCreditoB(req, res)
+  verificarControlador,
+  (req, res) => withBillingHandler('crearNotaCreditoA')(req, res)
 );
 
-/**
- * CREAR NOTA DE CRÉDITO (AUTO-DETECTA TIPO A O B)
- * POST /arca/notas-credito
- * 
- * Body: {
- *   facturaAsociada: { tipo: number, puntoVenta: number, numero: number, cuit?: string, fecha?: number },
- *   datosCliente: { cuit?: string, dni?: string, condicionIVA: number },
- *   items: Array<{ descripcion, cantidad, precioUnitario, alicuotaIVA }>,
- *   opciones?: { concepto?, puntoVenta?, observaciones? }
- * }
- */
-router.post('/notas-credito', 
+router.post('/notas-credito/tipo-b',
+  apiRateLimiter,
   ...writeConfiguracion,
-  verificarControlador, 
-  (req, res) => billingController.crearNotaCreditoGeneral(req, res)
+  verificarControlador,
+  (req, res) => withBillingHandler('crearNotaCreditoB')(req, res)
 );
 
-/**
- * CREAR NOTA DE DÉBITO A
- * POST /arca/notas-debito/tipo-a
- * 
- * Body: {
- *   facturaAsociada: { tipo: number, puntoVenta: number, numero: number, cuit?: string, fecha?: number },
- *   cuit: string,
- *   items: Array<{ descripcion, cantidad, precioUnitario, alicuotaIVA }>,
- *   opciones?: { concepto?, condicionIVA?, puntoVenta?, observaciones? }
- * }
- */
-router.post('/notas-debito/tipo-a', 
+router.post('/notas-credito',
+  apiRateLimiter,
   ...writeConfiguracion,
-  verificarControlador, 
-  (req, res) => billingController.crearNotaDebitoA(req, res)
+  verificarControlador,
+  (req, res) => withBillingHandler('crearNotaCreditoGeneral')(req, res)
 );
 
-/**
- * CREAR NOTA DE DÉBITO B
- * POST /arca/notas-debito/tipo-b
- * 
- * Body: {
- *   facturaAsociada: { tipo: number, puntoVenta: number, numero: number, fecha?: number },
- *   items: Array<{ descripcion, cantidad, precioUnitario, alicuotaIVA }>,
- *   opciones?: { dni?, concepto?, condicionIVA?, puntoVenta?, observaciones? }
- * }
- */
-router.post('/notas-debito/tipo-b', 
+router.post('/notas-debito/tipo-a',
+  apiRateLimiter,
   ...writeConfiguracion,
-  verificarControlador, 
-  (req, res) => billingController.crearNotaDebitoB(req, res)
+  verificarControlador,
+  (req, res) => withBillingHandler('crearNotaDebitoA')(req, res)
 );
 
-/**
- * CREAR NOTA DE DÉBITO (AUTO-DETECTA TIPO A O B)
- * POST /arca/notas-debito
- * 
- * Body: {
- *   facturaAsociada: { tipo: number, puntoVenta: number, numero: number, cuit?: string, fecha?: number },
- *   datosCliente: { cuit?: string, dni?: string, condicionIVA: number },
- *   items: Array<{ descripcion, cantidad, precioUnitario, alicuotaIVA }>,
- *   opciones?: { concepto?, puntoVenta?, observaciones? }
- * }
- */
-router.post('/notas-debito', 
+router.post('/notas-debito/tipo-b',
+  apiRateLimiter,
   ...writeConfiguracion,
-  verificarControlador, 
-  (req, res) => billingController.crearNotaDebitoGeneral(req, res)
+  verificarControlador,
+  (req, res) => withBillingHandler('crearNotaDebitoB')(req, res)
+);
+
+router.post('/notas-debito',
+  apiRateLimiter,
+  ...writeConfiguracion,
+  verificarControlador,
+  (req, res) => withBillingHandler('crearNotaDebitoGeneral')(req, res)
 );
 
 module.exports = router;

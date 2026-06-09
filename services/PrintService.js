@@ -8,7 +8,7 @@ const { buildKitchenPayload } = require('./print/buildKitchenPayload');
 const { buildCustomerPayload } = require('./print/buildCustomerPayload');
 
 /**
- * Obtener PrintPayload v1 para comanda de cocina
+ * Obtener PrintPayload v1 para ticket comandera (disponible desde pedido creado)
  * @param {number} pedidoId
  */
 const obtenerDatosComanda = async (pedidoId) => {
@@ -73,7 +73,7 @@ const buscarVentaAsociada = async (pedidoId) => {
 };
 
 /**
- * Obtener PrintPayload v1 para ticket de cliente
+ * Obtener PrintPayload v1 para factura oficial ARCA (pedido ENTREGADO + CAE OK)
  * @param {number} pedidoId
  */
 const obtenerDatosTicket = async (pedidoId) => {
@@ -85,9 +85,9 @@ const obtenerDatosTicket = async (pedidoId) => {
 
     const pedido = pedidos[0];
 
-    if (pedido.estado_pago !== 'PAGADO') {
+    if (String(pedido.estado || '').trim().toUpperCase() !== 'ENTREGADO') {
         throw new Error(
-            `El pedido ${pedidoId} no está pagado. Estado actual: ${pedido.estado_pago || 'DEBE'}`
+            `El pedido ${pedidoId} no está entregado. La factura ARCA solo puede imprimirse cuando el pedido está ENTREGADO.`
         );
     }
 
@@ -95,6 +95,12 @@ const obtenerDatosTicket = async (pedidoId) => {
 
     if (!venta) {
         throw new Error(`No existe una venta asociada al pedido ${pedidoId}`);
+    }
+
+    if (!venta.cae_id || String(venta.cae_estado || '').trim().toUpperCase() !== 'OK') {
+        throw new Error(
+            `CAE pendiente de autorización ARCA para el pedido ${pedidoId}. Reintentá en unos minutos.`
+        );
     }
 
     const [articulosVenta] = await db.execute(

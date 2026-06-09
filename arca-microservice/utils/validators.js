@@ -5,6 +5,7 @@ import {
   CONCEPTOS,
   validarCombinaciónComprobanteIVA,
   esExento,
+  esComprobanteC,
   esNotaCredito,
   esNotaDebito
 } from '../types/billing.types.js';
@@ -197,15 +198,27 @@ if (!validNC.valido) {
     );
   }
   
-  // ✅ 7. Validar IVA (TODOS deben tener array Iva)
+  // ✅ 7. Validar IVA — Factura C no usa array Iva
 const esReceptorExento = esExento(datos.CondicionIVAReceptorId);
+const esFacturaC = esComprobanteC(datos.CbteTipo);
 
-// SIEMPRE debe tener array Iva si ImpNeto > 0
-if (datos.ImpNeto > 0 && (!datos.Iva || datos.Iva.length === 0)) {
+if (esFacturaC) {
+  if (impIVAParsed !== 0) {
+    errores.push('Para comprobantes tipo C, ImpIVA debe ser 0');
+  }
+  if (datos.Iva && datos.Iva.length > 0) {
+    errores.push('Los comprobantes tipo C no deben incluir el array Iva');
+  }
+  if (Math.abs(impNetoParsed - impTotalParsed) > 0.01) {
+    errores.push(
+      `Para comprobantes tipo C, ImpNeto (${impNetoParsed}) debe coincidir con ImpTotal (${impTotalParsed})`
+    );
+  }
+} else if (datos.ImpNeto > 0 && (!datos.Iva || datos.Iva.length === 0)) {
   errores.push('Si ImpNeto > 0, debe incluir el array Iva (usar alícuota 3 con Importe 0 para exentos)');
 }
 
-if (datos.Iva && datos.Iva.length > 0) {
+if (!esFacturaC && datos.Iva && datos.Iva.length > 0) {
   let sumaBaseImp = 0;
   let sumaIVA = 0;
   

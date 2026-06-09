@@ -8,16 +8,18 @@ describe('FondosArcaRoutingService', () => {
     assert.equal(FondosArcaRouting.normalizarMedioPago('efectivo'), 'EFECTIVO');
   });
 
-  it('requiereArca solo para MP y tarjetas', () => {
+  it('requiereArca para MP, tarjetas y transferencia facturada', () => {
     assert.equal(FondosArcaRouting.requiereArca('MERCADOPAGO'), true);
     assert.equal(FondosArcaRouting.requiereArca('DEBITO'), true);
     assert.equal(FondosArcaRouting.requiereArca('CREDITO'), true);
+    assert.equal(FondosArcaRouting.requiereArca('TRANSFERENCIA_FACTURADA'), true);
     assert.equal(FondosArcaRouting.requiereArca('EFECTIVO'), false);
     assert.equal(FondosArcaRouting.requiereArca('TRANSFERENCIA'), false);
   });
 
-  it('resuelve tipo factura B o X', () => {
-    assert.equal(FondosArcaRouting.resolverTipoFactura('DEBITO'), 'B');
+  it('resuelve tipo factura C o X', () => {
+    assert.equal(FondosArcaRouting.resolverTipoFactura('DEBITO'), 'C');
+    assert.equal(FondosArcaRouting.resolverTipoFactura('TRANSFERENCIA_FACTURADA'), 'C');
     assert.equal(FondosArcaRouting.resolverTipoFactura('EFECTIVO'), 'X');
   });
 

@@ -1,23 +1,15 @@
 const { solicitarCaeParaVenta } = require('../services/ArcaFacturacionService');
+const { getBillingController } = require('../lib/billingControllerLoader');
 
-let billingController;
-
-(async () => {
-  try {
-    const billingModule = await import('../arca-microservice/controllers/billing.controller.js');
-    billingController = billingModule.default;
-  } catch (error) {
-    console.error('❌ Error cargando microservicio ARCA:', error.message);
-  }
-})();
-
-const verificarARCA = (req, res, next) => {
+const verificarARCA = async (req, res, next) => {
+  const billingController = await getBillingController();
   if (!billingController) {
     return res.status(503).json({
       success: false,
       message: 'Servicio ARCA no disponible. Intente nuevamente en unos segundos.'
     });
   }
+  req.billingController = billingController;
   next();
 };
 
@@ -81,6 +73,7 @@ const solicitarCAEBatch = async (req, res) => {
 
 const healthCheck = async (req, res) => {
   try {
+    const billingController = await getBillingController();
     if (!billingController) {
       return res.status(503).json({ success: false, message: 'Servicio ARCA no disponible' });
     }

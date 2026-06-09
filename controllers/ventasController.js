@@ -202,7 +202,7 @@ const crearVenta = async (req, res) => {
             ventaId
         );
 
-        if (FondosArcaRouting.requiereArca(medioVenta)) {
+        if (FondosArcaRouting.requiereArca(medioVenta) && !pedidoId) {
             const { encolarSolicitudCae } = require('../services/ArcaFacturacionService');
             encolarSolicitudCae(ventaId, req.app?.get('io') || null);
         }
@@ -817,12 +817,111 @@ const obtenerMediosPago = async (req, res) => {
     }
 };
 
+/**
+ * Solicitar factura ARCA manualmente para una venta
+ * POST /ventas/:id/solicitar-factura
+ */
+const solicitarFacturaVenta = async (req, res) => {
+    try {
+        const { id } = req.validatedParams || req.params;
+        const ventaId = Number(id);
+
+        const [ventas] = await db.execute(
+            `SELECT id, estado, cae_id, cae_estado, tipo_factura, medio_pago, pedido_id
+             FROM ventas WHERE id = ?`,
+            [ventaId]
+        );
+
+        if (!ventas.length) {
+            return res.status(404).json({
+                success: false,
+                message: 'Venta no encontrada'
+            });
+        }
+
+        const venta = ventas[0];
+
+        if (venta.estado !== 'FACTURADA') {
+            return res.status(400).json({
+                success: false,
+                message: 'Solo se puede facturar una venta en estado FACTURADA',
+                code: 'VENTA_NO_FACTURADA'
+            });
+        }
+
+        if (venta.cae_id) {
+            return res.status(200).json({
+                success: true,
+                message: 'La venta ya tiene CAE emitido',
+                data: { venta_id: ventaId, cae_id: venta.cae_id, existing: true }
+            });
+        }
+
+        const caeEstado = String(venta.cae_estado || '').trim().toUpperCase();
+        const estadosPermitidos = ['NO_APLICA', 'PENDIENTE', 'ERROR', 'ERROR_PERMANENTE'];
+        if (!estadosPermitidos.includes(caeEstado)) {
+            return res.status(400).json({
+                success: false,
+                message: `Estado CAE no permite solicitud manual: ${caeEstado}`,
+                code: 'CAE_ESTADO_INVALIDO'
+            });
+        }
+
+        if (caeEstado === 'NO_APLICA') {
+            await db.execute(
+                `UPDATE ventas SET tipo_factura = 'C', cae_estado = 'PENDIENTE', cae_mensaje_error = NULL WHERE id = ?`,
+                [ventaId]
+            );
+        } else if (caeEstado === 'ERROR' || caeEstado === 'ERROR_PERMANENTE') {
+            await db.execute(
+                `UPDATE ventas SET cae_estado = 'PENDIENTE', cae_mensaje_error = NULL WHERE id = ?`,
+                [ventaId]
+            );
+        }
+
+        const { solicitarCaeParaVenta } = require('../services/ArcaFacturacionService');
+        const io = req.app?.get('io') || null;
+        const resultado = await solicitarCaeParaVenta(ventaId, io);
+
+        if (!resultado.success && !resultado.existing) {
+            return res.status(502).json({
+                success: false,
+                message: resultado.error || resultado.message || 'Error al solicitar factura ARCA',
+                code: 'ARCA_SOLICITUD_FALLIDA'
+            });
+        }
+
+        const [ventaActualizada] = await db.execute(
+            `SELECT id, cae_id, cae_estado, numero_factura, tipo_factura FROM ventas WHERE id = ?`,
+            [ventaId]
+        );
+
+        return res.json({
+            success: true,
+            message: resultado.existing ? 'La venta ya tenía CAE' : 'Factura ARCA solicitada correctamente',
+            data: {
+                venta: ventaActualizada[0] || null,
+                cae: resultado.cae || ventaActualizada[0]?.cae_id,
+                numero_factura: resultado.numero_factura || ventaActualizada[0]?.numero_factura
+            }
+        });
+    } catch (error) {
+        console.error('❌ Error al solicitar factura venta:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Error al solicitar factura ARCA',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+};
+
 module.exports = {
     // CRUD principal
     crearVenta,
     obtenerVentas,
     obtenerVentaPorId,
     anularVenta,
+    solicitarFacturaVenta,
     
     // Auxiliares
     obtenerResumenVentas,

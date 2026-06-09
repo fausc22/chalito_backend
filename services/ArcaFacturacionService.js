@@ -2,18 +2,13 @@ const db = require('../controllers/dbPromise');
 const { roundFacturacion } = require('../utils/rounding');
 const { sincronizarNumeroAprobado } = require('../utils/numeracionARCA');
 const FondosArcaRouting = require('./FondosArcaRoutingService');
+const { buscarVentaAsociada } = require('./PrintService');
 
 const IVA_RATE = 1.21;
-let billingController = null;
+const TIPO_COMPROBANTE_FACTURA_B = 6;
+const TIPO_COMPROBANTE_FACTURA_C = 11;
 
-(async () => {
-  try {
-    const billingModule = await import('../arca-microservice/controllers/billing.controller.js');
-    billingController = billingModule.default;
-  } catch (error) {
-    console.error('❌ Error cargando billing ARCA:', error.message);
-  }
-})();
+const { getBillingController } = require('../lib/billingControllerLoader');
 
 function obtenerFechaActualARCA() {
   const ahora = new Date();
@@ -38,10 +33,92 @@ async function executeWithConnection(connection, query, params = []) {
   return rows;
 }
 
+function ventaRequiereCae(venta) {
+  const tipo = String(venta.tipo_factura || '').trim().toUpperCase();
+  if (tipo === 'C' || tipo === 'B') {
+    return FondosArcaRouting.requiereArca(venta.medio_pago);
+  }
+  return false;
+}
+
+function buildItemsFacturaC(productosRows) {
+  return productosRows.map((prod) => {
+    const cantidad = parseFloat(prod.cantidad) || 0;
+    const precioFinal = parseFloat(prod.precio) || 0;
+    return {
+      descripcion: prod.articulo_nombre,
+      cantidad,
+      precioUnitario: roundFacturacion(precioFinal),
+      alicuotaIVA: 3
+    };
+  });
+}
+
+function buildItemsFacturaB(productosRows) {
+  return productosRows.map((prod) => {
+    const cantidad = parseFloat(prod.cantidad) || 0;
+    const precioFinal = parseFloat(prod.precio) || 0;
+    const precioNeto = roundFacturacion(precioFinal / IVA_RATE);
+    return {
+      descripcion: prod.articulo_nombre,
+      cantidad,
+      precioUnitario: precioNeto,
+      alicuotaIVA: 5
+    };
+  });
+}
+
+function buildDatosFacturaC(venta, productosRows, puntoVenta) {
+  const totalVenta = roundFacturacion(parseFloat(venta.total) || 0);
+  return {
+    tipoComprobante: TIPO_COMPROBANTE_FACTURA_C,
+    concepto: 1,
+    cliente: {
+      tipoDocumento: 99,
+      numeroDocumento: 0,
+      condicionIVA: 5
+    },
+    items: buildItemsFacturaC(productosRows),
+    fecha: obtenerFechaActualARCA(),
+    moneda: 'PES',
+    cotizacionMoneda: 1,
+    impNeto: totalVenta,
+    impIVA: 0,
+    impOpEx: 0,
+    impTotal: totalVenta,
+    puntoVenta
+  };
+}
+
+function buildDatosFacturaB(venta, productosRows, puntoVenta) {
+  const subtotalFinal = roundFacturacion(parseFloat(venta.subtotal) || 0);
+  const ivaFinal = roundFacturacion(parseFloat(venta.iva_total) || 0);
+  const totalVenta = roundFacturacion(parseFloat(venta.total) || 0);
+  return {
+    tipoComprobante: TIPO_COMPROBANTE_FACTURA_B,
+    concepto: 1,
+    cliente: {
+      tipoDocumento: 99,
+      numeroDocumento: 0,
+      condicionIVA: 5
+    },
+    items: buildItemsFacturaB(productosRows),
+    fecha: obtenerFechaActualARCA(),
+    moneda: 'PES',
+    cotizacionMoneda: 1,
+    impNeto: subtotalFinal,
+    impIVA: ivaFinal,
+    impOpEx: 0,
+    impTotal: totalVenta,
+    puntoVenta
+  };
+}
+
 /**
- * Solicita CAE para una venta Factura B consumidor final.
+ * Solicita CAE para una venta (Factura C monotributista o B histórica).
  */
 async function solicitarCaeParaVenta(ventaId, io = null) {
+  const billingController = await getBillingController();
   if (!billingController) {
     await marcarCaeError(ventaId, 'Servicio ARCA no disponible');
     return { success: false, message: 'Servicio ARCA no disponible' };
@@ -60,11 +137,13 @@ async function solicitarCaeParaVenta(ventaId, io = null) {
   if (venta.cae_id) {
     return { success: true, existing: true, cae: venta.cae_id };
   }
-  if (venta.tipo_factura !== 'B' || !FondosArcaRouting.requiereArca(venta.medio_pago)) {
+  if (!ventaRequiereCae(venta)) {
     return { success: false, message: 'Venta no requiere CAE' };
   }
 
-  const lockName = `arca_cae_B_${process.env.DEFAULT_PUNTO_VENTA || 1}`;
+  const tipoFactura = String(venta.tipo_factura || '').trim().toUpperCase();
+  const esFacturaC = tipoFactura === 'C';
+  const lockName = `arca_cae_${esFacturaC ? 'C' : 'B'}_${process.env.DEFAULT_PUNTO_VENTA || 1}`;
   let lockConnection = null;
   let lockAcquired = false;
   let intentoId = null;
@@ -99,42 +178,10 @@ async function solicitarCaeParaVenta(ventaId, io = null) {
       throw new Error('Sin ítems en la venta');
     }
 
-    const items = productosRows.map((prod) => {
-      const cantidad = parseFloat(prod.cantidad) || 0;
-      const precioFinal = parseFloat(prod.precio) || 0;
-      const precioNeto = roundFacturacion(precioFinal / IVA_RATE);
-      return {
-        descripcion: prod.articulo_nombre,
-        cantidad,
-        precioUnitario: precioNeto,
-        alicuotaIVA: 5
-      };
-    });
-
-    const subtotalFinal = roundFacturacion(parseFloat(venta.subtotal) || 0);
-    const ivaFinal = roundFacturacion(parseFloat(venta.iva_total) || 0);
-    const totalVenta = roundFacturacion(parseFloat(venta.total) || 0);
-    const fechaFormateada = obtenerFechaActualARCA();
     const puntoVenta = parseInt(process.env.DEFAULT_PUNTO_VENTA, 10) || 1;
-
-    const datosFactura = {
-      tipoComprobante: 6,
-      concepto: 1,
-      cliente: {
-        tipoDocumento: 99,
-        numeroDocumento: 0,
-        condicionIVA: 5
-      },
-      items,
-      fecha: fechaFormateada,
-      moneda: 'PES',
-      cotizacionMoneda: 1,
-      impNeto: subtotalFinal,
-      impIVA: ivaFinal,
-      impOpEx: 0,
-      impTotal: totalVenta,
-      puntoVenta
-    };
+    const datosFactura = esFacturaC
+      ? buildDatosFacturaC(venta, productosRows, puntoVenta)
+      : buildDatosFacturaB(venta, productosRows, puntoVenta);
 
     const [intentoInsert] = await db.execute(
       `INSERT INTO arca_solicitudes_log (venta_id, request_data, estado) VALUES (?, ?, 'EN_PROCESO')`,
@@ -170,15 +217,15 @@ async function solicitarCaeParaVenta(ventaId, io = null) {
       datosRespuesta?.fechaVencimiento;
     const caeResultado = datosRespuesta?.autorizacion?.resultado || 'A';
     const numeroAprobado = datosRespuesta?.comprobante?.numero || datosRespuesta?.voucher_number;
+    const prefijoTipo = esFacturaC ? 'C' : 'B';
     const numeroCompleto = numeroAprobado
-      ? `B ${String(puntoVenta).padStart(4, '0')}-${String(numeroAprobado).padStart(8, '0')}`
+      ? `${prefijoTipo} ${String(puntoVenta).padStart(4, '0')}-${String(numeroAprobado).padStart(8, '0')}`
       : null;
 
     if (!cae) {
       throw new Error('Respuesta ARCA sin CAE');
     }
 
-    const fechaFiscalSql = arcaFechaToSqlDate(fechaFormateada);
     await db.execute(
       `UPDATE ventas SET
         cae_id = ?, cae_fecha = ?, cae_resultado = ?, cae_estado = 'OK',
@@ -200,7 +247,7 @@ async function solicitarCaeParaVenta(ventaId, io = null) {
       try {
         const syncConn = await getDbConnection();
         try {
-          await sincronizarNumeroAprobado(syncConn, 'B', numeroAprobado, puntoVenta);
+          await sincronizarNumeroAprobado(syncConn, prefijoTipo, numeroAprobado, puntoVenta);
         } finally {
           syncConn.release();
         }
@@ -250,8 +297,27 @@ function encolarSolicitudCae(ventaId, io = null) {
   });
 }
 
+/**
+ * Encola CAE cuando un pedido pasa a ENTREGADO (post-commit).
+ */
+async function encolarCaeTrasEntregaPedido(pedidoId, io = null) {
+  try {
+    const venta = await buscarVentaAsociada(pedidoId);
+    if (!venta || venta.cae_id) return;
+    if (!ventaRequiereCae(venta)) return;
+    const estadoCae = String(venta.cae_estado || '').trim().toUpperCase();
+    if (estadoCae === 'PENDIENTE' || estadoCae === 'ERROR') {
+      encolarSolicitudCae(venta.id, io);
+    }
+  } catch (err) {
+    console.warn(`⚠️ encolarCaeTrasEntregaPedido #${pedidoId}:`, err.message);
+  }
+}
+
 module.exports = {
   solicitarCaeParaVenta,
   encolarSolicitudCae,
-  marcarCaeError
+  encolarCaeTrasEntregaPedido,
+  marcarCaeError,
+  ventaRequiereCae
 };

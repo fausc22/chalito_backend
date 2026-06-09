@@ -9,7 +9,7 @@ const {
 const FondosArcaRouting = require('./FondosArcaRoutingService');
 const CuentasSistema = require('./CuentasSistemaService');
 const { buscarVentaAsociada } = require('./PrintService');
-const { encolarSolicitudCae } = require('./ArcaFacturacionService');
+const FondosArcaRouting = require('./FondosArcaRoutingService');
 
 /**
  * Cobro idempotente de pedido → venta + movimiento de fondos.
@@ -234,11 +234,8 @@ async function ejecutarPostCobro(result, req = null) {
 
   const pedidoId = result.pedido?.id ?? result.pedidoId;
   const ventaId = result.ventaId;
-  const requiereArca = result.requiereArca;
 
-  if (requiereArca && ventaId) {
-    encolarSolicitudCae(ventaId, req?.app?.get('io') || null);
-  }
+  // CAE se encola al marcar pedido ENTREGADO (no al cobrar)
 
   try {
     const { OrderQueueEngine } = require('./OrderQueueEngine');

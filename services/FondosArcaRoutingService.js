@@ -1,4 +1,4 @@
-const MEDIOS_ARCA = new Set(['MERCADOPAGO', 'DEBITO', 'CREDITO']);
+const MEDIOS_ARCA = new Set(['MERCADOPAGO', 'DEBITO', 'CREDITO', 'TRANSFERENCIA_FACTURADA']);
 
 function normalizarMedioPago(medioPago) {
   return String(medioPago || 'EFECTIVO').trim().toUpperCase();
@@ -9,7 +9,7 @@ function requiereArca(medioPago) {
 }
 
 function resolverTipoFactura(medioPago) {
-  return requiereArca(medioPago) ? 'B' : 'X';
+  return requiereArca(medioPago) ? 'C' : 'X';
 }
 
 function resolverCaeEstadoInicial(medioPago) {
