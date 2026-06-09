@@ -267,7 +267,7 @@ function construirPreferenciaPayloadDesdeSesion({
         items: [
             {
                 id: `sesion_${sessionId}`,
-                title: `Pedido web El Chalito (pago pendiente)`,
+                title: `Pedido El Chalito`,
                 description: descripcion,
                 quantity: 1,
                 currency_id: MONEDA_ARS,
