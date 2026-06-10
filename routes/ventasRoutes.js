@@ -21,7 +21,7 @@ const {
     idParamSchema
 } = require('../validators/ventasValidators');
 
-router.get('/resumen', apiRateLimiter, ...readVentas, obtenerResumenVentas);
+router.get('/resumen', apiRateLimiter, ...writeVentas, obtenerResumenVentas);
 router.get('/medios-pago', apiRateLimiter, ...readVentas, obtenerMediosPago);
 
 router.get('/', apiRateLimiter, ...readVentas, obtenerVentas);

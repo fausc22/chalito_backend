@@ -70,7 +70,7 @@ const ROLE_ACCESS = {
     [MODULES.DASHBOARD]: 'read',
     [MODULES.PEDIDOS]: 'write',
     [MODULES.COCINA]: 'read',
-    [MODULES.VENTAS]: 'write',
+    [MODULES.VENTAS]: 'read',
     [MODULES.INVENTARIO]: null,
     [MODULES.EMPLEADOS]: null,
     [MODULES.GASTOS]: null,

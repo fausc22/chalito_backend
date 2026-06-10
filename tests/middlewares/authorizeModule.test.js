@@ -32,3 +32,16 @@ test('authorizeModule permite GERENTE en gastos', async () => {
   const result = await runMiddleware(mw, { user: { rol: 'GERENTE', id: 2 } });
   assert.equal(result.statusCode, 200);
 });
+
+test('authorizeModule bloquea CAJERO en ventas write', async () => {
+  const mw = authorizeModule(MODULES.VENTAS, 'write');
+  const result = await runMiddleware(mw, { user: { rol: 'CAJERO', id: 3 } });
+  assert.equal(result.statusCode, 403);
+  assert.equal(result.body?.code, 'INSUFFICIENT_PERMISSION');
+});
+
+test('authorizeModule permite CAJERO en ventas read', async () => {
+  const mw = authorizeModule(MODULES.VENTAS, 'read');
+  const result = await runMiddleware(mw, { user: { rol: 'CAJERO', id: 3 } });
+  assert.equal(result.statusCode, 200);
+});

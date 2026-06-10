@@ -10,8 +10,8 @@ const COLOR_KEYS = {
     TIENDA_COLOR_SECUNDARIO: 'TIENDA_COLOR_SECUNDARIO'
 };
 
-const DEFAULT_COLOR_PRIMARIO = '#1D4ED8';
-const DEFAULT_COLOR_SECUNDARIO = '#88E1F2';
+const DEFAULT_COLOR_PRIMARIO = '#0D0D0D';
+const DEFAULT_COLOR_SECUNDARIO = '#EA580C';
 const HEX_REGEX = /^#[0-9A-F]{6}$/i;
 
 const CACHE_TTL_MS = 30_000;
@@ -79,7 +79,18 @@ const getSettings = async () => {
     }
 };
 
-const getPublicBranding = async () => getSettings();
+const getPublicBranding = async () => {
+    const carouselSettingsService = require('./carouselSettingsService');
+    const [settings, carousel] = await Promise.all([
+        getSettings(),
+        carouselSettingsService.getPublicCarousel()
+    ]);
+
+    return {
+        ...settings,
+        carousel
+    };
+};
 
 const getTiendaApariencia = async () => {
     const settings = await getSettings();

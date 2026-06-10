@@ -128,11 +128,7 @@ async function emitirSocketPostWebhook(io, resultado) {
 
 async function aplicarAutoCobroPostMp(io, resultado) {
     const estado = String(resultado?.estadoPagoInterno || '').toUpperCase();
-    if (
-        !resultado?.pedidoId ||
-        estado !== 'PAGADO' ||
-        (!resultado.esPagoNuevo && !resultado.pagoRecienConfirmadoLegacy)
-    ) {
+    if (!resultado?.pedidoId || estado !== 'PAGADO') {
         return resultado;
     }
     try {
@@ -145,6 +141,11 @@ async function aplicarAutoCobroPostMp(io, resultado) {
         });
         if (auto.success && auto.pedido) {
             resultado.autoCobroSnapshot = { ventaId: auto.ventaId, pedido: auto.pedido };
+        } else if (!auto.success) {
+            console.warn(
+                `⚠️ [MP] Auto-cobro incompleto pedido #${resultado.pedidoId}:`,
+                auto.message || auto.code || 'sin detalle'
+            );
         }
     } catch (err) {
         console.error(`❌ [MP] Auto-cobro pedido #${resultado.pedidoId}:`, err.message);

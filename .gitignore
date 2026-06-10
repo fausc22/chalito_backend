@@ -23,6 +23,12 @@ package-lock.json
 # ARCA WSAA tickets (runtime)
 storage/arca-tickets/
 
+# ARCA/AFIP — certificados y claves privadas (NUNCA commitear)
+arca-microservice/certs/*.crt
+arca-microservice/certs/*.key
+arca-microservice/certs/*.pem
+!arca-microservice/certs/README.md
+arca-microservice/certs/
 # Logs
 logs/
 *.log

@@ -267,7 +267,7 @@ function construirPreferenciaPayloadDesdeSesion({
         items: [
             {
                 id: `sesion_${sessionId}`,
-                title: `Pedido web El Chalito (pago pendiente)`,
+                title: `Pedido El Chalito`,
                 description: descripcion,
                 quantity: 1,
                 currency_id: MONEDA_ARS,
@@ -979,7 +979,9 @@ async function ejecutarMantenimientoSesionesMercadoPago(db) {
     );
 
     if (pendientes.length === 0) {
-        return { reconciliadas: 0 };
+        const { reconciliarPedidosMpPagadosSinVenta } = require('./PedidoPostPagoService');
+        const ventasRecuperadas = await reconciliarPedidosMpPagadosSinVenta();
+        return { reconciliadas: 0, ventasRecuperadas: ventasRecuperadas.recuperados ?? 0 };
     }
 
     const client = getMercadoPagoClient();
@@ -1006,14 +1008,38 @@ async function ejecutarMantenimientoSesionesMercadoPago(db) {
 
             const full = await paymentClient.get({ id: pid });
             const resumen = construirResumenPagoMp(full);
-            await procesarPagoMercadoPagoInterno(db, resumen, String(pid));
+            const resultadoPago = await procesarPagoMercadoPagoInterno(db, resumen, String(pid));
+
+            if (resultadoPago?.pedidoId && String(resultadoPago.estadoPagoInterno || '').toUpperCase() === 'PAGADO') {
+                try {
+                    const { procesarAprobacionMercadoPago } = require('./PedidoPostPagoService');
+                    await procesarAprobacionMercadoPago({
+                        pedidoId: resultadoPago.pedidoId,
+                        paymentId: String(pid),
+                        resumenPagoMp: resumen,
+                        io: null
+                    });
+                } catch (autoCobroErr) {
+                    console.warn(
+                        `⚠️ [MP][Worker] Auto-cobro pedido #${resultadoPago.pedidoId}:`,
+                        autoCobroErr.message
+                    );
+                }
+            }
+
             reconciliadas += 1;
         } catch (e) {
             console.warn(`⚠️ [MP][Worker] Reconciliación sesión ${row.id}:`, e.message);
         }
     }
 
-    return { reconciliadas };
+    const { reconciliarPedidosMpPagadosSinVenta } = require('./PedidoPostPagoService');
+    const ventasRecuperadas = await reconciliarPedidosMpPagadosSinVenta();
+
+    return {
+        reconciliadas,
+        ventasRecuperadas: ventasRecuperadas.recuperados ?? 0
+    };
 }
 
 module.exports = {

@@ -42,7 +42,7 @@ class MercadoPagoWorker {
         const resultado = await ejecutarMantenimientoSesionesMercadoPago(db);
         const ms = Date.now() - inicio;
         console.log(
-            `✅ [MercadoPagoWorker] Ciclo #${this.executionCount} (${ms}ms) reconciliadas=${resultado.reconciliadas ?? 0}`
+            `✅ [MercadoPagoWorker] Ciclo #${this.executionCount} (${ms}ms) reconciliadas=${resultado.reconciliadas ?? 0} ventas=${resultado.ventasRecuperadas ?? 0}`
         );
         return resultado;
     }

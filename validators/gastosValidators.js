@@ -18,7 +18,6 @@ const crearGastoSchema = z.object({
         .optional()
         .nullable()
         .default('EFECTIVO'),
-    cuenta_id: z.number().int().positive('El ID de cuenta es obligatorio y debe ser un número positivo'),
     observaciones: z.string()
         .max(255, 'Las observaciones no pueden exceder 255 caracteres')
         .optional()
@@ -40,7 +39,6 @@ const editarGastoSchema = z.object({
         .max(50, 'La forma de pago no puede exceder 50 caracteres')
         .optional()
         .nullable(),
-    cuenta_id: z.number().int().positive('El ID de cuenta debe ser un número positivo').optional(),
     observaciones: z.string()
         .max(255, 'Las observaciones no pueden exceder 255 caracteres')
         .optional()
