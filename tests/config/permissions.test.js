@@ -11,9 +11,10 @@ test('GERENTE no tiene acceso a usuarios', () => {
   assert.equal(canAccess(ROLES.GERENTE, MODULES.USUARIOS, 'write'), false);
 });
 
-test('CAJERO accede pedidos y ventas pero no gastos', () => {
+test('CAJERO accede pedidos y ventas en lectura pero no gastos ni write ventas', () => {
   assert.equal(canAccess(ROLES.CAJERO, MODULES.PEDIDOS, 'write'), true);
-  assert.equal(canAccess(ROLES.CAJERO, MODULES.VENTAS, 'write'), true);
+  assert.equal(canAccess(ROLES.CAJERO, MODULES.VENTAS, 'read'), true);
+  assert.equal(canAccess(ROLES.CAJERO, MODULES.VENTAS, 'write'), false);
   assert.equal(canAccess(ROLES.CAJERO, MODULES.GASTOS, 'read'), false);
 });
 

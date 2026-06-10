@@ -9,7 +9,6 @@ const {
 const FondosArcaRouting = require('./FondosArcaRoutingService');
 const CuentasSistema = require('./CuentasSistemaService');
 const { buscarVentaAsociada } = require('./PrintService');
-const FondosArcaRouting = require('./FondosArcaRoutingService');
 
 /**
  * Cobro idempotente de pedido → venta + movimiento de fondos.
@@ -50,20 +49,24 @@ async function cobrarPedidoIdempotente({
     }
 
     if (pedido.estado_pago === 'PAGADO') {
-      if (ownConnection) await connection.rollback();
       const ventaExistente = await buscarVentaAsociada(pedidoId);
-      const pedidoCompleto = await buildPedidoSnapshotById({
-        pedidoId,
-        connection,
-        includeArticulos: true
-      });
-      return {
-        success: true,
-        cobroNuevo: false,
-        pedido: pedidoCompleto,
-        ventaId: ventaExistente?.id || null,
-        venta: ventaExistente
-      };
+      if (ventaExistente) {
+        if (ownConnection) await connection.rollback();
+        const pedidoCompleto = await buildPedidoSnapshotById({
+          pedidoId,
+          connection,
+          includeArticulos: true
+        });
+        return {
+          success: true,
+          cobroNuevo: false,
+          pedido: pedidoCompleto,
+          ventaId: ventaExistente.id,
+          venta: ventaExistente
+        };
+      }
+      // Pedido ya PAGADO (p. ej. MP) pero sin venta: continuar para reconciliar idempotentemente.
+      console.log(`🔄 [Cobro] Reconciliando venta faltante para pedido #${pedidoId} (estado_pago=PAGADO)`);
     }
 
     const [articulosPedido] = await connection.execute(

@@ -38,5 +38,6 @@ jobs:
             git reset --hard origin/test
             npm install --production
             npm run migrate
-            pm2 reload chalito-backend-test
+            pm2 startOrRestart ecosystem.config.js --update-env
+            pm2 save
             echo "✅ Deploy completado exitosamente"

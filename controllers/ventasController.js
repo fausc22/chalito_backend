@@ -2,6 +2,7 @@
 const db = require('./dbPromise');
 const { auditarOperacion, obtenerDatosAnteriores, limpiarDatosSensibles } = require('../middlewares/auditoriaMiddleware');
 const { OrderQueueEngine } = require('../services/OrderQueueEngine');
+const { canAccess, MODULES } = require('../config/permissions');
 const {
     calcularTotalesDesdePrecioFinal,
     obtenerTotalFinalDesdeRegistro,
@@ -450,20 +451,28 @@ const obtenerVentas = async (req, res) => {
         const totales = sumResult[0];
         
         console.log(`✅ Ventas encontradas: ${ventas.length}, Total: ${total}`);
-        
+
+        const rol = req.user?.rol;
+        const puedeVerMetricasVentas = canAccess(rol, MODULES.VENTAS, 'write');
+
+        const meta = {
+            pagina_actual: paginaNum,
+            total_registros: total,
+            total_paginas: Math.ceil(total / limiteNum),
+            registros_por_pagina: limiteNum,
+            hay_mas: (paginaNum * limiteNum) < total
+        };
+
+        if (puedeVerMetricasVentas) {
+            meta.total_monto = parseFloat(totales.total_monto) || 0;
+            meta.total_facturado = parseFloat(totales.total_facturado) || 0;
+            meta.total_anulado = parseFloat(totales.total_anulado) || 0;
+        }
+
         res.json({
             success: true,
             data: ventasNormalizadas,
-            meta: {
-                pagina_actual: paginaNum,
-                total_registros: total,
-                total_paginas: Math.ceil(total / limiteNum),
-                registros_por_pagina: limiteNum,
-                hay_mas: (paginaNum * limiteNum) < total,
-                total_monto: parseFloat(totales.total_monto) || 0,
-                total_facturado: parseFloat(totales.total_facturado) || 0,
-                total_anulado: parseFloat(totales.total_anulado) || 0
-            }
+            meta
         });
         
     } catch (error) {

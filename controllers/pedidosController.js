@@ -553,6 +553,7 @@ const actualizarEstadoPedido = async (req, res) => {
             console.log(`🔄 [BACKEND] Actualizando pedido ${id} de estado "${datosAnteriores.estado}" a "${estado}"`);
             
             // ✅ Validar que ENTREGAR requiere que el pedido esté COBRADO
+            let ventaReconciliadaPostCommit = null;
             if (estado === 'ENTREGADO' && datosAnteriores.estado !== 'ENTREGADO') {
                 const [pedidoInfo] = await connection.execute(
                     'SELECT estado_pago FROM pedidos WHERE id = ?',
@@ -579,7 +580,29 @@ const actualizarEstadoPedido = async (req, res) => {
                 
                 // ✅ Validar integridad: verificar que existe una venta asociada
                 const { buscarVentaAsociada } = require('../services/PrintService');
-                const venta = await buscarVentaAsociada(id);
+                let venta = await buscarVentaAsociada(id);
+                if (!venta && pedidoInfo[0].estado_pago === 'PAGADO') {
+                    console.log(`🔄 [BACKEND] Reconciliando venta faltante antes de entregar pedido #${id}`);
+                    const { reconciliarVentaPedidoPagado } = require('../services/PedidoPostPagoService');
+                    const reconciliacion = await reconciliarVentaPedidoPagado({
+                        pedidoId: id,
+                        req,
+                        connection
+                    });
+                    if (reconciliacion.success && reconciliacion.ventaId) {
+                        venta = reconciliacion.venta || { id: reconciliacion.ventaId };
+                        if (reconciliacion.cobroNuevo) {
+                            ventaReconciliadaPostCommit = reconciliacion;
+                        }
+                    } else if (!reconciliacion.success) {
+                        await connection.rollback();
+                        return res.status(400).json({
+                            success: false,
+                            message: reconciliacion.message || 'No se puede entregar un pedido sin venta asociada. El pedido debe estar cobrado primero.',
+                            code: reconciliacion.code || 'SIN_VENTA_ASOCIADA'
+                        });
+                    }
+                }
                 if (!venta) {
                     await connection.rollback();
                     return res.status(400).json({
@@ -777,10 +800,23 @@ const actualizarEstadoPedido = async (req, res) => {
             
             await connection.commit();
 
+            if (ventaReconciliadaPostCommit) {
+                try {
+                    const { ejecutarPostCobro } = require('../services/PedidoCobroService');
+                    await ejecutarPostCobro(ventaReconciliadaPostCommit, req);
+                } catch (postCobroErr) {
+                    console.warn(`⚠️ [BACKEND] Post-cobro reconciliación pedido #${id}:`, postCobroErr.message);
+                }
+            }
+
             const io = req.app.get('io');
             if (estado === 'ENTREGADO' && datosAnteriores.estado !== 'ENTREGADO') {
-                const { encolarCaeTrasEntregaPedido } = require('../services/ArcaFacturacionService');
-                await encolarCaeTrasEntregaPedido(id, io);
+                try {
+                    const { encolarCaeTrasEntregaPedido } = require('../services/ArcaFacturacionService');
+                    await encolarCaeTrasEntregaPedido(id, io);
+                } catch (caeErr) {
+                    console.warn(`⚠️ [BACKEND] CAE post-entrega pedido #${id} (no bloquea entrega):`, caeErr.message);
+                }
             }
 
             // Obtener snapshot consistente post-commit para respuesta y eventos
@@ -1528,8 +1564,12 @@ const forzarEstadoPedido = async (req, res) => {
 
         const io = req.app.get('io');
         if (estado === 'ENTREGADO' && datosAnteriores.estado !== 'ENTREGADO') {
-            const { encolarCaeTrasEntregaPedido } = require('../services/ArcaFacturacionService');
-            await encolarCaeTrasEntregaPedido(id, io);
+            try {
+                const { encolarCaeTrasEntregaPedido } = require('../services/ArcaFacturacionService');
+                await encolarCaeTrasEntregaPedido(id, io);
+            } catch (caeErr) {
+                console.warn(`⚠️ [BACKEND] CAE post-entrega pedido #${id} (no bloquea entrega):`, caeErr.message);
+            }
         }
         
         // Auditoría especial para bypass
