@@ -1649,7 +1649,7 @@ const obtenerCategorias = async (req, res) => {
     try {
         const { activo } = req.query;
         
-        let query = 'SELECT id, nombre, descripcion, orden, activo FROM categorias';
+        let query = 'SELECT id, nombre, descripcion, orden, activo, visible_carta FROM categorias';
         const params = [];
         
         // Filtro por activo si se proporciona
@@ -1684,7 +1684,7 @@ const crearCategoria = async (req, res) => {
     try {
         console.log('📁 Creando nueva categoría...');
 
-        const { nombre, descripcion, orden = 0, activo = 1 } = req.body;
+        const { nombre, descripcion, orden = 0, activo = 1, visible_carta = 1 } = req.body;
 
         if (!nombre || nombre.trim() === '') {
             return res.status(400).json({
@@ -1708,15 +1708,16 @@ const crearCategoria = async (req, res) => {
 
         // Insertar categoría
         const query = `
-            INSERT INTO categorias (nombre, descripcion, orden, activo)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO categorias (nombre, descripcion, orden, activo, visible_carta)
+            VALUES (?, ?, ?, ?, ?)
         `;
 
         const [result] = await db.execute(query, [
             nombre.trim(),
             descripcion || null,
             parseInt(orden) || 0,
-            activo ? 1 : 0
+            activo ? 1 : 0,
+            visible_carta ? 1 : 0
         ]);
 
         // Auditar creación
@@ -1724,7 +1725,7 @@ const crearCategoria = async (req, res) => {
             accion: 'CREATE_CATEGORIA',
             tabla: 'categorias',
             registroId: result.insertId,
-            datosNuevos: limpiarDatosSensibles({ nombre, descripcion, orden, activo }),
+            datosNuevos: limpiarDatosSensibles({ nombre, descripcion, orden, activo, visible_carta }),
             detallesAdicionales: `Categoría creada: ${nombre}`
         });
 
@@ -1766,7 +1767,7 @@ const obtenerCategoria = async (req, res) => {
         }
 
         const [categorias] = await db.execute(
-            'SELECT id, nombre, descripcion, orden, activo FROM categorias WHERE id = ?',
+            'SELECT id, nombre, descripcion, orden, activo, visible_carta FROM categorias WHERE id = ?',
             [id]
         );
 
@@ -1809,7 +1810,7 @@ const obtenerCategoria = async (req, res) => {
 const editarCategoria = async (req, res) => {
     try {
         const { id } = req.params;
-        const { nombre, descripcion, orden, activo } = req.body;
+        const { nombre, descripcion, orden, activo, visible_carta } = req.body;
 
         if (!id || isNaN(parseInt(id))) {
             return res.status(400).json({
@@ -1861,6 +1862,10 @@ const editarCategoria = async (req, res) => {
         if (activo !== undefined) {
             camposActualizar.push('activo = ?');
             valoresActualizar.push(activo ? 1 : 0);
+        }
+        if (visible_carta !== undefined) {
+            camposActualizar.push('visible_carta = ?');
+            valoresActualizar.push(visible_carta ? 1 : 0);
         }
 
         if (camposActualizar.length === 0) {
@@ -1998,12 +2003,12 @@ const filtrarCategorias = async (req, res) => {
         // Query principal con conteo de artículos
         let query = `
             SELECT
-                c.id, c.nombre, c.descripcion, c.orden, c.activo,
+                c.id, c.nombre, c.descripcion, c.orden, c.activo, c.visible_carta,
                 COUNT(a.id) as total_articulos
             FROM categorias c
             LEFT JOIN articulos a ON c.id = a.categoria_id AND a.activo = 1
             WHERE ${whereClause}
-            GROUP BY c.id, c.nombre, c.descripcion, c.orden, c.activo
+            GROUP BY c.id, c.nombre, c.descripcion, c.orden, c.activo, c.visible_carta
             ORDER BY c.orden, c.nombre
         `;
 

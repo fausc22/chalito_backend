@@ -183,7 +183,7 @@ const uploadImagen = async (req, res) => {
  */
 const obtenerArticulos = async (req, res) => {
     try {
-        const { categoria, disponible } = req.query;
+        const { categoria, disponible, solo_visible_carta } = req.query;
 
         let query = `
             SELECT 
@@ -206,6 +206,11 @@ const obtenerArticulos = async (req, res) => {
             const disponibleBool = disponible === 'true' || disponible === '1';
             query += ' AND a.activo = ?';
             params.push(disponibleBool);
+        }
+
+        if (solo_visible_carta === 'true') {
+            query += ' AND a.visible_carta = 1';
+            query += ' AND c.visible_carta = 1';
         }
 
         // Ordenar por nombre
@@ -288,13 +293,22 @@ const obtenerArticuloPorId = async (req, res) => {
  */
 const obtenerCategorias = async (req, res) => {
     try {
+        const { solo_visible_carta } = req.query;
+
+        let whereClause = 'WHERE c.activo = 1';
+        if (solo_visible_carta === 'true') {
+            whereClause += ' AND c.visible_carta = 1';
+        }
+
         const [categorias] = await db.execute(
             `SELECT 
                 c.id, 
                 c.nombre, 
                 c.descripcion,
-                c.orden
+                c.orden,
+                c.visible_carta
             FROM categorias c
+            ${whereClause}
             ORDER BY c.orden ASC, c.nombre ASC`
         );
 
@@ -327,6 +341,7 @@ const crearArticulo = async (req, res) => {
             controla_stock,
             imagen_url,
             activo = true,
+            visible_carta = true,
             peso,
             ingredientes = []
         } = req.body;
@@ -394,8 +409,8 @@ const crearArticulo = async (req, res) => {
         const [result] = await connection.execute(
             `INSERT INTO articulos (
                 categoria_id, codigo_barra, nombre, descripcion, precio,
-                stock_actual, stock_minimo, tipo, controla_stock, imagen_url, activo, peso
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                stock_actual, stock_minimo, tipo, controla_stock, imagen_url, activo, visible_carta, peso
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
                 parseInt(categoria_id, 10),
                 codigo_barra ? codigo_barra.trim() : null,
@@ -408,6 +423,7 @@ const crearArticulo = async (req, res) => {
                 controlaStockFinal ? 1 : 0,
                 imagen_url || null,
                 activo ? 1 : 0,
+                visible_carta ? 1 : 0,
                 pesoValidacion.valor
             ]
         );
@@ -469,6 +485,7 @@ const actualizarArticulo = async (req, res) => {
             controla_stock,
             imagen_url,
             activo,
+            visible_carta,
             peso,
             ingredientes
         } = req.body;
@@ -578,6 +595,7 @@ const actualizarArticulo = async (req, res) => {
         if (hasControlaStockEnPayload || tipoNormalizadoInput !== undefined) { campos.push('controla_stock = ?'); valores.push(controlaStockFinal ? 1 : 0); }
         if (imagen_url !== undefined) { campos.push('imagen_url = ?'); valores.push(imagen_url || null); }
         if (activo !== undefined) { campos.push('activo = ?'); valores.push(activo ? 1 : 0); }
+        if (visible_carta !== undefined) { campos.push('visible_carta = ?'); valores.push(visible_carta ? 1 : 0); }
         if (peso !== undefined && peso !== null && peso !== '') { campos.push('peso = ?'); valores.push(pesoValidacion.valor); }
 
         const forzarStockEnCero = !controlaStockFinal && (

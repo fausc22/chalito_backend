@@ -448,11 +448,11 @@ const obtenerPedidosEntregados = async (req, res) => {
             `SELECT COUNT(*) AS total FROM pedidos ${whereClause}`
         );
 
+        // LIMIT/OFFSET no admiten placeholder en prepared statements de MySQL (mysqld_stmt_execute).
         const [pedidos] = await db.execute(
             `SELECT * FROM pedidos ${whereClause}
              ORDER BY COALESCE(fecha_modificacion, fecha) DESC, id DESC
-             LIMIT ? OFFSET ?`,
-            [limit, offset]
+             LIMIT ${limit} OFFSET ${offset}`
         );
 
         const pedidosConArticulos = await attachArticulosBatch(pedidos);

@@ -121,6 +121,8 @@ async function procesarAprobacionMercadoPago({ pedidoId, paymentId, resumenPagoM
  * Worker: recupera pedidos MP PAGADO recientes que quedaron sin venta asociada.
  */
 async function reconciliarPedidosMpPagadosSinVenta({ limite = 20 } = {}) {
+  // LIMIT no admite placeholder en prepared statements de MySQL (mysqld_stmt_execute).
+  const limit = Math.max(1, Math.min(Number(limite) || 20, 100));
   const [pedidos] = await db.execute(
     `SELECT id
      FROM pedidos
@@ -128,8 +130,7 @@ async function reconciliarPedidosMpPagadosSinVenta({ limite = 20 } = {}) {
        AND UPPER(COALESCE(medio_pago, '')) = 'MERCADOPAGO'
        AND fecha >= DATE_SUB(NOW(), INTERVAL 7 DAY)
      ORDER BY id DESC
-     LIMIT ?`,
-    [Math.max(1, Math.min(Number(limite) || 20, 100))]
+     LIMIT ${limit}`
   );
 
   let recuperados = 0;

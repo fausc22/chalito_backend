@@ -45,10 +45,14 @@ const addCacheableImageUrl = (articulo) => ({
 router.get('/imagenes/:articuloId', apiRateLimiter, proxyImagenArticulo);
 
 // GET /carta-publica/categorias
-router.get('/categorias', apiRateLimiter, obtenerCategorias);
+router.get('/categorias', apiRateLimiter, (req, res) => {
+  req.query.solo_visible_carta = 'true';
+  return obtenerCategorias(req, res);
+});
 
 // GET /carta-publica/articulos?categoria=X&disponible=true
 router.get('/articulos', apiRateLimiter, async (req, res) => {
+  req.query.solo_visible_carta = 'true';
   const origJson = res.json.bind(res);
   res.json = (data) => {
     const transformed = Array.isArray(data) ? data.map(addCacheableImageUrl) : data;
