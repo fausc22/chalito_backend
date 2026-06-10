@@ -237,7 +237,8 @@ http://localhost:3001
 
 **Gastos (`/gastos`)**
 
-- `GET /gastos/cuentas`
+Los egresos se registran siempre sobre la cuenta operativa **X** (pool del negocio). El cliente no elige cuenta de fondos.
+
 - `GET /gastos/resumen`
 - `GET /gastos/categorias`
 - `POST /gastos/categorias`

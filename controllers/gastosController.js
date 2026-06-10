@@ -1,5 +1,6 @@
 // controllers/gastosController.js - Sistema Chalito - Módulo de Gastos
 const db = require('./dbPromise');
+const CuentasSistema = require('../services/CuentasSistemaService');
 const { auditarOperacion, obtenerDatosAnteriores, limpiarDatosSensibles } = require('../middlewares/auditoriaMiddleware');
 
 // =====================================================
@@ -26,7 +27,6 @@ const crearGasto = async (req, res) => {
             observaciones
         } = req.validatedData || req.body;
 
-        const CuentasSistema = require('../services/CuentasSistemaService');
         const cuentaX = await CuentasSistema.obtenerCuentaX(connection);
         const cuenta_id = cuentaX.id;
         
@@ -47,11 +47,7 @@ const crearGasto = async (req, res) => {
             });
         }
         
-        const saldoAnteriorValor = parseFloat(cuentaX.saldo) || 0;
         const montoNum = parseFloat(monto);
-        
-        // Calcular nuevo saldo (puede quedar negativo)
-        const saldoNuevoValor = saldoAnteriorValor - montoNum;
         
         // Insertar el gasto
         const queryGasto = `
@@ -74,27 +70,12 @@ const crearGasto = async (req, res) => {
         
         const gastoId = resultGasto.insertId;
         
-        // Actualizar saldo de la cuenta
-        await connection.execute(
-            'UPDATE cuentas_fondos SET saldo = ? WHERE id = ?',
-            [saldoNuevoValor, cuenta_id]
-        );
-        
-        // Registrar movimiento de egreso (siempre se crea)
-        await connection.execute(
-            `INSERT INTO movimientos_fondos (
-                fecha, cuenta_id, tipo, origen, referencia_id, monto,
-                saldo_anterior, saldo_nuevo, observaciones
-            ) VALUES (NOW(), ?, 'EGRESO', ?, ?, ?, ?, ?, ?)`,
-            [
-                cuenta_id,
-                `Gasto #${gastoId} - ${categoria[0].nombre}`,
-                gastoId,
-                montoNum,
-                saldoAnteriorValor,
-                saldoNuevoValor,
-                descripcion
-            ]
+        await CuentasSistema.debitarCuenta(
+            connection,
+            cuenta_id,
+            montoNum,
+            `Gasto #${gastoId} - ${categoria[0].nombre}`,
+            gastoId
         );
         
         await connection.commit();
@@ -127,9 +108,7 @@ const crearGasto = async (req, res) => {
                 descripcion,
                 monto: montoNum,
                 forma_pago,
-                cuenta_id,
-                saldo_anterior: saldoAnteriorValor,
-                saldo_nuevo: saldoNuevoValor
+                cuenta_id
             }
         });
         
@@ -168,7 +147,6 @@ const obtenerGastos = async (req, res) => {
             month,
             year,
             categoria_id,
-            cuenta_id,
             forma_pago,
             busqueda,
             limit = 20,
@@ -220,12 +198,6 @@ const obtenerGastos = async (req, res) => {
             queryParams.push(parseInt(categoria_id));
         }
         
-        // Filtro por cuenta
-        if (cuenta_id) {
-            whereConditions.push('g.cuenta_id = ?');
-            queryParams.push(parseInt(cuenta_id));
-        }
-        
         // Filtro por forma de pago
         if (forma_pago) {
             whereConditions.push('g.forma_pago = ?');
@@ -246,12 +218,10 @@ const obtenerGastos = async (req, res) => {
             SELECT 
                 g.id, g.fecha, g.categoria_id, g.categoria_nombre,
                 g.descripcion, g.monto, g.forma_pago, g.observaciones,
-                g.usuario_id, g.cuenta_id, g.fecha_modificacion,
-                u.nombre as usuario_nombre,
-                cf.nombre as cuenta_nombre
+                g.usuario_id, g.fecha_modificacion,
+                u.nombre as usuario_nombre
             FROM gastos g
             LEFT JOIN usuarios u ON g.usuario_id = u.id
-            LEFT JOIN cuentas_fondos cf ON g.cuenta_id = cf.id
             WHERE ${whereClause}
             ORDER BY g.fecha DESC, g.id DESC
         `;
@@ -320,12 +290,10 @@ const obtenerGastoPorId = async (req, res) => {
             SELECT 
                 g.id, g.fecha, g.categoria_id, g.categoria_nombre,
                 g.descripcion, g.monto, g.forma_pago, g.observaciones,
-                g.usuario_id, g.cuenta_id, g.fecha_modificacion,
-                u.nombre as usuario_nombre,
-                cf.nombre as cuenta_nombre
+                g.usuario_id, g.fecha_modificacion,
+                u.nombre as usuario_nombre
             FROM gastos g
             LEFT JOIN usuarios u ON g.usuario_id = u.id
-            LEFT JOIN cuentas_fondos cf ON g.cuenta_id = cf.id
             WHERE g.id = ?
         `;
         
@@ -369,13 +337,11 @@ const editarGasto = async (req, res) => {
             descripcion,
             monto,
             forma_pago,
-            cuenta_id,
             observaciones
         } = req.validatedData || req.body;
         
         console.log(`✏️ Editando gasto ID: ${id}`);
         
-        // Obtener datos anteriores del gasto
         const [gastoAnterior] = await connection.execute(
             'SELECT * FROM gastos WHERE id = ?',
             [id]
@@ -393,8 +359,9 @@ const editarGasto = async (req, res) => {
         const datosAnteriores = gastoAnterior[0];
         const montoAnterior = parseFloat(datosAnteriores.monto);
         const cuentaIdAnterior = datosAnteriores.cuenta_id;
+        const cuentaX = await CuentasSistema.obtenerCuentaX(connection);
+        const cuentaIdFinal = cuentaX.id;
         
-        // Validar que el gasto anterior tenía cuenta (debería tener siempre)
         if (!cuentaIdAnterior) {
             await connection.rollback();
             connection.release();
@@ -404,10 +371,10 @@ const editarGasto = async (req, res) => {
             });
         }
         
-        const montoNuevo = monto !== undefined ? parseFloat(monto) : montoAnterior;
-        const cuentaIdNuevo = cuenta_id !== undefined ? cuenta_id : cuentaIdAnterior;
+        const montoFinal = monto !== undefined ? parseFloat(monto) : montoAnterior;
+        const cambioMonto = monto !== undefined && montoFinal !== montoAnterior;
+        const necesitaAjusteFondos = cambioMonto || cuentaIdAnterior !== cuentaIdFinal;
         
-        // Verificar categoría si se está cambiando
         let categoriaNombre = datosAnteriores.categoria_nombre;
         if (categoria_id && categoria_id !== datosAnteriores.categoria_id) {
             const [categoria] = await connection.execute(
@@ -426,108 +393,24 @@ const editarGasto = async (req, res) => {
             categoriaNombre = categoria[0].nombre;
         }
         
-        // Determinar valores finales (usar nuevos si se proporcionaron, sino mantener anteriores)
-        const cuentaIdFinal = cuenta_id !== undefined ? cuenta_id : cuentaIdAnterior;
-        const montoFinal = monto !== undefined ? parseFloat(monto) : montoAnterior;
-        
-        // Validar que cuenta_id final existe
-        if (!cuentaIdFinal) {
-            await connection.rollback();
-            connection.release();
-            return res.status(400).json({
-                success: false,
-                message: 'La cuenta de fondos es obligatoria'
-            });
-        }
-        
-        // Verificar que la cuenta final existe y está activa
-        const [cuentaFinal] = await connection.execute(
-            'SELECT id, nombre, saldo FROM cuentas_fondos WHERE id = ? AND activa = 1',
-            [cuentaIdFinal]
-        );
-        
-        if (cuentaFinal.length === 0) {
-            await connection.rollback();
-            connection.release();
-            return res.status(404).json({
-                success: false,
-                message: 'Cuenta de fondos no encontrada o inactiva'
-            });
-        }
-        
-        const cambioMonto = monto !== undefined && montoNuevo !== montoAnterior;
-        const cambioCuenta = cuenta_id !== undefined && cuentaIdNuevo !== cuentaIdAnterior;
-        const hayCambios = cambioMonto || cambioCuenta;
-        
-        // Si hay cambios, necesitamos revertir el movimiento anterior y crear uno nuevo
-        if (hayCambios && cuentaIdAnterior) {
-            // 1. Revertir movimiento anterior: devolver el monto a la cuenta anterior
-            const [cuentaAnterior] = await connection.execute(
-                'SELECT saldo FROM cuentas_fondos WHERE id = ?',
-                [cuentaIdAnterior]
+        if (necesitaAjusteFondos) {
+            await CuentasSistema.acreditarCuenta(
+                connection,
+                cuentaIdAnterior,
+                montoAnterior,
+                `Ajuste Gasto #${id} - Reversión`,
+                id
             );
             
-            if (cuentaAnterior.length > 0) {
-                const saldoActualAnterior = parseFloat(cuentaAnterior[0].saldo);
-                const saldoNuevoAnterior = saldoActualAnterior + montoAnterior;
-                
-                // Actualizar saldo de cuenta anterior
-                await connection.execute(
-                    'UPDATE cuentas_fondos SET saldo = ? WHERE id = ?',
-                    [saldoNuevoAnterior, cuentaIdAnterior]
-                );
-                
-                // Registrar movimiento de reversión
-                await connection.execute(
-                    `INSERT INTO movimientos_fondos (
-                        fecha, cuenta_id, tipo, origen, referencia_id, monto,
-                        saldo_anterior, saldo_nuevo, observaciones
-                    ) VALUES (NOW(), ?, 'INGRESO', ?, ?, ?, ?, ?, ?)`,
-                    [
-                        cuentaIdAnterior,
-                        `Ajuste Gasto #${id} - Reversión`,
-                        id,
-                        montoAnterior,
-                        saldoActualAnterior,
-                        saldoNuevoAnterior,
-                        `Reversión por edición de gasto: ${descripcion || datosAnteriores.descripcion}`
-                    ]
-                );
-            }
-        }
-        
-        // 2. Crear nuevo movimiento si hay cambios o si cambió la cuenta
-        if (hayCambios) {
-            const saldoActualFinal = parseFloat(cuentaFinal[0].saldo);
-            
-            // Calcular nuevo saldo (puede quedar negativo)
-            const saldoNuevoFinal = saldoActualFinal - montoFinal;
-            
-            // Actualizar saldo de cuenta final
-            await connection.execute(
-                'UPDATE cuentas_fondos SET saldo = ? WHERE id = ?',
-                [saldoNuevoFinal, cuentaIdFinal]
-            );
-            
-            // Registrar nuevo movimiento de egreso
-            await connection.execute(
-                `INSERT INTO movimientos_fondos (
-                    fecha, cuenta_id, tipo, origen, referencia_id, monto,
-                    saldo_anterior, saldo_nuevo, observaciones
-                ) VALUES (NOW(), ?, 'EGRESO', ?, ?, ?, ?, ?, ?)`,
-                [
-                    cuentaIdFinal,
-                    `Ajuste Gasto #${id} - ${categoriaNombre}`,
-                    id,
-                    montoFinal,
-                    saldoActualFinal,
-                    saldoNuevoFinal,
-                    descripcion || datosAnteriores.descripcion
-                ]
+            await CuentasSistema.debitarCuenta(
+                connection,
+                cuentaIdFinal,
+                montoFinal,
+                `Ajuste Gasto #${id} - ${categoriaNombre}`,
+                id
             );
         }
         
-        // Construir query de actualización
         const camposActualizar = [];
         const valoresActualizar = [];
         
@@ -549,13 +432,13 @@ const editarGasto = async (req, res) => {
             camposActualizar.push('forma_pago = ?');
             valoresActualizar.push(forma_pago);
         }
-        if (cuenta_id !== undefined) {
-            camposActualizar.push('cuenta_id = ?');
-            valoresActualizar.push(cuenta_id);
-        }
         if (observaciones !== undefined) {
             camposActualizar.push('observaciones = ?');
             valoresActualizar.push(observaciones || null);
+        }
+        if (cuentaIdAnterior !== cuentaIdFinal) {
+            camposActualizar.push('cuenta_id = ?');
+            valoresActualizar.push(cuentaIdFinal);
         }
         
         if (camposActualizar.length === 0) {
@@ -567,7 +450,6 @@ const editarGasto = async (req, res) => {
             });
         }
         
-        // Actualizar gasto
         const queryUpdate = `UPDATE gastos SET ${camposActualizar.join(', ')} WHERE id = ?`;
         valoresActualizar.push(id);
         
@@ -575,7 +457,6 @@ const editarGasto = async (req, res) => {
         
         await connection.commit();
         
-        // Auditar cambios
         await auditarOperacion(req, {
             accion: 'UPDATE_GASTO',
             tabla: 'gastos',
@@ -637,7 +518,6 @@ const eliminarGasto = async (req, res) => {
         
         const datosGasto = gasto[0];
         
-        // Validar que el gasto tiene cuenta asociada (debería tener siempre)
         if (!datosGasto.cuenta_id) {
             await connection.rollback();
             connection.release();
@@ -647,49 +527,16 @@ const eliminarGasto = async (req, res) => {
             });
         }
         
-        // Obtener cuenta y revertir el movimiento
-        const [cuenta] = await connection.execute(
-            'SELECT id, nombre, saldo FROM cuentas_fondos WHERE id = ?',
-            [datosGasto.cuenta_id]
-        );
-        
-        if (cuenta.length === 0) {
-            await connection.rollback();
-            connection.release();
-            return res.status(404).json({
-                success: false,
-                message: 'La cuenta asociada al gasto no existe'
-            });
-        }
-        
-        const saldoActual = parseFloat(cuenta[0].saldo);
         const montoGasto = parseFloat(datosGasto.monto);
-        const saldoNuevo = saldoActual + montoGasto;
         
-        // Devolver el monto a la cuenta (revertir el egreso)
-        await connection.execute(
-            'UPDATE cuentas_fondos SET saldo = ? WHERE id = ?',
-            [saldoNuevo, datosGasto.cuenta_id]
+        await CuentasSistema.acreditarCuenta(
+            connection,
+            datosGasto.cuenta_id,
+            montoGasto,
+            `Eliminación Gasto #${id}`,
+            id
         );
         
-        // Registrar movimiento de reversión (ingreso)
-        await connection.execute(
-            `INSERT INTO movimientos_fondos (
-                fecha, cuenta_id, tipo, origen, referencia_id, monto,
-                saldo_anterior, saldo_nuevo, observaciones
-            ) VALUES (NOW(), ?, 'INGRESO', ?, ?, ?, ?, ?, ?)`,
-            [
-                datosGasto.cuenta_id,
-                `Eliminación Gasto #${id}`,
-                id,
-                montoGasto,
-                saldoActual,
-                saldoNuevo,
-                `Reversión por eliminación de gasto: ${datosGasto.descripcion}`
-            ]
-        );
-        
-        // Eliminar el gasto (hard delete)
         await connection.execute('DELETE FROM gastos WHERE id = ?', [id]);
         
         await connection.commit();
@@ -1029,31 +876,6 @@ const eliminarCategoriaGasto = async (req, res) => {
 // =====================================================
 
 /**
- * Obtener cuentas de fondos disponibles
- * GET /gastos/cuentas
- */
-const obtenerCuentasFondos = async (req, res) => {
-    try {
-        const [cuentas] = await db.execute(
-            'SELECT id, nombre, descripcion, saldo, activa FROM cuentas_fondos WHERE activa = 1 ORDER BY nombre'
-        );
-        
-        res.json({
-            success: true,
-            data: cuentas
-        });
-        
-    } catch (error) {
-        console.error('❌ Error al obtener cuentas de fondos:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Error al obtener cuentas de fondos',
-            error: process.env.NODE_ENV === 'development' ? error.message : undefined
-        });
-    }
-};
-
-/**
  * Obtener resumen de gastos por período
  * GET /gastos/resumen
  */
@@ -1136,7 +958,6 @@ module.exports = {
     eliminarCategoriaGasto,
     
     // Auxiliares
-    obtenerCuentasFondos,
     obtenerResumenGastos
 };
 

@@ -1,6 +1,8 @@
 const horariosTiendaRepository = require('../repositories/horariosTiendaRepository');
 const tiendaOnlineSettingsService = require('../services/tiendaOnlineSettingsService');
 const brandingSettingsService = require('../services/brandingSettingsService');
+const carouselSettingsService = require('../services/carouselSettingsService');
+const { uploadImageToFileServer } = require('../config/fileStorage');
 const storeScheduleService = require('../services/storeScheduleService');
 
 const TIME_REGEX = /^([01]?\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/;
@@ -183,6 +185,97 @@ const actualizarApariencia = async (req, res) => {
     }
 };
 
+const obtenerCarousel = async (req, res) => {
+    try {
+        const data = await carouselSettingsService.getCarousel({ force: true });
+        res.json({ success: true, data });
+    } catch (error) {
+        console.error('Error obteniendo carrusel tienda:', error);
+        res.status(500).json({ success: false, message: 'Error al obtener carrusel' });
+    }
+};
+
+const actualizarCarousel = async (req, res) => {
+    try {
+        const { enabled, slides } = req.body || {};
+        const data = await carouselSettingsService.updateCarousel({ enabled, slides });
+        res.json({
+            success: true,
+            message: 'Carrusel actualizado correctamente',
+            data
+        });
+    } catch (error) {
+        console.error('Error actualizando carrusel tienda:', error);
+        res.status(error.status || 500).json({
+            success: false,
+            message: error.message || 'Error al actualizar carrusel'
+        });
+    }
+};
+
+const subirImagenCarousel = async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({
+                success: false,
+                message: 'No se recibió ninguna imagen'
+            });
+        }
+
+        const uploadResult = await uploadImageToFileServer(req.file.buffer, {
+            mimetype: req.file.mimetype
+        });
+
+        const width = Number(req.body?.width);
+        const height = Number(req.body?.height);
+        const data = await carouselSettingsService.addSlide({
+            url: uploadResult.secure_url,
+            publicId: uploadResult.public_id,
+            alt: req.body?.alt,
+            width: Number.isFinite(width) ? width : null,
+            height: Number.isFinite(height) ? height : null,
+            focalX: req.body?.focalX,
+            focalY: req.body?.focalY,
+            zoom: req.body?.zoom
+        });
+
+        const slide = data.slides[data.slides.length - 1] || null;
+        res.status(201).json({
+            success: true,
+            message: 'Imagen agregada al carrusel',
+            data: { carousel: data, slide }
+        });
+    } catch (error) {
+        console.error('Error subiendo imagen carrusel:', error);
+        res.status(error.status || 500).json({
+            success: false,
+            message: error.message || 'Error al subir imagen de carrusel'
+        });
+    }
+};
+
+const eliminarSlideCarousel = async (req, res) => {
+    try {
+        const { slideId } = req.params;
+        if (!slideId) {
+            return res.status(400).json({ success: false, message: 'slideId requerido' });
+        }
+
+        const data = await carouselSettingsService.deleteSlide(slideId);
+        res.json({
+            success: true,
+            message: 'Slide eliminado correctamente',
+            data
+        });
+    } catch (error) {
+        console.error('Error eliminando slide carrusel:', error);
+        res.status(error.status || 500).json({
+            success: false,
+            message: error.message || 'Error al eliminar slide'
+        });
+    }
+};
+
 module.exports = {
     obtenerHorarios,
     actualizarHorarioDia,
@@ -191,5 +284,9 @@ module.exports = {
     obtenerEstado,
     obtenerEstadoPublico,
     obtenerApariencia,
-    actualizarApariencia
+    actualizarApariencia,
+    obtenerCarousel,
+    actualizarCarousel,
+    subirImagenCarousel,
+    eliminarSlideCarousel
 };

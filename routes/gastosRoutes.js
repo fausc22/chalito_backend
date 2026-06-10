@@ -11,7 +11,6 @@ const {
     crearCategoriaGasto,
     editarCategoriaGasto,
     eliminarCategoriaGasto,
-    obtenerCuentasFondos,
     obtenerResumenGastos
 } = require('../controllers/gastosController');
 
@@ -27,7 +26,6 @@ const {
     validateParams
 } = require('../validators/gastosValidators');
 
-router.get('/cuentas', apiRateLimiter, ...readGastos, obtenerCuentasFondos);
 router.get('/resumen', apiRateLimiter, ...readGastos, obtenerResumenGastos);
 
 router.get('/categorias', apiRateLimiter, ...readGastos, obtenerCategoriasGastos);

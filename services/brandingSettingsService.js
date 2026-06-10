@@ -79,7 +79,18 @@ const getSettings = async () => {
     }
 };
 
-const getPublicBranding = async () => getSettings();
+const getPublicBranding = async () => {
+    const carouselSettingsService = require('./carouselSettingsService');
+    const [settings, carousel] = await Promise.all([
+        getSettings(),
+        carouselSettingsService.getPublicCarousel()
+    ]);
+
+    return {
+        ...settings,
+        carousel
+    };
+};
 
 const getTiendaApariencia = async () => {
     const settings = await getSettings();
