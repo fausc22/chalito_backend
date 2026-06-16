@@ -4,7 +4,7 @@ const KitchenCapacityService = require('../services/KitchenCapacityService');
 const PrintService = require('../services/PrintService');
 const { mapPrintError } = require('../services/print/printPayloadShared');
 const TimeCalculationService = require('../services/TimeCalculationService');
-const { validarExtrasNoDobleYTriple, construirPersonalizaciones } = require('../services/PersonalizacionesService');
+const { validarExtrasNoDobleYTriple, construirPersonalizaciones, obtenerCantidadExtra } = require('../services/PersonalizacionesService');
 const { OrderQueueEngine } = require('../services/OrderQueueEngine');
 const {
     pedidoEstaHabilitadoOperativamente,
@@ -23,11 +23,19 @@ const ClientesService = require('../services/ClientesService');
 
 const PRESENTACIONES_VALIDAS = new Set(['SIMPLE', 'DOBLE', 'TRIPLE']);
 
-const extraNormalizado = (extra = {}) => ({
-    id: extra?.id ?? extra?.adicional_id ?? null,
-    nombre: String(extra?.nombre ?? extra?.nombre_adicional ?? '').trim(),
-    precio_extra: parseFloat(extra?.precio_extra ?? extra?.precio ?? extra?.precio_adicional ?? 0) || 0
-});
+const extraNormalizado = (extra = {}) => {
+    const cantidad = Math.max(1, parseInt(extra?.cantidad, 10) || 1);
+    const precio_extra = parseFloat(extra?.precio_extra ?? extra?.precio ?? extra?.precio_adicional ?? 0) || 0;
+    const normalizado = {
+        id: extra?.id ?? extra?.adicional_id ?? null,
+        nombre: String(extra?.nombre ?? extra?.nombre_adicional ?? '').trim(),
+        precio_extra
+    };
+    if (cantidad > 1) {
+        normalizado.cantidad = cantidad;
+    }
+    return normalizado;
+};
 
 const inferirPresentacion = (personalizaciones, extras) => {
     const presentacionExplicita = String(personalizaciones?.presentacion || '').trim().toUpperCase();
@@ -59,7 +67,7 @@ const normalizarItemPedidoParaDetalle = (articulo = {}) => {
     const extrasTotal = parseFloat(personalizaciones?.extrasTotal);
     const extrasTotalFinal = Number.isFinite(extrasTotal)
         ? extrasTotal
-        : extras.reduce((sum, e) => sum + e.precio_extra, 0);
+        : extras.reduce((sum, e) => sum + e.precio_extra * obtenerCantidadExtra(e), 0);
 
     return {
         ...articulo,

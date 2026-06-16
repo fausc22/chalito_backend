@@ -2111,6 +2111,11 @@ const calcularCostoElaborado = async (req, res) => {
 // GESTIÓN DE ADICIONALES
 // =====================================================
 
+const normalizarPermiteCantidad = (valor) => {
+    if (valor === undefined || valor === null) return 0;
+    return valor === true || valor === 1 || valor === '1' ? 1 : 0;
+};
+
 /**
  * Crear un nuevo adicional
  */
@@ -2118,7 +2123,15 @@ const crearAdicional = async (req, res) => {
     try {
         console.log('➕ Creando nuevo adicional...');
         
-        const { nombre, descripcion, precio_extra = 0, disponible = true } = req.body;
+        const {
+            nombre,
+            descripcion,
+            precio_extra = 0,
+            disponible = true,
+            permite_cantidad
+        } = req.body;
+
+        const permiteCantidadFlag = normalizarPermiteCantidad(permite_cantidad);
 
         // Validaciones básicas
         if (!nombre || nombre.trim() === '') {
@@ -2150,15 +2163,16 @@ const crearAdicional = async (req, res) => {
 
         // Insertar adicional
         const query = `
-            INSERT INTO adicionales (nombre, descripcion, precio_extra, disponible, fecha_creacion)
-            VALUES (?, ?, ?, ?, NOW())
+            INSERT INTO adicionales (nombre, descripcion, precio_extra, disponible, permite_cantidad, fecha_creacion)
+            VALUES (?, ?, ?, ?, ?, NOW())
         `;
 
         const [result] = await db.execute(query, [
             nombre.trim(),
             descripcion?.trim() || null,
             parseFloat(precio_extra),
-            disponible ? 1 : 0
+            disponible ? 1 : 0,
+            permiteCantidadFlag
         ]);
 
         // Auditar creación
@@ -2166,7 +2180,13 @@ const crearAdicional = async (req, res) => {
             accion: 'CREATE_ADICIONAL',
             tabla: 'adicionales',
             registroId: result.insertId,
-            datosNuevos: limpiarDatosSensibles({ nombre, descripcion, precio_extra, disponible }),
+            datosNuevos: limpiarDatosSensibles({
+                nombre,
+                descripcion,
+                precio_extra,
+                disponible,
+                permite_cantidad: permiteCantidadFlag
+            }),
             detallesAdicionales: `Adicional creado: ${nombre}`
         });
 
@@ -2180,7 +2200,8 @@ const crearAdicional = async (req, res) => {
                 nombre,
                 descripcion,
                 precio_extra: parseFloat(precio_extra),
-                disponible: disponible ? 1 : 0
+                disponible: disponible ? 1 : 0,
+                permite_cantidad: permiteCantidadFlag
             }
         });
 
@@ -2209,7 +2230,7 @@ const obtenerAdicional = async (req, res) => {
         }
 
         const query = `
-            SELECT id, nombre, descripcion, precio_extra, disponible, fecha_creacion
+            SELECT id, nombre, descripcion, precio_extra, disponible, permite_cantidad, fecha_creacion
             FROM adicionales
             WHERE id = ?
         `;
@@ -2273,7 +2294,7 @@ const filtrarAdicionales = async (req, res) => {
 
         // Query principal
         let query = `
-            SELECT id, nombre, descripcion, precio_extra, disponible, fecha_creacion
+            SELECT id, nombre, descripcion, precio_extra, disponible, permite_cantidad, fecha_creacion
             FROM adicionales
             WHERE ${whereClause}
             ORDER BY nombre ASC
@@ -2323,7 +2344,7 @@ const filtrarAdicionales = async (req, res) => {
 const editarAdicional = async (req, res) => {
     try {
         const { id } = req.params;
-        const { nombre, descripcion, precio_extra, disponible } = req.body;
+        const { nombre, descripcion, precio_extra, disponible, permite_cantidad } = req.body;
 
         console.log(`✏️ Editando adicional: ID ${id}`);
 
@@ -2385,6 +2406,10 @@ const editarAdicional = async (req, res) => {
         if (disponible !== undefined) {
             camposActualizar.push('disponible = ?');
             valoresActualizar.push(disponible ? 1 : 0);
+        }
+        if (permite_cantidad !== undefined) {
+            camposActualizar.push('permite_cantidad = ?');
+            valoresActualizar.push(normalizarPermiteCantidad(permite_cantidad));
         }
 
         if (camposActualizar.length === 0) {
@@ -2531,6 +2556,7 @@ const obtenerAdicionalesPorArticulo = async (req, res) => {
                 a.descripcion,
                 a.precio_extra,
                 a.disponible,
+                a.permite_cantidad,
                 ac.id as contenido_id
             FROM adicionales a
             INNER JOIN adicionales_contenido ac ON a.id = ac.adicional_id

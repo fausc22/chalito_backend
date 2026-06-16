@@ -697,6 +697,7 @@ const obtenerAdicionalesPorArticulo = async (req, res) => {
                 a.descripcion,
                 a.precio_extra,
                 a.disponible,
+                a.permite_cantidad,
                 ac.id as contenido_id
              FROM adicionales a
              INNER JOIN adicionales_contenido ac ON a.id = ac.adicional_id

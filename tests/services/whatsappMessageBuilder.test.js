@@ -65,6 +65,20 @@ test('MERCADOPAGO DELIVERY menciona envio al entregar', () => {
     assert.match(msg, /cadete/i);
 });
 
+test('formatPedidoContenido con extras y cantidad', () => {
+    const text = formatPedidoContenido([
+        {
+            cantidad: 1,
+            articulo_nombre: 'Hamburguesa',
+            personalizaciones: JSON.stringify({
+                extras: [{ nombre: 'Extra cheddar', precio_extra: 350, cantidad: 2 }]
+            }),
+        },
+    ]);
+    assert.match(text, /1x Hamburguesa/);
+    assert.match(text, /Extra cheddar x2/);
+});
+
 test('formatPedidoContenido con extras', () => {
     const text = formatPedidoContenido([
         {

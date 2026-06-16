@@ -13,7 +13,7 @@ require.cache[require.resolve('../services/brandingSettingsService')] = {
 
 const { buildKitchenPayload } = require('../services/print/buildKitchenPayload');
 const { buildCustomerPayload } = require('../services/print/buildCustomerPayload');
-const { mapPrintError, PrintErrorCodes } = require('../services/print/printPayloadShared');
+const { mapPrintError, PrintErrorCodes, mapExtrasNames } = require('../services/print/printPayloadShared');
 
 describe('buildKitchenPayload', () => {
     it('genera PrintPayload v1 sin precios en líneas', async () => {
@@ -60,6 +60,30 @@ describe('buildKitchenPayload', () => {
         assert.equal(payload.order.modalityLabel, 'ENVIO / DELIVERY');
         assert.equal(payload.order.orderNotes, 'Timbre roto');
         assert.ok(!String(payload.order.scheduledLabel).includes('PARA'));
+    });
+
+    it('genera modifiers con cantidad xN en cocina', async () => {
+        const payload = await buildKitchenPayload({
+            id: 300,
+            fecha: '2026-05-19T14:00:00.000Z',
+            modalidad: 'RETIRO',
+            estado_pago: 'PENDIENTE',
+            estado: 'RECIBIDO',
+            total: 4200,
+            cliente_nombre: 'Ana',
+            articulos: [
+                {
+                    articulo_id: 1,
+                    articulo_nombre: 'Burger',
+                    cantidad: 1,
+                    personalizaciones: JSON.stringify({
+                        extras: [{ nombre: 'Extra cheddar', precio_extra: 350, cantidad: 2 }]
+                    })
+                }
+            ]
+        });
+
+        assert.deepEqual(payload.lines[0].modifiers, ['Extra cheddar x2']);
     });
 });
 
@@ -135,6 +159,26 @@ describe('buildCustomerPayload', () => {
         assert.ok(payload.fiscal);
         assert.equal(payload.fiscal.tipoCmp, 11);
         assert.equal(payload.fiscal.invoiceType, 'C');
+    });
+});
+
+describe('mapExtrasNames', () => {
+    it('muestra nombre simple si cantidad es 1 o ausente', () => {
+        const names = mapExtrasNames({
+            personalizaciones: {
+                extras: [{ nombre: 'Extra cheddar', precio_extra: 350 }]
+            }
+        });
+        assert.deepEqual(names, ['Extra cheddar']);
+    });
+
+    it('muestra Extra cheddar x2 si cantidad > 1', () => {
+        const names = mapExtrasNames({
+            personalizaciones: {
+                extras: [{ nombre: 'Extra cheddar', precio_extra: 350, cantidad: 2 }]
+            }
+        });
+        assert.deepEqual(names, ['Extra cheddar x2']);
     });
 });
 

@@ -39,13 +39,6 @@ function validarPayloadCheckout(payload) {
     }
 }
 
-function normalizarExtrasIds(extras = []) {
-    const ids = extras
-        .map((extra) => Number(extra?.id))
-        .filter((id) => Number.isInteger(id) && id > 0);
-    return [...new Set(ids)];
-}
-
 async function obtenerArticulosPorIds(connection, articuloIds = []) {
     if (articuloIds.length === 0) return [];
     const placeholders = articuloIds.map(() => '?').join(',');
@@ -54,22 +47,6 @@ async function obtenerArticulosPorIds(connection, articuloIds = []) {
          FROM articulos
          WHERE id IN (${placeholders}) AND activo = 1`,
         articuloIds
-    );
-    return rows;
-}
-
-async function obtenerExtrasValidos(connection, articuloId, extrasIds = []) {
-    if (extrasIds.length === 0) return [];
-    const placeholders = extrasIds.map(() => '?').join(',');
-    const [rows] = await connection.execute(
-        `SELECT a.id, a.nombre, a.precio_extra
-         FROM adicionales a
-         INNER JOIN adicionales_contenido ac
-           ON ac.adicional_id = a.id
-          AND ac.articulo_id = ?
-         WHERE a.disponible = 1
-           AND a.id IN (${placeholders})`,
-        [articuloId, ...extrasIds]
     );
     return rows;
 }

@@ -1,8 +1,10 @@
 /**
  * Servicio de validación y normalización de personalizaciones (extras) para hamburguesas.
  * - Valida que no se combinen "Hacela doble" y "Hacela triple" (por id o por nombre).
- * - Normaliza extras a { id, nombre, precio_extra } y calcula extrasTotal.
+ * - Normaliza extras a { id, nombre, precio_extra, cantidad? } y calcula extrasTotal.
  */
+
+const CANTIDAD_EXTRA_MAXIMA = 99;
 
 const NOMBRES_EXTRAS_INCOMPATIBLES = [
     'Hacela doble',
@@ -17,6 +19,106 @@ const esExtraIncompatible = (nombre) => {
     return NOMBRES_EXTRAS_INCOMPATIBLES.find(
         (inc) => normalizarNombre(inc) === n
     ) || null;
+};
+
+const crearErrorExtras = (message, code) => {
+    const err = new Error(message);
+    err.code = code;
+    return err;
+};
+
+/**
+ * Parsea y valida cantidad de un extra (1..CANTIDAD_EXTRA_MAXIMA).
+ * @param {*} raw
+ * @param {string} [fieldLabel]
+ * @returns {number}
+ */
+const parsearCantidadExtra = (raw, fieldLabel = 'cantidad') => {
+    if (raw === undefined || raw === null) {
+        return 1;
+    }
+
+    const n = typeof raw === 'number' ? raw : Number(raw);
+    if (!Number.isInteger(n)) {
+        throw crearErrorExtras(`${fieldLabel} debe ser un número entero positivo`, 'EXTRA_CANTIDAD_INVALIDA');
+    }
+    if (n < 1) {
+        throw crearErrorExtras(`${fieldLabel} debe ser al menos 1`, 'EXTRA_CANTIDAD_INVALIDA');
+    }
+    if (n > CANTIDAD_EXTRA_MAXIMA) {
+        throw crearErrorExtras(`${fieldLabel} no puede superar ${CANTIDAD_EXTRA_MAXIMA}`, 'EXTRA_CANTIDAD_INVALIDA');
+    }
+    return n;
+};
+
+/**
+ * Obtiene cantidad efectiva de un extra según flag permite_cantidad del catálogo.
+ * @param {number} cantidadSolicitada
+ * @param {*} permiteCantidad
+ * @returns {number}
+ */
+const aplicarCantidadEfectivaExtra = (cantidadSolicitada, permiteCantidad) => {
+    const permite = permiteCantidad === true || permiteCantidad === 1 || permiteCantidad === '1';
+    if (!permite) {
+        return 1;
+    }
+    return Math.min(CANTIDAD_EXTRA_MAXIMA, Math.max(1, cantidadSolicitada));
+};
+
+/**
+ * Consolida entradas duplicadas por id sumando cantidades.
+ * @param {Array<{id: number, cantidad: number}>} extras
+ * @returns {Array<{id: number, cantidad: number}>}
+ */
+const consolidarExtrasPorId = (extras = []) => {
+    const map = new Map();
+    for (const entry of extras) {
+        const id = entry?.id;
+        const cantidad = entry?.cantidad ?? 1;
+        if (map.has(id)) {
+            map.set(id, map.get(id) + cantidad);
+        } else {
+            map.set(id, cantidad);
+        }
+    }
+    return [...map.entries()].map(([id, cantidad]) => ({ id, cantidad }));
+};
+
+/**
+ * Normaliza extras del payload (legacy number[] o nuevo { id, cantidad? }[]).
+ * @param {Array<number|object>} rawExtras
+ * @returns {Array<{id: number, cantidad: number}>}
+ */
+const parsearExtrasDelPayload = (rawExtras) => {
+    if (rawExtras == null) {
+        return [];
+    }
+    if (!Array.isArray(rawExtras)) {
+        throw crearErrorExtras('selectedExtras/extras debe ser un array', 'EXTRAS_FORMATO_INVALIDO');
+    }
+
+    const parsed = rawExtras.map((entry, index) => {
+        if (typeof entry === 'number' || (typeof entry === 'string' && String(entry).trim() !== '')) {
+            const id = Number(entry);
+            if (!Number.isInteger(id) || id <= 0) {
+                throw crearErrorExtras(`Extra en posición ${index}: id inválido`, 'EXTRA_ID_INVALIDO');
+            }
+            return { id, cantidad: 1 };
+        }
+
+        if (typeof entry === 'object' && entry != null) {
+            const id = Number(entry.id);
+            if (!Number.isInteger(id) || id <= 0) {
+                throw crearErrorExtras(`Extra en posición ${index}: id inválido`, 'EXTRA_ID_INVALIDO');
+            }
+            const cantidad = parsearCantidadExtra(entry.cantidad, `cantidad del extra ${id}`);
+            return { id, cantidad };
+        }
+
+        throw crearErrorExtras(`Extra en posición ${index}: formato inválido`, 'EXTRAS_FORMATO_INVALIDO');
+    });
+
+    return consolidarExtrasPorId(parsed);
 };
 
 /**
@@ -48,20 +150,77 @@ const validarExtrasNoDobleYTriple = (extras, adicionalesPorId = null) => {
     return { valid: true };
 };
 
+const obtenerCantidadExtra = (extra) => Math.max(1, parseInt(extra?.cantidad, 10) || 1);
+
 /**
- * Normaliza extras a formato estándar { id, nombre, precio_extra } y calcula extrasTotal.
+ * Normaliza extras a formato estándar { id, nombre, precio_extra, cantidad? } y calcula extrasTotal.
  * @param {Array} extras - Array de extras en cualquier formato
- * @returns {{ extras: Array<{id, nombre, precio_extra}>, extrasTotal: number }}
+ * @returns {{ extras: Array<{id, nombre, precio_extra, cantidad?}>, extrasTotal: number }}
  */
 const normalizarExtras = (extras) => {
     const arr = Array.isArray(extras) ? extras : [];
-    const normalizados = arr.map((e) => ({
-        id: e?.id ?? null,
-        nombre: e?.nombre ?? (e?.nombre_adicional) ?? '',
-        precio_extra: parseFloat(e?.precio_extra ?? e?.precio ?? e?.precio_adicional ?? 0) || 0
-    }));
-    const extrasTotal = normalizados.reduce((sum, x) => sum + x.precio_extra, 0);
+    const normalizados = arr.map((e) => {
+        const cantidad = obtenerCantidadExtra(e);
+        const precio_extra = parseFloat(e?.precio_extra ?? e?.precio ?? e?.precio_adicional ?? 0) || 0;
+        const entry = {
+            id: e?.id ?? null,
+            nombre: e?.nombre ?? (e?.nombre_adicional) ?? '',
+            precio_extra
+        };
+        if (cantidad > 1) {
+            entry.cantidad = cantidad;
+        }
+        return entry;
+    });
+    const extrasTotal = normalizados.reduce(
+        (sum, x) => sum + x.precio_extra * obtenerCantidadExtra(x),
+        0
+    );
     return { extras: normalizados, extrasTotal };
+};
+
+/**
+ * Construye snapshot de extras a partir de filas DB y cantidades solicitadas.
+ * @param {Array} adicionalesRows - Filas de adicionales desde DB
+ * @param {Array<{id: number, cantidad: number}>} extrasParsed
+ * @returns {{ extrasSnapshot: Array, extrasTotal: number }}
+ */
+const construirSnapshotExtrasDesdeDb = (adicionalesRows, extrasParsed) => {
+    const ids = extrasParsed.map((e) => e.id);
+    const rowById = new Map(adicionalesRows.map((r) => [r.id, r]));
+
+    if (adicionalesRows.length !== ids.length) {
+        throw crearErrorExtras('Uno o más adicionales no son válidos para el artículo', 'EXTRAS_INVALIDOS');
+    }
+
+    const extrasSnapshot = extrasParsed.map(({ id, cantidad: cantidadSolicitada }) => {
+        const row = rowById.get(id);
+        const cantidadEfectiva = aplicarCantidadEfectivaExtra(cantidadSolicitada, row.permite_cantidad);
+        const precio_extra = parseFloat(row.precio_extra) || 0;
+        const entry = {
+            id: row.id,
+            nombre: row.nombre,
+            precio_extra
+        };
+        if (cantidadEfectiva > 1) {
+            entry.cantidad = cantidadEfectiva;
+        }
+        return entry;
+    });
+
+    const validacion = validarExtrasNoDobleYTriple(extrasSnapshot);
+    if (!validacion.valid) {
+        const err = new Error(validacion.message);
+        err.code = 'EXTRAS_DOBLE_TRIPLE_INCOMPATIBLES';
+        throw err;
+    }
+
+    const extrasTotal = extrasSnapshot.reduce(
+        (sum, e) => sum + e.precio_extra * obtenerCantidadExtra(e),
+        0
+    );
+
+    return { extrasSnapshot, extrasTotal };
 };
 
 /**
@@ -77,8 +236,15 @@ const construirPersonalizaciones = (extras) => {
 };
 
 module.exports = {
+    CANTIDAD_EXTRA_MAXIMA,
     NOMBRES_EXTRAS_INCOMPATIBLES,
     validarExtrasNoDobleYTriple,
+    parsearCantidadExtra,
+    parsearExtrasDelPayload,
+    consolidarExtrasPorId,
+    aplicarCantidadEfectivaExtra,
+    construirSnapshotExtrasDesdeDb,
+    obtenerCantidadExtra,
     normalizarExtras,
     construirPersonalizaciones
 };

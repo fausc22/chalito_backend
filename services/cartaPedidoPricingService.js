@@ -1,7 +1,12 @@
 /**
  * Cálculo compartido de carrito web (ítems + cupón + totales).
  */
-const { validarExtrasNoDobleYTriple, construirPersonalizaciones } = require('./PersonalizacionesService');
+const {
+    validarExtrasNoDobleYTriple,
+    construirPersonalizaciones,
+    parsearExtrasDelPayload,
+    construirSnapshotExtrasDesdeDb
+} = require('./PersonalizacionesService');
 const { calcularTotalesDesdePrecioFinal } = require('./totalesPrecioFinal');
 const couponService = require('./couponService');
 
@@ -10,10 +15,30 @@ function mapCartaItemsToMpFormat(items = []) {
         articulo_id: item.productId ?? item.articulo_id,
         cantidad: item.quantity ?? item.cantidad,
         observaciones: item.itemNotes ?? item.observaciones ?? null,
-        extras: (item.selectedExtras || item.extras || []).map((extra) =>
-            typeof extra === 'object' && extra != null ? extra : { id: extra }
-        )
+        extras: (item.selectedExtras || item.extras || []).map((extra) => {
+            if (typeof extra === 'object' && extra != null) {
+                const mapped = { id: extra.id };
+                if (extra.cantidad != null) {
+                    mapped.cantidad = extra.cantidad;
+                }
+                return mapped;
+            }
+            return { id: extra };
+        })
     }));
+}
+
+/**
+ * Extrae el array crudo de extras de un ítem de pedido web o MP.
+ */
+function extraerExtrasCrudosDelItem(item = {}) {
+    if (Array.isArray(item.selectedExtras)) {
+        return item.selectedExtras;
+    }
+    if (Array.isArray(item.extras)) {
+        return item.extras;
+    }
+    return [];
 }
 
 /**
@@ -25,11 +50,8 @@ async function calcularCarritoDesdeItems(connection, items = []) {
     for (const item of items) {
         const productId = Number(item.productId ?? item.articulo_id);
         const quantity = Number(item.quantity ?? item.cantidad);
-        const selectedExtras = Array.isArray(item.selectedExtras)
-            ? item.selectedExtras
-            : Array.isArray(item.extras)
-                ? item.extras.map((e) => (typeof e === 'object' && e != null ? e.id : e))
-                : [];
+        const extrasCrudos = extraerExtrasCrudosDelItem(item);
+        const extrasParsed = parsearExtrasDelPayload(extrasCrudos);
 
         if (!Number.isInteger(productId) || productId <= 0) {
             throw new Error(`productId inválido: ${item.productId ?? item.articulo_id}`);
@@ -53,36 +75,26 @@ async function calcularCarritoDesdeItems(connection, items = []) {
         let extrasSnapshot = [];
         let extrasTotal = 0;
 
-        if (selectedExtras.length > 0) {
-            const placeholders = selectedExtras.map(() => '?').join(',');
+        if (extrasParsed.length > 0) {
+            const ids = extrasParsed.map((e) => e.id);
+            const placeholders = ids.map(() => '?').join(',');
             const [adicionalesRows] = await connection.execute(
-                `SELECT a.id, a.nombre, a.precio_extra
+                `SELECT a.id, a.nombre, a.precio_extra, a.permite_cantidad, a.disponible
                  FROM adicionales a
                  INNER JOIN adicionales_contenido ac ON a.id = ac.adicional_id AND ac.articulo_id = ?
                  WHERE a.id IN (${placeholders}) AND a.disponible = 1`,
-                [productId, ...selectedExtras]
+                [productId, ...ids]
             );
 
-            if (adicionalesRows.length !== selectedExtras.length) {
+            if (adicionalesRows.length !== ids.length) {
                 throw new Error(
                     `Uno o más adicionales no son válidos para el artículo ${articulo.nombre} (productId: ${productId})`
                 );
             }
 
-            extrasSnapshot = adicionalesRows.map((a) => ({
-                id: a.id,
-                nombre: a.nombre,
-                precio_extra: parseFloat(a.precio_extra) || 0
-            }));
-
-            const validacion = validarExtrasNoDobleYTriple(extrasSnapshot);
-            if (!validacion.valid) {
-                const err = new Error(validacion.message);
-                err.code = 'EXTRAS_DOBLE_TRIPLE_INCOMPATIBLES';
-                throw err;
-            }
-
-            extrasTotal = extrasSnapshot.reduce((sum, e) => sum + e.precio_extra, 0);
+            const resultado = construirSnapshotExtrasDesdeDb(adicionalesRows, extrasParsed);
+            extrasSnapshot = resultado.extrasSnapshot;
+            extrasTotal = resultado.extrasTotal;
         }
 
         const precioUnitario = precioBase + extrasTotal;
@@ -157,6 +169,7 @@ async function calcularPricingCompleto(connection, items = [], couponCode = null
 
 module.exports = {
     mapCartaItemsToMpFormat,
+    extraerExtrasCrudosDelItem,
     calcularCarritoDesdeItems,
     aplicarCuponATotal,
     calcularPricingCompleto

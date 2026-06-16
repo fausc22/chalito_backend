@@ -8,6 +8,14 @@
  */
 const { z } = require('zod');
 
+const extraItemSchema = z.union([
+    z.coerce.number().int().positive('id de extra debe ser un número positivo'),
+    z.object({
+        id: z.coerce.number().int().positive('extras.id debe ser un número positivo'),
+        cantidad: z.coerce.number().int().positive('extras.cantidad debe ser un entero positivo').optional()
+    })
+]);
+
 const montoAbonaInputSchema = z.union([z.string(), z.number()]).optional().nullable();
 
 function parseMontoAbona(value) {
@@ -52,7 +60,7 @@ const crearPedidoCartaSchema = z.object({
     items: z.array(z.object({
         productId: z.coerce.number().int().positive('productId debe ser un número positivo'),
         quantity: z.coerce.number().int().positive('La cantidad debe ser mayor a 0'),
-        selectedExtras: z.array(z.coerce.number().int().nonnegative()).optional().default([]),
+        selectedExtras: z.array(extraItemSchema).optional().default([]),
         itemNotes: z.string().max(255).optional().nullable()
     })).min(1, 'Debe incluir al menos un item')
 }).superRefine((data, ctx) => {
@@ -96,7 +104,8 @@ const checkoutMercadoPagoSchema = z.object({
         cantidad: z.coerce.number().int().positive('items.cantidad debe ser mayor a 0'),
         observaciones: z.string().max(255).optional().nullable(),
         extras: z.array(z.object({
-            id: z.coerce.number().int().positive('extras.id debe ser un número positivo')
+            id: z.coerce.number().int().positive('extras.id debe ser un número positivo'),
+            cantidad: z.coerce.number().int().positive('extras.cantidad debe ser un entero positivo').optional()
         })).optional().default([])
     })).min(1, 'Debe incluir al menos un item'),
     couponCode: z.string().max(64).optional().nullable()
@@ -136,7 +145,7 @@ const validarCuponSchema = z.object({
     items: z.array(z.object({
         productId: z.coerce.number().int().positive('productId debe ser un número positivo'),
         quantity: z.coerce.number().int().positive('La cantidad debe ser mayor a 0'),
-        selectedExtras: z.array(z.coerce.number().int().nonnegative()).optional().default([]),
+        selectedExtras: z.array(extraItemSchema).optional().default([]),
         itemNotes: z.string().max(255).optional().nullable()
     })).min(1, 'Debe incluir al menos un item')
 });

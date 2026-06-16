@@ -45,7 +45,12 @@ const mapExtrasNames = (articulo = {}) => {
     if (!Array.isArray(personalizaciones?.extras)) return [];
 
     return personalizaciones.extras
-        .map((extra = {}) => extra.nombre || extra.nombre_adicional || null)
+        .map((extra = {}) => {
+            const nombre = extra.nombre || extra.nombre_adicional || null;
+            if (!nombre) return null;
+            const cantidad = Math.max(1, parseInt(extra.cantidad, 10) || 1);
+            return cantidad > 1 ? `${nombre} x${cantidad}` : nombre;
+        })
         .filter(Boolean);
 };
 
