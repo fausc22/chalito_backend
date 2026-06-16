@@ -1,5 +1,22 @@
 const { z } = require('zod');
 
+const fechaSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'La fecha debe tener formato YYYY-MM-DD');
+
+const obtenerFechaHoyYYYYMMDD = () => {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const d = String(now.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+};
+
+const fechaGastoOptionalSchema = fechaSchema
+    .optional()
+    .refine(
+        (fecha) => !fecha || fecha <= obtenerFechaHoyYYYYMMDD(),
+        { message: 'La fecha no puede ser futura' }
+    );
+
 // =====================================================
 // SCHEMAS PARA GASTOS
 // =====================================================
@@ -21,7 +38,8 @@ const crearGastoSchema = z.object({
     observaciones: z.string()
         .max(255, 'Las observaciones no pueden exceder 255 caracteres')
         .optional()
-        .nullable()
+        .nullable(),
+    fecha: fechaGastoOptionalSchema
 });
 
 // Schema para editar un gasto
@@ -42,7 +60,8 @@ const editarGastoSchema = z.object({
     observaciones: z.string()
         .max(255, 'Las observaciones no pueden exceder 255 caracteres')
         .optional()
-        .nullable()
+        .nullable(),
+    fecha: fechaGastoOptionalSchema
 });
 
 // =====================================================

@@ -3,6 +3,14 @@ const db = require('./dbPromise');
 const CuentasSistema = require('../services/CuentasSistemaService');
 const { auditarOperacion, obtenerDatosAnteriores, limpiarDatosSensibles } = require('../middlewares/auditoriaMiddleware');
 
+const obtenerFechaActualYYYYMMDD = () => {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const d = String(now.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+};
+
 // =====================================================
 // GESTIÓN DE GASTOS
 // =====================================================
@@ -24,8 +32,11 @@ const crearGasto = async (req, res) => {
             descripcion,
             monto,
             forma_pago = 'EFECTIVO',
-            observaciones
+            observaciones,
+            fecha
         } = req.validatedData || req.body;
+
+        const fechaGasto = fecha || obtenerFechaActualYYYYMMDD();
 
         const cuentaX = await CuentasSistema.obtenerCuentaX(connection);
         const cuenta_id = cuentaX.id;
@@ -54,10 +65,11 @@ const crearGasto = async (req, res) => {
             INSERT INTO gastos (
                 fecha, categoria_id, categoria_nombre, descripcion, monto,
                 forma_pago, observaciones, usuario_id, cuenta_id
-            ) VALUES (NOW(), ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
         
         const [resultGasto] = await connection.execute(queryGasto, [
+            fechaGasto,
             categoria_id,
             categoria[0].nombre,
             descripcion,
@@ -86,6 +98,7 @@ const crearGasto = async (req, res) => {
             tabla: 'gastos',
             registroId: gastoId,
             datosNuevos: limpiarDatosSensibles({
+                fecha: fechaGasto,
                 categoria_id,
                 categoria_nombre: categoria[0].nombre,
                 descripcion,
@@ -103,6 +116,7 @@ const crearGasto = async (req, res) => {
             message: 'Gasto registrado exitosamente',
             data: {
                 id: gastoId,
+                fecha: fechaGasto,
                 categoria_id,
                 categoria_nombre: categoria[0].nombre,
                 descripcion,
@@ -337,7 +351,8 @@ const editarGasto = async (req, res) => {
             descripcion,
             monto,
             forma_pago,
-            observaciones
+            observaciones,
+            fecha
         } = req.validatedData || req.body;
         
         console.log(`✏️ Editando gasto ID: ${id}`);
@@ -435,6 +450,10 @@ const editarGasto = async (req, res) => {
         if (observaciones !== undefined) {
             camposActualizar.push('observaciones = ?');
             valoresActualizar.push(observaciones || null);
+        }
+        if (fecha !== undefined) {
+            camposActualizar.push('fecha = ?');
+            valoresActualizar.push(fecha);
         }
         if (cuentaIdAnterior !== cuentaIdFinal) {
             camposActualizar.push('cuenta_id = ?');
