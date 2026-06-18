@@ -4,6 +4,10 @@ const {
     buildMessagePreviews,
     isAliasTransferenciaValido,
 } = require('../services/whatsappMessageBuilder');
+const {
+    validatePlantillasPayload,
+    hasValidationErrors,
+} = require('../services/whatsappTemplateValidator');
 
 const whatsappEstado = async (req, res) => {
     try {
@@ -77,11 +81,13 @@ const obtenerSettings = async (req, res) => {
 const obtenerPreviews = async (req, res) => {
     try {
         const settings = await whatsappSettingsService.getSettings();
+        const aliasPreview = isAliasTransferenciaValido(settings.aliasTransferencia)
+            ? settings.aliasTransferencia
+            : 'tu.alias.mp';
         const previews = buildMessagePreviews(
             settings.nombreNegocio,
-            isAliasTransferenciaValido(settings.aliasTransferencia)
-                ? settings.aliasTransferencia
-                : 'tu.alias.mp'
+            aliasPreview,
+            settings.plantillas
         );
         res.json({ success: true, data: previews });
     } catch (error) {
@@ -91,7 +97,7 @@ const obtenerPreviews = async (req, res) => {
 
 const actualizarSettings = async (req, res) => {
     try {
-        const { notificacionesActivas, aliasTransferencia } = req.body || {};
+        const { notificacionesActivas, aliasTransferencia, plantillas } = req.body || {};
 
         if (aliasTransferencia !== undefined) {
             const trimmed = String(aliasTransferencia).trim();
@@ -109,9 +115,28 @@ const actualizarSettings = async (req, res) => {
             }
         }
 
+        if (plantillas !== undefined) {
+            if (typeof plantillas !== 'object' || plantillas === null || Array.isArray(plantillas)) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'El campo plantillas debe ser un objeto',
+                });
+            }
+
+            const errors = validatePlantillasPayload(plantillas);
+            if (hasValidationErrors(errors)) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Hay plantillas con placeholders obligatorios faltantes',
+                    errors,
+                });
+            }
+        }
+
         const data = await whatsappSettingsService.updateSettings({
             notificacionesActivas,
             aliasTransferencia,
+            plantillas,
         });
 
         res.json({ success: true, message: 'Configuración guardada', data });

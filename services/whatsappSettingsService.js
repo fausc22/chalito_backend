@@ -2,9 +2,18 @@ function getDb() {
     return require('../controllers/dbPromise');
 }
 
+const {
+    TEMPLATE_KEYS,
+    TEMPLATE_DB_KEYS,
+    DEFAULT_TEMPLATES,
+    getDefaultTemplatesCopy,
+} = require('./whatsappTemplateDefaults');
+const { isTemplateValid } = require('./whatsappTemplateValidator');
+
 const KEYS = {
     NOTIFICACIONES_ACTIVAS: 'WHATSAPP_NOTIFICACIONES_ACTIVAS',
     ALIAS_TRANSFERENCIA: 'ALIAS_TRANSFERENCIA',
+    ...TEMPLATE_DB_KEYS,
 };
 
 const BUSINESS_NAME = (process.env.NOMBRE_LOCAL || process.env.NOMBRE_NEGOCIO || 'El Chalito').trim();
@@ -22,8 +31,28 @@ const parseBoolean = (value, defaultValue = true) => {
     return defaultValue;
 };
 
+const resolvePlantillaFromDb = (templateKey, dbValue) => {
+    const trimmed = String(dbValue ?? '').trim();
+    if (trimmed && isTemplateValid(templateKey, trimmed)) {
+        return trimmed;
+    }
+    return DEFAULT_TEMPLATES[templateKey];
+};
+
+const buildPlantillasFromMap = (map) => {
+    const plantillas = {};
+    for (const key of TEMPLATE_KEYS) {
+        plantillas[key] = resolvePlantillaFromDb(key, map[TEMPLATE_DB_KEYS[key]]);
+    }
+    return plantillas;
+};
+
 const fetchSettingsFromDb = async () => {
-    const claves = Object.values(KEYS);
+    const claves = [
+        KEYS.NOTIFICACIONES_ACTIVAS,
+        KEYS.ALIAS_TRANSFERENCIA,
+        ...Object.values(TEMPLATE_DB_KEYS),
+    ];
     const placeholders = claves.map(() => '?').join(',');
     const [rows] = await getDb().execute(
         `SELECT clave, valor FROM configuracion_sistema WHERE clave IN (${placeholders})`,
@@ -41,26 +70,34 @@ const fetchSettingsFromDb = async () => {
         notificacionesActivas: parseBoolean(map[KEYS.NOTIFICACIONES_ACTIVAS], true),
         aliasTransferencia: alias,
         nombreNegocio: BUSINESS_NAME,
+        plantillas: buildPlantillasFromMap(map),
+        plantillasDefault: getDefaultTemplatesCopy(),
     };
 };
 
 const getSettings = async () => {
     const now = Date.now();
     if (settingsCache && now - settingsCacheAt < CACHE_TTL_MS) {
-        return { ...settingsCache };
+        return { ...settingsCache, plantillas: { ...settingsCache.plantillas } };
     }
 
     try {
         const settings = await fetchSettingsFromDb();
         settingsCache = settings;
         settingsCacheAt = now;
-        return { ...settings };
+        return {
+            ...settings,
+            plantillas: { ...settings.plantillas },
+            plantillasDefault: getDefaultTemplatesCopy(),
+        };
     } catch (error) {
         console.error('Error leyendo settings WhatsApp, usando defaults:', error.message);
         return {
             notificacionesActivas: true,
             aliasTransferencia: (process.env.ALIAS_TRANSFERENCIA || 'ALIAS.NO.CONFIGURADO').trim(),
             nombreNegocio: BUSINESS_NAME,
+            plantillas: getDefaultTemplatesCopy(),
+            plantillasDefault: getDefaultTemplatesCopy(),
         };
     }
 };
@@ -83,6 +120,19 @@ const updateSettings = async (payload = {}) => {
         ]);
     }
 
+    if (payload.plantillas && typeof payload.plantillas === 'object') {
+        for (const [templateKey, templateText] of Object.entries(payload.plantillas)) {
+            if (!TEMPLATE_KEYS.includes(templateKey)) {
+                continue;
+            }
+            updates.push([
+                TEMPLATE_DB_KEYS[templateKey],
+                String(templateText ?? '').trim(),
+                'STRING',
+            ]);
+        }
+    }
+
     for (const [clave, valor, tipo] of updates) {
         await getDb().execute(
             `UPDATE configuracion_sistema SET valor = ?, tipo = ? WHERE clave = ?`,
@@ -101,7 +151,9 @@ const invalidateCache = () => {
 
 module.exports = {
     KEYS,
+    TEMPLATE_KEYS,
     getSettings,
     updateSettings,
     invalidateCache,
+    resolvePlantillaFromDb,
 };

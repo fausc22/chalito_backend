@@ -6,7 +6,10 @@ const {
     normalizeModalidad,
     isAliasTransferenciaValido,
     buildMessagePreviews,
+    applyTemplate,
+    resolveTemplate,
 } = require('../../services/whatsappMessageBuilder');
+const { DEFAULT_TEMPLATES } = require('../../services/whatsappTemplateDefaults');
 
 const BASE = {
     id: 42,
@@ -101,4 +104,48 @@ test('buildMessagePreviews devuelve 6 variantes', () => {
     const previews = buildMessagePreviews();
     assert.equal(previews.length, 6);
     assert.ok(previews.every((p) => p.key && p.label && p.texto));
+});
+
+test('applyTemplate reemplaza placeholders conocidos', () => {
+    const result = applyTemplate('Hola {{local}}, pedido #{{id}}\n{{contenido}}\n{{total}}', {
+        local: 'Test',
+        id: '99',
+        contenido: '1x Pizza',
+        total: '$ 1000',
+    });
+    assert.equal(result, 'Hola Test, pedido #99\n1x Pizza\n$ 1000');
+});
+
+test('buildWhatsAppMessage usa plantilla custom', () => {
+    const customTemplate = 'Gracias {{local}}! Orden {{id}}\n{{contenido}}\nMonto: {{total}}\nNos vemos pronto.';
+    const msg = buildWhatsAppMessage({
+        ...BASE,
+        medioPago: 'EFECTIVO',
+        modalidad: 'RETIRO',
+        plantillas: { EFECTIVO_RETIRO: customTemplate },
+    });
+    assert.match(msg, /Gracias El Chalito/);
+    assert.match(msg, /Orden 42/);
+    assert.match(msg, /Monto:.*5\.000/);
+    assert.match(msg, /Nos vemos pronto/);
+});
+
+test('resolveTemplate usa default si plantilla vacia', () => {
+    const resolved = resolveTemplate('EFECTIVO_RETIRO', { EFECTIVO_RETIRO: '' });
+    assert.equal(resolved, DEFAULT_TEMPLATES.EFECTIVO_RETIRO);
+});
+
+test('resolveTemplate usa default si plantilla invalida', () => {
+    const resolved = resolveTemplate('EFECTIVO_RETIRO', { EFECTIVO_RETIRO: 'sin placeholders' });
+    assert.equal(resolved, DEFAULT_TEMPLATES.EFECTIVO_RETIRO);
+});
+
+test('buildMessagePreviews respeta plantillas custom', () => {
+    const custom = 'Custom {{local}} #{{id}}\n{{contenido}}\n{{total}}\nFin.';
+    const previews = buildMessagePreviews('Local Test', 'alias.test', {
+        EFECTIVO_RETIRO: custom,
+    });
+    const efectivoRetiro = previews.find((p) => p.key === 'EFECTIVO_RETIRO');
+    assert.match(efectivoRetiro.texto, /Custom Local Test #1234/);
+    assert.match(efectivoRetiro.texto, /Fin\./);
 });

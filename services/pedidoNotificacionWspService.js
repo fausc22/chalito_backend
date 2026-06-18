@@ -48,6 +48,7 @@ async function notificarPedidoWhatsApp({
         total,
         local: settings.nombreNegocio,
         alias: settings.aliasTransferencia,
+        plantillas: settings.plantillas,
     });
 
     return enviarWhatsApp(cliente_telefono, mensaje);
