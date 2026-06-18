@@ -11,6 +11,18 @@ const { calcularTotalesDesdePrecioFinal } = require('./totalesPrecioFinal');
 const { calcularPricingCompleto } = require('./cartaPedidoPricingService');
 const { redeemCoupon } = require('./couponService');
 const { notificarPedidoMercadoPagoAprobadoPorId } = require('./pedidoNotificacionWspService');
+const {
+    mapearEstadoMercadoPago,
+    mapearEstadoPagoUiDesdeSesion,
+    resolverAccionSesionMp,
+    seleccionarPagoCanonicoMp,
+    sesionReconciliable
+} = require('./mercadoPagoPaymentStateMachine');
+const {
+    isHardeningEnabled,
+    logMpEvent,
+    incrementMetric
+} = require('./mercadoPagoPaymentLogger');
 
 const PROVEEDOR_MERCADOPAGO = 'MERCADOPAGO';
 const MONEDA_ARS = 'ARS';
@@ -22,6 +34,8 @@ const ESTADO_PAGO_CANCELADO = 'CANCELADO';
 const PREFIJO_REF_SESION_MP = 'sesion_mp_';
 const SESION_EXPIRACION_MINUTOS = 30;
 const TOLERANCIA_MONTO_MP_ARS = 1.5;
+const MP_LOCK_TIMEOUT_SEC = 10;
+const MP_RECONCILE_CANCELADO_HORAS = 2;
 
 const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -427,23 +441,6 @@ function esReferenciaSesionMp(referenciaExterna) {
     return String(referenciaExterna || '').startsWith(PREFIJO_REF_SESION_MP);
 }
 
-function mapearEstadoMercadoPago(status) {
-    const normalized = String(status || '').trim().toLowerCase();
-    switch (normalized) {
-    case 'approved':
-        return ESTADO_PAGO_PAGADO;
-    case 'pending':
-    case 'in_process':
-        return ESTADO_PAGO_PENDIENTE;
-    case 'rejected':
-        return ESTADO_PAGO_RECHAZADO;
-    case 'cancelled':
-        return ESTADO_PAGO_CANCELADO;
-    default:
-        return ESTADO_PAGO_PENDIENTE;
-    }
-}
-
 function construirResumenPagoMp(pagoMp = {}) {
     return {
         id: pagoMp?.id ? String(pagoMp.id) : null,
@@ -540,6 +537,311 @@ async function crearPedidoDesdeSesion(connection, sesionRow, resumenPagoMp, paym
     return pedidoId;
 }
 
+function buildLockKeySesionMp(sessionId) {
+    return `mp_sesion_${String(sessionId)}`;
+}
+
+async function adquirirLockMp(connection, lockKey) {
+    const [rows] = await connection.execute('SELECT GET_LOCK(?, ?) AS acquired', [lockKey, MP_LOCK_TIMEOUT_SEC]);
+    const acquired = Number(rows?.[0]?.acquired) === 1;
+    if (!acquired) {
+        incrementMetric('locksFallidos');
+        logMpEvent('warn', 'mp_lock_no_adquirido', { lockKey });
+    }
+    return acquired;
+}
+
+async function liberarLockMp(connection, lockKey) {
+    try {
+        await connection.execute('SELECT RELEASE_LOCK(?)', [lockKey]);
+    } catch (_) { /* noop */ }
+}
+
+async function actualizarActividadMpSesion(connection, sesionId, paymentId, estadoProveedor, opciones = {}) {
+    const { marcarCancelado = false } = opciones;
+    const estadoSet = marcarCancelado
+        ? `estado = 'CANCELADO',`
+        : '';
+    await connection.execute(
+        `UPDATE checkout_sesiones_mp
+         SET ${estadoSet}
+             id_pago = ?,
+             estado_mp = ?,
+             fecha_modificacion = NOW()
+         WHERE id = ?
+           AND estado IN ('PENDIENTE', 'CANCELADO')`,
+        [String(paymentId), estadoProveedor, sesionId]
+    );
+}
+
+async function procesarPagoSesionMpConLock(db, sesionInicial, resumenPagoMp, paymentId) {
+    const connection = await db.getConnection();
+    const lockKey = buildLockKeySesionMp(sesionInicial.id);
+    const estadoProveedor = resumenPagoMp.status;
+    const estadoPagoInterno = mapearEstadoMercadoPago(estadoProveedor);
+
+    try {
+        await connection.beginTransaction();
+
+        const lockOk = await adquirirLockMp(connection, lockKey);
+        if (!lockOk) {
+            await connection.rollback();
+            return {
+                procesado: false,
+                motivo: 'lock_no_adquirido',
+                paymentId: String(paymentId),
+                externalReference: resumenPagoMp.external_reference
+            };
+        }
+
+        const [locked] = await connection.execute(
+            'SELECT * FROM checkout_sesiones_mp WHERE id = ? FOR UPDATE',
+            [sesionInicial.id]
+        );
+
+        if (locked.length === 0) {
+            await liberarLockMp(connection, lockKey);
+            await connection.rollback();
+            return {
+                procesado: false,
+                motivo: 'sesion_perdida',
+                paymentId: String(paymentId),
+                externalReference: resumenPagoMp.external_reference
+            };
+        }
+
+        const row = locked[0];
+        const accion = resolverAccionSesionMp({
+            estadoSesion: row.estado,
+            estadoProveedor,
+            pedidoIdExistente: row.pedido_id
+        });
+
+        logMpEvent('info', 'mp_sesion_accion', {
+            sessionId: row.id,
+            paymentId: String(paymentId),
+            estadoSesion: row.estado,
+            estadoProveedor,
+            accion,
+            hardening: isHardeningEnabled()
+        });
+
+        if (accion === 'idempotente') {
+            await liberarLockMp(connection, lockKey);
+            await connection.commit();
+            return {
+                procesado: true,
+                esPagoNuevo: false,
+                pedidoId: row.pedido_id ? Number(row.pedido_id) : null,
+                estadoPagoInterno,
+                externalReference: row.referencia_externa,
+                resumenPagoMp,
+                paymentId: String(paymentId),
+                pagoRecienConfirmadoLegacy: false,
+                motivo: 'sesion_ya_procesada'
+            };
+        }
+
+        if (accion === 'ignorar') {
+            await liberarLockMp(connection, lockKey);
+            await connection.commit();
+            incrementMetric('aprobacionesIgnoradas');
+            return {
+                procesado: true,
+                esPagoNuevo: false,
+                pedidoId: null,
+                estadoPagoInterno,
+                externalReference: row.referencia_externa,
+                resumenPagoMp,
+                paymentId: String(paymentId),
+                pagoRecienConfirmadoLegacy: false,
+                motivo: 'sesion_expirada_sin_aprobacion'
+            };
+        }
+
+        if (accion === 'crear_pedido') {
+            const pedidoId = await crearPedidoDesdeSesion(connection, row, resumenPagoMp, paymentId);
+            await liberarLockMp(connection, lockKey);
+            await connection.commit();
+
+            incrementMetric('aprobacionesCreadas');
+            try {
+                await notificarPedidoMercadoPagoAprobadoPorId(pedidoId);
+            } catch (err) {
+                console.warn('⚠️ [WA] No se pudo enviar notificación MP aprobado:', err.message);
+            }
+
+            return {
+                procesado: true,
+                esPagoNuevo: true,
+                pedidoId,
+                estadoPagoInterno,
+                externalReference: row.referencia_externa,
+                resumenPagoMp,
+                paymentId: String(paymentId),
+                pagoRecienConfirmadoLegacy: false,
+                motivo: 'pedido_creado_desde_sesion'
+            };
+        }
+
+        if (accion === 'actualizar_pendiente') {
+            await actualizarActividadMpSesion(connection, row.id, paymentId, estadoProveedor);
+            await liberarLockMp(connection, lockKey);
+            await connection.commit();
+            return {
+                procesado: true,
+                esPagoNuevo: false,
+                pedidoId: null,
+                estadoPagoInterno,
+                externalReference: row.referencia_externa,
+                resumenPagoMp,
+                paymentId: String(paymentId),
+                pagoRecienConfirmadoLegacy: false,
+                motivo: 'sesion_pendiente_actualizada'
+            };
+        }
+
+        if (accion === 'registrar_no_aprobado') {
+            if (isHardeningEnabled()) {
+                await actualizarActividadMpSesion(connection, row.id, paymentId, estadoProveedor);
+            } else {
+                await actualizarActividadMpSesion(connection, row.id, paymentId, estadoProveedor, {
+                    marcarCancelado: true
+                });
+            }
+            incrementMetric('rechazosRegistrados');
+            await liberarLockMp(connection, lockKey);
+            await connection.commit();
+            return {
+                procesado: true,
+                esPagoNuevo: false,
+                pedidoId: null,
+                estadoPagoInterno,
+                externalReference: row.referencia_externa,
+                resumenPagoMp,
+                paymentId: String(paymentId),
+                pagoRecienConfirmadoLegacy: false,
+                motivo: isHardeningEnabled() ? 'rechazo_registrado_sesion_abierta' : 'sesion_cancelada_legacy'
+            };
+        }
+
+        await liberarLockMp(connection, lockKey);
+        await connection.commit();
+        return {
+            procesado: true,
+            esPagoNuevo: false,
+            pedidoId: null,
+            estadoPagoInterno,
+            externalReference: row.referencia_externa,
+            resumenPagoMp,
+            paymentId: String(paymentId),
+            pagoRecienConfirmadoLegacy: false,
+            motivo: 'accion_no_aplicada'
+        };
+    } catch (err) {
+        try { await connection.rollback(); } catch (_) { /* noop */ }
+        try { await liberarLockMp(connection, lockKey); } catch (_) { /* noop */ }
+        incrementMetric('erroresProcesamiento');
+        console.error('❌ [MP] Error procesando sesión con lock:', err.message);
+        throw err;
+    } finally {
+        connection.release();
+    }
+}
+
+async function buscarPagosPorReferenciaExterna(referenciaExterna) {
+    const client = getMercadoPagoClient();
+    const paymentClient = new Payment(client);
+    const searchRes = await paymentClient.search({
+        options: {
+            sort: 'date_created',
+            criteria: 'desc',
+            external_reference: referenciaExterna
+        }
+    });
+    return Array.isArray(searchRes?.results) ? searchRes.results : [];
+}
+
+async function reconciliarReferenciaExternaMp(db, referenciaExterna, opciones = {}) {
+    const { origen = 'manual' } = opciones;
+    incrementMetric('reconciliacionesEjecutadas');
+    logMpEvent('info', 'mp_reconciliacion_iniciada', { referenciaExterna, origen });
+
+    const results = await buscarPagosPorReferenciaExterna(referenciaExterna);
+    const candidato = seleccionarPagoCanonicoMp(results);
+    if (!candidato?.id) {
+        return {
+            reconciliado: false,
+            motivo: 'sin_pagos_en_mp',
+            referenciaExterna
+        };
+    }
+
+    const full = await obtenerPagoMercadoPago(String(candidato.id));
+    const resumen = construirResumenPagoMp(full);
+    const resultado = await procesarPagoMercadoPagoInterno(db, resumen, String(candidato.id));
+
+    if (resultado?.pedidoId && String(resultado.estadoPagoInterno || '').toUpperCase() === ESTADO_PAGO_PAGADO) {
+        incrementMetric('aprobacionesRecuperadas');
+    }
+
+    return {
+        reconciliado: Boolean(resultado?.procesado),
+        referenciaExterna,
+        paymentId: String(candidato.id),
+        resultado
+    };
+}
+
+async function reconciliarSesionMpPorId(db, sessionIdRaw, opciones = {}) {
+    const sessionId = String(sessionIdRaw || '').trim();
+    if (!UUID_V4_RE.test(sessionId)) {
+        return { encontrado: false, motivo: 'id_invalido' };
+    }
+
+    const [rows] = await db.execute(
+        `SELECT id, estado, referencia_externa, pedido_id
+         FROM checkout_sesiones_mp
+         WHERE id = ?
+         LIMIT 1`,
+        [sessionId]
+    );
+
+    if (rows.length === 0) {
+        return { encontrado: false, motivo: 'sesion_no_encontrada' };
+    }
+
+    const sesion = rows[0];
+    if (!sesionReconciliable(sesion.estado) && String(sesion.estado || '').toUpperCase() !== 'PROCESADO') {
+        return {
+            encontrado: true,
+            reconciliado: false,
+            motivo: 'sesion_no_reconciliable',
+            sessionId
+        };
+    }
+
+    if (String(sesion.estado || '').toUpperCase() === 'PROCESADO' && sesion.pedido_id) {
+        return {
+            encontrado: true,
+            reconciliado: true,
+            motivo: 'sesion_ya_procesada',
+            sessionId,
+            pedidoId: Number(sesion.pedido_id)
+        };
+    }
+
+    const resultadoRecon = await reconciliarReferenciaExternaMp(db, sesion.referencia_externa, {
+        origen: opciones.origen || 'sesion'
+    });
+
+    return {
+        encontrado: true,
+        sessionId,
+        ...resultadoRecon
+    };
+}
+
 /**
  * Núcleo compartido webhook + worker de reconciliación.
  */
@@ -575,138 +877,8 @@ async function procesarPagoMercadoPagoInterno(db, resumenPagoMp, paymentId) {
             };
         }
 
-        const sesion = sesionRows[0];
-        const estadoSesion = String(sesion.estado || '').toUpperCase();
-
-        if (estadoSesion === 'PROCESADO') {
-            return {
-                procesado: true,
-                esPagoNuevo: false,
-                pedidoId: sesion.pedido_id ? Number(sesion.pedido_id) : null,
-                estadoPagoInterno,
-                externalReference,
-                resumenPagoMp,
-                paymentId: String(paymentId),
-                pagoRecienConfirmadoLegacy: false
-            };
-        }
-
-        if (estadoSesion === 'EXPIRADO' || estadoSesion === 'CANCELADO') {
-            if (estadoPagoInterno === ESTADO_PAGO_PAGADO) {
-                console.warn(
-                    `[MP] Pago aprobado tardío para sesión ${sesion.id} en estado ${estadoSesion}; se ignora.`
-                );
-            }
-            return {
-                procesado: true,
-                esPagoNuevo: false,
-                pedidoId: null,
-                estadoPagoInterno,
-                externalReference,
-                resumenPagoMp,
-                paymentId: String(paymentId),
-                motivo: 'sesion_ya_cerrada',
-                pagoRecienConfirmadoLegacy: false
-            };
-        }
-
-        if (estadoPagoInterno === ESTADO_PAGO_PENDIENTE) {
-            await db.execute(
-                `UPDATE checkout_sesiones_mp
-                 SET id_pago = ?, estado_mp = ?, fecha_modificacion = NOW()
-                 WHERE id = ? AND estado = 'PENDIENTE'`,
-                [String(paymentId), estadoProveedor, sesion.id]
-            );
-            return {
-                procesado: true,
-                esPagoNuevo: false,
-                pedidoId: null,
-                estadoPagoInterno,
-                externalReference,
-                resumenPagoMp,
-                paymentId: String(paymentId),
-                pagoRecienConfirmadoLegacy: false
-            };
-        }
-
-        if (estadoPagoInterno === ESTADO_PAGO_RECHAZADO || estadoPagoInterno === ESTADO_PAGO_CANCELADO) {
-            await db.execute(
-                `UPDATE checkout_sesiones_mp
-                 SET estado = 'CANCELADO',
-                     id_pago = ?,
-                     estado_mp = ?,
-                     fecha_modificacion = NOW()
-                 WHERE id = ? AND estado = 'PENDIENTE'`,
-                [String(paymentId), estadoProveedor, sesion.id]
-            );
-            return {
-                procesado: true,
-                esPagoNuevo: false,
-                pedidoId: null,
-                estadoPagoInterno,
-                externalReference,
-                resumenPagoMp,
-                paymentId: String(paymentId),
-                pagoRecienConfirmadoLegacy: false
-            };
-        }
-
-        if (estadoPagoInterno === ESTADO_PAGO_PAGADO) {
-            const connection = await db.getConnection();
-            let pedidoId = null;
-            let esPagoNuevo = false;
-            try {
-                await connection.beginTransaction();
-                const [locked] = await connection.execute(
-                    `SELECT * FROM checkout_sesiones_mp WHERE id = ? FOR UPDATE`,
-                    [sesion.id]
-                );
-                if (locked.length === 0) {
-                    await connection.rollback();
-                    return { procesado: false, motivo: 'sesion_perdida', paymentId: String(paymentId) };
-                }
-                const row = locked[0];
-                if (String(row.estado).toUpperCase() === 'PROCESADO') {
-                    await connection.commit();
-                    return {
-                        procesado: true,
-                        esPagoNuevo: false,
-                        pedidoId: Number(row.pedido_id),
-                        estadoPagoInterno,
-                        externalReference,
-                        resumenPagoMp,
-                        paymentId: String(paymentId),
-                        pagoRecienConfirmadoLegacy: false
-                    };
-                }
-                pedidoId = await crearPedidoDesdeSesion(connection, row, resumenPagoMp, paymentId);
-                esPagoNuevo = true;
-                await connection.commit();
-
-                try {
-                    await notificarPedidoMercadoPagoAprobadoPorId(pedidoId);
-                } catch (err) {
-                    console.warn('⚠️ [WA] No se pudo enviar notificación MP aprobado:', err.message);
-                }
-
-                return {
-                    procesado: true,
-                    esPagoNuevo,
-                    pedidoId,
-                    estadoPagoInterno,
-                    externalReference,
-                    resumenPagoMp,
-                    paymentId: String(paymentId),
-                    pagoRecienConfirmadoLegacy: false
-                };
-            } catch (err) {
-                try { await connection.rollback(); } catch (_) { /* noop */ }
-                console.error('❌ [MP] Error creando pedido desde sesión:', err.message);
-                throw err;
-            } finally {
-                connection.release();
-            }
-        }
+        incrementMetric('webhooksProcesados');
+        return procesarPagoSesionMpConLock(db, sesionRows[0], resumenPagoMp, paymentId);
     }
 
     const pedidoIdDesdeMetadata = Number(resumenPagoMp?.metadata?.pedido_id) || null;
@@ -854,25 +1026,6 @@ async function obtenerEstadoPagoPedidoCartaPublica(db, pedidoId) {
     };
 }
 
-function mapearEstadoPagoUiDesdeSesion(sesion, pedido) {
-    const est = String(sesion.estado || '').toUpperCase();
-    if (est === 'PROCESADO' && pedido) {
-        return pedido.estado_pago != null ? String(pedido.estado_pago).trim().toUpperCase() : ESTADO_PAGO_PAGADO;
-    }
-    if (est === 'PENDIENTE') {
-        return ESTADO_PAGO_PENDIENTE;
-    }
-    if (est === 'CANCELADO') {
-        const mp = String(sesion.estado_mp || '').toLowerCase();
-        if (mp === 'rejected') return ESTADO_PAGO_RECHAZADO;
-        return ESTADO_PAGO_CANCELADO;
-    }
-    if (est === 'EXPIRADO') {
-        return ESTADO_PAGO_CANCELADO;
-    }
-    return ESTADO_PAGO_PENDIENTE;
-}
-
 async function obtenerEstadoSesionMp(db, sessionIdRaw) {
     const sessionId = String(sessionIdRaw || '').trim();
     if (!UUID_V4_RE.test(sessionId)) {
@@ -931,10 +1084,52 @@ async function obtenerEstadoSesionMp(db, sessionIdRaw) {
     };
 }
 
+async function ejecutarReconciliacionSesionesMp(db, sesiones = [], opciones = {}) {
+    const { io = null } = opciones;
+    let reconciliadas = 0;
+
+    for (const row of sesiones) {
+        try {
+            const resultadoRecon = await reconciliarReferenciaExternaMp(db, row.referencia_externa, {
+                origen: 'worker'
+            });
+            const resultadoPago = resultadoRecon?.resultado;
+            if (!resultadoPago?.procesado) {
+                continue;
+            }
+
+            if (resultadoPago?.pedidoId && String(resultadoPago.estadoPagoInterno || '').toUpperCase() === ESTADO_PAGO_PAGADO) {
+                try {
+                    const { procesarAprobacionMercadoPago } = require('./PedidoPostPagoService');
+                    await procesarAprobacionMercadoPago({
+                        pedidoId: resultadoPago.pedidoId,
+                        paymentId: resultadoRecon.paymentId,
+                        resumenPagoMp: resultadoPago.resumenPagoMp,
+                        io
+                    });
+                } catch (autoCobroErr) {
+                    console.warn(
+                        `⚠️ [MP][Worker] Auto-cobro pedido #${resultadoPago.pedidoId}:`,
+                        autoCobroErr.message
+                    );
+                }
+            }
+
+            reconciliadas += 1;
+        } catch (e) {
+            console.warn(`⚠️ [MP][Worker] Reconciliación sesión ${row.id}:`, e.message);
+        }
+    }
+
+    return reconciliadas;
+}
+
 /**
  * Worker: expira sesiones, limpia filas viejas, reconcilia pagos contra la API MP.
  */
-async function ejecutarMantenimientoSesionesMercadoPago(db) {
+async function ejecutarMantenimientoSesionesMercadoPago(db, opciones = {}) {
+    const { io = null } = opciones;
+
     await db.execute(
         `UPDATE checkout_sesiones_mp
          SET estado = 'EXPIRADO', fecha_modificacion = NOW()
@@ -955,67 +1150,25 @@ async function ejecutarMantenimientoSesionesMercadoPago(db) {
            AND fecha < DATE_SUB(NOW(), INTERVAL 5 MINUTE)`
     );
 
-    if (pendientes.length === 0) {
-        const { reconciliarPedidosMpPagadosSinVenta } = require('./PedidoPostPagoService');
-        const ventasRecuperadas = await reconciliarPedidosMpPagadosSinVenta();
-        return { reconciliadas: 0, ventasRecuperadas: ventasRecuperadas.recuperados ?? 0 };
-    }
+    const [canceladasRecientes] = await db.execute(
+        `SELECT id, referencia_externa
+         FROM checkout_sesiones_mp
+         WHERE estado = 'CANCELADO'
+           AND pedido_id IS NULL
+           AND fecha_modificacion >= DATE_SUB(NOW(), INTERVAL ? HOUR)`,
+        [MP_RECONCILE_CANCELADO_HORAS]
+    );
 
-    const client = getMercadoPagoClient();
-    const paymentClient = new Payment(client);
-    let reconciliadas = 0;
-
-    for (const row of pendientes) {
-        try {
-            const searchRes = await paymentClient.search({
-                options: {
-                    sort: 'date_created',
-                    criteria: 'desc',
-                    external_reference: row.referencia_externa
-                }
-            });
-            const results = searchRes?.results;
-            if (!Array.isArray(results) || results.length === 0) {
-                continue;
-            }
-            const approved = results.find((p) => String(p?.status || '').toLowerCase() === 'approved');
-            const candidato = approved || results[0];
-            const pid = candidato?.id;
-            if (!pid) continue;
-
-            const full = await paymentClient.get({ id: pid });
-            const resumen = construirResumenPagoMp(full);
-            const resultadoPago = await procesarPagoMercadoPagoInterno(db, resumen, String(pid));
-
-            if (resultadoPago?.pedidoId && String(resultadoPago.estadoPagoInterno || '').toUpperCase() === 'PAGADO') {
-                try {
-                    const { procesarAprobacionMercadoPago } = require('./PedidoPostPagoService');
-                    await procesarAprobacionMercadoPago({
-                        pedidoId: resultadoPago.pedidoId,
-                        paymentId: String(pid),
-                        resumenPagoMp: resumen,
-                        io: null
-                    });
-                } catch (autoCobroErr) {
-                    console.warn(
-                        `⚠️ [MP][Worker] Auto-cobro pedido #${resultadoPago.pedidoId}:`,
-                        autoCobroErr.message
-                    );
-                }
-            }
-
-            reconciliadas += 1;
-        } catch (e) {
-            console.warn(`⚠️ [MP][Worker] Reconciliación sesión ${row.id}:`, e.message);
-        }
-    }
+    const sesionesAReconciliar = [...pendientes, ...canceladasRecientes];
+    const reconciliadas = await ejecutarReconciliacionSesionesMp(db, sesionesAReconciliar, { io });
 
     const { reconciliarPedidosMpPagadosSinVenta } = require('./PedidoPostPagoService');
     const ventasRecuperadas = await reconciliarPedidosMpPagadosSinVenta();
 
     return {
         reconciliadas,
-        ventasRecuperadas: ventasRecuperadas.recuperados ?? 0
+        ventasRecuperadas: ventasRecuperadas.recuperados ?? 0,
+        sesionesRevisadas: sesionesAReconciliar.length
     };
 }
 
@@ -1026,6 +1179,8 @@ module.exports = {
     obtenerEstadoSesionMp,
     ejecutarMantenimientoSesionesMercadoPago,
     procesarPagoMercadoPagoInterno,
+    reconciliarSesionMpPorId,
+    reconciliarReferenciaExternaMp,
     helpers: {
         validarPayloadCheckout,
         recalcularCarrito,

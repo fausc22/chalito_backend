@@ -21,6 +21,7 @@ const {
   crearCheckoutMercadoPagoController,
   obtenerEstadoPagoPedidoController,
   obtenerEstadoSesionMpController,
+  reconciliarSesionMpController,
   webhookMercadoPagoController
 } = require('../controllers/cartaPublicaCheckoutController');
 const {
@@ -94,6 +95,9 @@ router.post('/checkout/mercadopago', apiRateLimiter, validate(checkoutMercadoPag
 
 // GET /carta-publica/checkout/sesion/:sessionId/estado - Estado de sesión MP (polling post-checkout)
 router.get('/checkout/sesion/:sessionId/estado', apiRateLimiter, obtenerEstadoSesionMpController);
+
+// POST /carta-publica/checkout/sesion/:sessionId/reconciliar - Reconciliación activa contra API MP
+router.post('/checkout/sesion/:sessionId/reconciliar', apiRateLimiter, reconciliarSesionMpController);
 
 // POST /carta-publica/checkout/mercadopago/webhook - Webhook de Mercado Pago (firma HMAC)
 router.post(

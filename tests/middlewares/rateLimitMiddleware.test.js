@@ -9,55 +9,58 @@ const buildApp = (middleware, path = '/test') => {
     return app;
 };
 
+const buildPostApp = (middleware, path = '/test') => {
+    const app = express();
+    app.post(path, middleware, (_req, res) => {
+        res.status(200).json({ ok: true });
+    });
+    return app;
+};
+
 const loadMiddleware = () => {
     jest.resetModules();
     return require('../../middlewares/rateLimitMiddleware');
 };
 
 describe('rateLimitMiddleware', () => {
-    const originalEnv = process.env;
-
-    beforeEach(() => {
-        process.env = { ...originalEnv };
-        delete process.env.RATE_LIMIT_API_MAX;
-        delete process.env.RATE_LIMIT_DEV_LOCALHOST_MAX;
-        delete process.env.RATE_LIMIT_INTERNAL_MAX;
-        delete process.env.RATE_LIMIT_API_WINDOW_MS;
-        delete process.env.RATE_LIMIT_INTERNAL_WINDOW_MS;
-    });
-
-    afterAll(() => {
-        process.env = originalEnv;
-    });
-
-    it('usa 100 req/min por defecto en rutas API en producción', async () => {
-        process.env.NODE_ENV = 'production';
+    it('aplica límite public (120/min) en rutas API sin Bearer', async () => {
         const { apiRateLimiter } = loadMiddleware();
-        const app = buildApp(apiRateLimiter, '/pedidos');
+        const app = buildApp(apiRateLimiter, '/articulos');
 
-        const response = await request(app).get('/pedidos');
+        const response = await request(app).get('/articulos');
 
         expect(response.status).toBe(200);
-        expect(response.headers['x-ratelimit-limit']).toBe('100');
-        expect(response.headers['x-ratelimit-remaining']).toBe('99');
+        expect(response.headers['x-ratelimit-limit']).toBe('120');
+        expect(response.headers['x-ratelimit-remaining']).toBe('119');
     });
 
-    it('aplica perfil interno alto en health/metrics para evitar throttling agresivo', async () => {
-        process.env.NODE_ENV = 'production';
+    it('omite rate limit para staff autenticado con Bearer en rutas internas', async () => {
+        const { apiRateLimiter } = loadMiddleware();
+        const app = buildApp(apiRateLimiter, '/articulos');
+
+        for (let i = 0; i < 150; i++) {
+            const response = await request(app)
+                .get('/articulos')
+                .set('Authorization', 'Bearer fake-token');
+            expect(response.status).toBe(200);
+        }
+    });
+
+    it('aplica perfil internal (300/min) en health/metrics aunque haya Bearer', async () => {
         const { apiRateLimiter } = loadMiddleware();
         const app = buildApp(apiRateLimiter, '/health/worker');
 
-        const response = await request(app).get('/health/worker');
+        const response = await request(app)
+            .get('/health/worker')
+            .set('Authorization', 'Bearer fake-token');
 
         expect(response.status).toBe(200);
-        expect(response.headers['x-ratelimit-limit']).toBe('2000');
+        expect(response.headers['x-ratelimit-limit']).toBe('300');
     });
 
-    it('responde 429 con headers estándar cuando se supera el límite', async () => {
-        process.env.NODE_ENV = 'production';
-        process.env.RATE_LIMIT_API_MAX = '2';
-        process.env.RATE_LIMIT_API_WINDOW_MS = '60000';
-        const { apiRateLimiter } = loadMiddleware();
+    it('responde 429 con headers estándar cuando se supera el límite public', async () => {
+        const { apiRateLimiter, rateLimitConfigs } = loadMiddleware();
+        rateLimitConfigs.public.maxRequests = 2;
         const app = buildApp(apiRateLimiter, '/ventas');
 
         await request(app).get('/ventas');
@@ -72,18 +75,39 @@ describe('rateLimitMiddleware', () => {
         expect(blockedResponse.body.shouldRetry).toBe(true);
     });
 
-    it('relaja límite para localhost en desarrollo', async () => {
-        process.env.NODE_ENV = 'development';
-        process.env.RATE_LIMIT_API_MAX = '2';
-        process.env.RATE_LIMIT_DEV_LOCALHOST_MAX = '50';
-        const { apiRateLimiter } = loadMiddleware();
-        const app = buildApp(apiRateLimiter, '/articulos');
+    it('bloquea login tras superar el límite de intentos', async () => {
+        const { loginRateLimiter, rateLimitConfigs } = loadMiddleware();
+        rateLimitConfigs.login.maxRequests = 3;
+        const app = buildPostApp(loginRateLimiter, '/auth/login');
 
-        for (let i = 0; i < 10; i++) {
-            const response = await request(app)
-                .get('/articulos')
-                .set('x-forwarded-for', '127.0.0.1');
-            expect(response.status).toBe(200);
-        }
+        await request(app).post('/auth/login').send({});
+        await request(app).post('/auth/login').send({});
+        await request(app).post('/auth/login').send({});
+        const blockedResponse = await request(app).post('/auth/login').send({});
+
+        expect(blockedResponse.status).toBe(429);
+        expect(blockedResponse.body.error).toContain('Demasiados intentos de inicio de sesión');
+    });
+
+    it('aplica límite public en carta-publica aunque haya Bearer', async () => {
+        const { apiRateLimiter } = loadMiddleware();
+        const app = buildApp(apiRateLimiter, '/carta-publica/articulos');
+
+        const response = await request(app)
+            .get('/carta-publica/articulos')
+            .set('Authorization', 'Bearer fake-token');
+
+        expect(response.status).toBe(200);
+        expect(response.headers['x-ratelimit-limit']).toBe('120');
+    });
+
+    it('internalRateLimiter usa perfil internal directamente', async () => {
+        const { internalRateLimiter } = loadMiddleware();
+        const app = buildApp(internalRateLimiter, '/metrics/pedidos-atrasados');
+
+        const response = await request(app).get('/metrics/pedidos-atrasados');
+
+        expect(response.status).toBe(200);
+        expect(response.headers['x-ratelimit-limit']).toBe('300');
     });
 });

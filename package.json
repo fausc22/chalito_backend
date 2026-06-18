@@ -7,7 +7,7 @@
     "start": "node server.js",
     "dev": "nodemon server.js",
     "dev:debug": "nodemon --inspect server.js",
-    "test": "node --test --test-concurrency=1 --test-force-exit tests/*.test.js tests/config/*.test.js tests/middlewares/authorizeModule.test.js tests/services/couponService.test.js tests/services/storeScheduleService.test.js tests/services/whatsappMessageBuilder.test.js tests/services/PersonalizacionesService.test.js",
+    "test": "node --test --test-concurrency=1 --test-force-exit tests/*.test.js tests/config/*.test.js tests/middlewares/authorizeModule.test.js tests/services/couponService.test.js tests/services/storeScheduleService.test.js tests/services/whatsappMessageBuilder.test.js tests/services/mercadoPagoPaymentStateMachine.test.js tests/services/mercadoPagoPaymentLogger.test.js",
     "test:jest": "jest --testPathPattern='tests/(services/OrderQueueEngine|services/TimeCalculationService|services/montoConCuantoAbonaRules|services/pedidoOperativoHelper|controllers/articulosController|middlewares/rateLimitMiddleware)\\.test\\.js$'",
     "test:ci": "npm test",
     "migrate": "node scripts/runMigrations.js",

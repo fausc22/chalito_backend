@@ -3,9 +3,11 @@ const {
     crearCheckoutMercadoPago,
     procesarWebhookMercadoPago,
     obtenerEstadoPagoPedidoCartaPublica,
-    obtenerEstadoSesionMp
+    obtenerEstadoSesionMp,
+    reconciliarSesionMpPorId
 } = require('../services/CartaPublicaMercadoPagoCheckoutService');
 const { buildPedidoSnapshotById } = require('../services/pedidoRealtimeSerializer');
+const { logMpEvent } = require('../services/mercadoPagoPaymentLogger');
 
 async function crearCheckoutMercadoPagoController(req, res) {
     try {
@@ -99,12 +101,27 @@ async function obtenerEstadoSesionMpController(req, res) {
 }
 
 async function emitirSocketPostWebhook(io, resultado) {
-    if (!io || !resultado?.procesado || !resultado?.pedidoId) {
+    if (!io || !resultado?.procesado) {
         return;
     }
+
     try {
         const { getInstance: getSocketService } = require('../services/SocketService');
         const socketService = getSocketService(io);
+
+        socketService.emitMpPaymentUpdated({
+            pedidoId: resultado.pedidoId ?? null,
+            paymentId: resultado.paymentId ?? null,
+            estadoPago: resultado.estadoPagoInterno ?? null,
+            externalReference: resultado.externalReference ?? null,
+            esPagoNuevo: Boolean(resultado.esPagoNuevo),
+            motivo: resultado.motivo ?? null
+        });
+
+        if (!resultado?.pedidoId) {
+            return;
+        }
+
         const snapshot = await buildPedidoSnapshotById({
             pedidoId: resultado.pedidoId,
             connection: db,
@@ -124,6 +141,15 @@ async function emitirSocketPostWebhook(io, resultado) {
             socketError.message
         );
     }
+}
+
+async function aplicarPostProcesamientoMp(io, resultado) {
+    if (!resultado?.procesado) {
+        return resultado;
+    }
+    resultado = await aplicarAutoCobroPostMp(io, resultado);
+    await emitirSocketPostWebhook(io, resultado);
+    return resultado;
 }
 
 async function aplicarAutoCobroPostMp(io, resultado) {
@@ -153,12 +179,63 @@ async function aplicarAutoCobroPostMp(io, resultado) {
     return resultado;
 }
 
+async function reconciliarSesionMpController(req, res) {
+    try {
+        const sessionId = req.params.sessionId;
+        const resultadoRecon = await reconciliarSesionMpPorId(db, sessionId, { origen: 'api' });
+        const io = req.app.get('io');
+
+        if (!resultadoRecon.encontrado) {
+            if (resultadoRecon.motivo === 'id_invalido') {
+                return res.status(400).json({
+                    ok: false,
+                    mensaje: 'Identificador de sesión inválido.'
+                });
+            }
+            return res.status(404).json({
+                ok: false,
+                mensaje: 'Sesión de pago no encontrada.'
+            });
+        }
+
+        let resultadoPago = resultadoRecon.resultado || null;
+        if (resultadoPago) {
+            resultadoPago = await aplicarPostProcesamientoMp(io, resultadoPago);
+        }
+
+        const estadoSesion = await obtenerEstadoSesionMp(db, sessionId);
+
+        logMpEvent('info', 'mp_reconciliacion_api', {
+            sessionId,
+            reconciliado: resultadoRecon.reconciliado,
+            motivo: resultadoRecon.motivo,
+            pedidoId: resultadoPago?.pedidoId ?? resultadoRecon.pedidoId ?? null
+        });
+
+        return res.status(200).json({
+            ok: true,
+            mensaje: 'Reconciliación de sesión ejecutada.',
+            data: {
+                reconciliacion: resultadoRecon,
+                pago: resultadoPago,
+                estado: estadoSesion.encontrado ? estadoSesion.data : null
+            }
+        });
+    } catch (error) {
+        console.error('❌ Error reconciliando sesión MP:', error);
+        return res.status(500).json({
+            ok: false,
+            mensaje: 'Error al reconciliar la sesión de pago.',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+}
+
 async function webhookMercadoPagoController(req, res) {
     try {
         let resultado = await procesarWebhookMercadoPago(db, req);
         const io = req.app.get('io');
-        resultado = await aplicarAutoCobroPostMp(io, resultado);
-        await emitirSocketPostWebhook(io, resultado);
+        resultado = await aplicarPostProcesamientoMp(io, resultado);
 
         return res.status(200).json({
             ok: true,
@@ -170,7 +247,8 @@ async function webhookMercadoPagoController(req, res) {
             message: error.message,
             stack: error.stack
         });
-        return res.status(200).json({
+        logMpEvent('error', 'mp_webhook_error', { message: error.message });
+        return res.status(500).json({
             ok: false,
             mensaje: 'Webhook recibido con error interno.',
             error: process.env.NODE_ENV === 'development' ? error.message : undefined
@@ -182,5 +260,6 @@ module.exports = {
     crearCheckoutMercadoPagoController,
     obtenerEstadoPagoPedidoController,
     obtenerEstadoSesionMpController,
+    reconciliarSesionMpController,
     webhookMercadoPagoController
 };

@@ -109,6 +109,21 @@ class SocketService {
     }
 
     /**
+     * Evento de dominio para actualizaciones de pago Mercado Pago.
+     */
+    emitMpPaymentUpdated(payload = {}) {
+        if (this.io) {
+            this.io.emit('mp:payment-updated', {
+                ...payload,
+                timestamp: new Date().toISOString()
+            });
+            console.log(
+                `📡 [SocketService] Evento emitido: mp:payment-updated - pedido #${payload.pedidoId ?? 'n/a'}`
+            );
+        }
+    }
+
+    /**
      * Emitir evento cuando se crea una venta (ej: al cobrar un pedido)
      */
     emitVentaCreada(ventaId, ventaData = null) {

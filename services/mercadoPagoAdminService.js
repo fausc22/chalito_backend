@@ -1,5 +1,6 @@
 const { obtenerUrlsBaseCheckoutProNormalizadas } = require('./mercadoPagoPreferenciaUrlHelper');
 const MercadoPagoWorker = require('../workers/MercadoPagoWorker');
+const { getMetricasMp, isHardeningEnabled } = require('./mercadoPagoPaymentLogger');
 
 async function getIntegracionEstado() {
     const accessTokenConfigured = Boolean(String(process.env.MP_ACCESS_TOKEN || '').trim());
@@ -40,6 +41,8 @@ async function getIntegracionEstado() {
         urlsPublicasValidas,
         urlsError,
         worker,
+        hardeningEnabled: isHardeningEnabled(),
+        metricas: getMetricasMp(),
         checkoutProDisponible: accessTokenConfigured && urlsPublicasValidas
     };
 }
