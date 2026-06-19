@@ -13,6 +13,19 @@ let globalIo = null;
 const setGlobalIo = (io) => { globalIo = io; };
 const getGlobalIo = () => globalIo;
 
+let autoMoverDisabledLogged = false;
+
+function isAutoMoverPedidosEnabled() {
+    const flag = String(process.env.AUTO_MOVER_PEDIDOS ?? 'true').trim().toLowerCase();
+    return !['false', '0', 'no'].includes(flag);
+}
+
+function logAutoMoverDisabledOnce() {
+    if (autoMoverDisabledLogged) return;
+    autoMoverDisabledLogged = true;
+    console.log('⏸️ [OrderQueueEngine] Auto-mover pedidos DESACTIVADO (AUTO_MOVER_PEDIDOS=false). Solo movimientos manuales.');
+}
+
 /**
  * Motor de reglas para gestionar la cola de pedidos automáticamente
  */
@@ -72,6 +85,11 @@ class OrderQueueEngine {
      */
     static async evaluarColaPedidos() {
         try {
+            if (!isAutoMoverPedidosEnabled()) {
+                logAutoMoverDisabledOnce();
+                return { procesados: 0, mensaje: 'Auto-mover desactivado' };
+            }
+
             console.log('🔄 [OrderQueueEngine] Evaluando cola de pedidos...');
             
             // 1. Obtener información de capacidad
@@ -250,6 +268,11 @@ class OrderQueueEngine {
      */
     static async moverPedidoAPreparacion(connection, pedidoId) {
         try {
+            if (!isAutoMoverPedidosEnabled()) {
+                logAutoMoverDisabledOnce();
+                return;
+            }
+
             const [pedidoGate] = await connection.execute(
                 'SELECT medio_pago, estado_pago, origen_pedido FROM pedidos WHERE id = ?',
                 [pedidoId]

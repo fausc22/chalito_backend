@@ -10,7 +10,7 @@ function getDb() {
 async function loadPedidoContenidoForWhatsApp(pedidoId, connection = null) {
     const db = connection || getDb();
     const [rows] = await db.execute(
-        `SELECT articulo_nombre, cantidad, personalizaciones, observaciones
+        `SELECT articulo_nombre, cantidad, precio, subtotal, personalizaciones, observaciones
          FROM pedidos_contenido
          WHERE pedido_id = ?
          ORDER BY id ASC`,
@@ -20,6 +20,8 @@ async function loadPedidoContenidoForWhatsApp(pedidoId, connection = null) {
     return (rows || []).map((row) => ({
         articulo_nombre: row.articulo_nombre,
         cantidad: row.cantidad,
+        precio: row.precio,
+        subtotal: row.subtotal,
         personalizaciones: row.personalizaciones,
         observaciones: row.observaciones,
     }));

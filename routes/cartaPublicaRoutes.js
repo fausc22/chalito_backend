@@ -17,6 +17,7 @@ const { crearPedidoCarta } = require('../controllers/cartaPublicaPedidosControll
 const { validarCuponCarta } = require('../controllers/cartaPublicaCuponesController');
 const { obtenerEstadoPublico } = require('../controllers/tiendaOnlineController');
 const { obtenerBrandingPublico } = require('../controllers/cartaPublicaBrandingController');
+const { obtenerWhatsAppClientePedido } = require('../controllers/cartaPublicaWhatsAppController');
 const {
   crearCheckoutMercadoPagoController,
   obtenerEstadoPagoPedidoController,
@@ -89,6 +90,9 @@ router.post('/pedidos', apiRateLimiter, validate(crearPedidoCartaSchema), crearP
 
 // GET /carta-publica/pedidos/:pedidoId/estado-pago - Estado de pago post-checkout (público, solo pedidos WEB)
 router.get('/pedidos/:pedidoId/estado-pago', apiRateLimiter, obtenerEstadoPagoPedidoController);
+
+// GET /carta-publica/pedidos/:pedidoId/whatsapp-cliente - Enlace wa.me cliente->local (read-only, pedido WEB)
+router.get('/pedidos/:pedidoId/whatsapp-cliente', apiRateLimiter, obtenerWhatsAppClientePedido);
 
 // POST /carta-publica/checkout/mercadopago - Sesión de pago + preferencia Checkout Pro (pedido tras aprobación)
 router.post('/checkout/mercadopago', apiRateLimiter, validate(checkoutMercadoPagoSchema), crearCheckoutMercadoPagoController);
