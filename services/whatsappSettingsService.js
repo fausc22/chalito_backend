@@ -2,14 +2,19 @@ function getDb() {
     return require('../controllers/dbPromise');
 }
 
+const whatsappService = require('./whatsappService');
+const { normalizeWaMeNumber } = require('./whatsappPhoneUtils');
 const {
     TEMPLATE_KEYS,
     TEMPLATE_DB_KEYS,
+    CLIENTE_LOCAL_TEMPLATE_DB_KEYS,
     DEFAULT_TEMPLATES,
+    DEFAULT_TEMPLATES_CLIENTE_LOCAL,
     DEFAULT_TEMPLATE_CLIENTE_AL_LOCAL,
     getDefaultTemplatesCopy,
+    getDefaultClienteLocalTemplatesCopy,
 } = require('./whatsappTemplateDefaults');
-const { isTemplateValid } = require('./whatsappTemplateValidator');
+const { isTemplateValid, isClienteLocalTemplateValid } = require('./whatsappTemplateValidator');
 
 const KEYS = {
     NOTIFICACIONES_ACTIVAS: 'WHATSAPP_NOTIFICACIONES_ACTIVAS',
@@ -18,6 +23,7 @@ const KEYS = {
     NUMERO_CONTACTO: 'WHATSAPP_NUMERO_CONTACTO',
     TEMPLATE_CLIENTE_AL_LOCAL: 'WHATSAPP_TEMPLATE_CLIENTE_AL_LOCAL',
     ...TEMPLATE_DB_KEYS,
+    ...CLIENTE_LOCAL_TEMPLATE_DB_KEYS,
 };
 
 const BUSINESS_NAME = (process.env.NOMBRE_LOCAL || process.env.NOMBRE_NEGOCIO || 'El Chalito').trim();
@@ -35,6 +41,45 @@ const parseBoolean = (value, defaultValue = true) => {
     return defaultValue;
 };
 
+const deriveModoPedidosWeb = ({ notificacionesActivas, clienteEnviaAlLocal }) => {
+    const notif = parseBoolean(notificacionesActivas, false);
+    const cliente = parseBoolean(clienteEnviaAlLocal, false);
+    if (notif && cliente) {
+        return 'desactivado';
+    }
+    if (notif) return 'local_a_cliente';
+    if (cliente) return 'cliente_a_local';
+    return 'desactivado';
+};
+
+const resolveNumeroContactoConFuente = (configuredDb = '') => {
+    const estado = whatsappService.obtenerEstado();
+    if (estado?.connected && estado?.phone) {
+        const fromBaileys = normalizeWaMeNumber(estado.phone);
+        if (fromBaileys) {
+            return { numero: fromBaileys, fuente: 'baileys' };
+        }
+    }
+
+    const envNum = String(process.env.WHATSAPP_NUMERO_CONTACTO ?? '').trim();
+    if (envNum) {
+        const fromEnv = normalizeWaMeNumber(envNum);
+        if (fromEnv) {
+            return { numero: fromEnv, fuente: 'env' };
+        }
+    }
+
+    const configuredTrim = String(configuredDb ?? '').trim();
+    if (configuredTrim) {
+        const fromDb = normalizeWaMeNumber(configuredTrim);
+        if (fromDb) {
+            return { numero: fromDb, fuente: 'db' };
+        }
+    }
+
+    return { numero: null, fuente: null };
+};
+
 const resolvePlantillaFromDb = (templateKey, dbValue) => {
     const trimmed = String(dbValue ?? '').trim();
     if (trimmed && isTemplateValid(templateKey, trimmed)) {
@@ -43,10 +88,26 @@ const resolvePlantillaFromDb = (templateKey, dbValue) => {
     return DEFAULT_TEMPLATES[templateKey];
 };
 
+const resolvePlantillaClienteLocalFromDb = (templateKey, dbValue) => {
+    const trimmed = String(dbValue ?? '').trim();
+    if (trimmed && isClienteLocalTemplateValid(trimmed)) {
+        return trimmed;
+    }
+    return DEFAULT_TEMPLATES_CLIENTE_LOCAL[templateKey];
+};
+
 const buildPlantillasFromMap = (map) => {
     const plantillas = {};
     for (const key of TEMPLATE_KEYS) {
         plantillas[key] = resolvePlantillaFromDb(key, map[TEMPLATE_DB_KEYS[key]]);
+    }
+    return plantillas;
+};
+
+const buildPlantillasClienteLocalFromMap = (map) => {
+    const plantillas = {};
+    for (const key of TEMPLATE_KEYS) {
+        plantillas[key] = resolvePlantillaClienteLocalFromDb(key, map[CLIENTE_LOCAL_TEMPLATE_DB_KEYS[key]]);
     }
     return plantillas;
 };
@@ -59,6 +120,7 @@ const fetchSettingsFromDb = async () => {
         KEYS.NUMERO_CONTACTO,
         KEYS.TEMPLATE_CLIENTE_AL_LOCAL,
         ...Object.values(TEMPLATE_DB_KEYS),
+        ...Object.values(CLIENTE_LOCAL_TEMPLATE_DB_KEYS),
     ];
     const placeholders = claves.map(() => '?').join(',');
     const [rows] = await getDb().execute(
@@ -77,7 +139,7 @@ const fetchSettingsFromDb = async () => {
         map[KEYS.TEMPLATE_CLIENTE_AL_LOCAL] ?? DEFAULT_TEMPLATE_CLIENTE_AL_LOCAL
     ).trim() || DEFAULT_TEMPLATE_CLIENTE_AL_LOCAL;
 
-    return {
+    const base = {
         notificacionesActivas: parseBoolean(map[KEYS.NOTIFICACIONES_ACTIVAS], true),
         aliasTransferencia: alias,
         clienteEnviaAlLocal: parseBoolean(map[KEYS.CLIENTE_ENVIA_AL_LOCAL], false),
@@ -87,13 +149,28 @@ const fetchSettingsFromDb = async () => {
         nombreNegocio: BUSINESS_NAME,
         plantillas: buildPlantillasFromMap(map),
         plantillasDefault: getDefaultTemplatesCopy(),
+        plantillasClienteLocal: buildPlantillasClienteLocalFromMap(map),
+        plantillasClienteLocalDefault: getDefaultClienteLocalTemplatesCopy(),
+    };
+
+    const { numero, fuente } = resolveNumeroContactoConFuente(base.numeroContacto);
+
+    return {
+        ...base,
+        modoPedidosWeb: deriveModoPedidosWeb(base),
+        numeroContactoResuelto: numero,
+        numeroContactoFuente: fuente,
     };
 };
 
 const getSettings = async () => {
     const now = Date.now();
     if (settingsCache && now - settingsCacheAt < CACHE_TTL_MS) {
-        return { ...settingsCache, plantillas: { ...settingsCache.plantillas } };
+        return {
+            ...settingsCache,
+            plantillas: { ...settingsCache.plantillas },
+            plantillasClienteLocal: { ...settingsCache.plantillasClienteLocal },
+        };
     }
 
     try {
@@ -104,10 +181,12 @@ const getSettings = async () => {
             ...settings,
             plantillas: { ...settings.plantillas },
             plantillasDefault: getDefaultTemplatesCopy(),
+            plantillasClienteLocal: { ...settings.plantillasClienteLocal },
+            plantillasClienteLocalDefault: getDefaultClienteLocalTemplatesCopy(),
         };
     } catch (error) {
         console.error('Error leyendo settings WhatsApp, usando defaults:', error.message);
-        return {
+        const fallback = {
             notificacionesActivas: true,
             aliasTransferencia: (process.env.ALIAS_TRANSFERENCIA || 'ALIAS.NO.CONFIGURADO').trim(),
             clienteEnviaAlLocal: false,
@@ -117,6 +196,15 @@ const getSettings = async () => {
             nombreNegocio: BUSINESS_NAME,
             plantillas: getDefaultTemplatesCopy(),
             plantillasDefault: getDefaultTemplatesCopy(),
+            plantillasClienteLocal: getDefaultClienteLocalTemplatesCopy(),
+            plantillasClienteLocalDefault: getDefaultClienteLocalTemplatesCopy(),
+        };
+        const { numero, fuente } = resolveNumeroContactoConFuente(fallback.numeroContacto);
+        return {
+            ...fallback,
+            modoPedidosWeb: deriveModoPedidosWeb(fallback),
+            numeroContactoResuelto: numero,
+            numeroContactoFuente: fuente,
         };
     }
 };
@@ -173,6 +261,19 @@ const updateSettings = async (payload = {}) => {
         }
     }
 
+    if (payload.plantillasClienteLocal && typeof payload.plantillasClienteLocal === 'object') {
+        for (const [templateKey, templateText] of Object.entries(payload.plantillasClienteLocal)) {
+            if (!TEMPLATE_KEYS.includes(templateKey)) {
+                continue;
+            }
+            updates.push([
+                CLIENTE_LOCAL_TEMPLATE_DB_KEYS[templateKey],
+                String(templateText ?? '').trim(),
+                'STRING',
+            ]);
+        }
+    }
+
     for (const [clave, valor, tipo] of updates) {
         await getDb().execute(
             `UPDATE configuracion_sistema SET valor = ?, tipo = ? WHERE clave = ?`,
@@ -192,8 +293,11 @@ const invalidateCache = () => {
 module.exports = {
     KEYS,
     TEMPLATE_KEYS,
+    deriveModoPedidosWeb,
+    resolveNumeroContactoConFuente,
     getSettings,
     updateSettings,
     invalidateCache,
     resolvePlantillaFromDb,
+    resolvePlantillaClienteLocalFromDb,
 };

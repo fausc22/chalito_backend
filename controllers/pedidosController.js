@@ -22,6 +22,26 @@ const {
 const ClientesService = require('../services/ClientesService');
 
 const PRESENTACIONES_VALIDAS = new Set(['SIMPLE', 'DOBLE', 'TRIPLE']);
+const STORE_TIMEZONE = 'America/Argentina/Buenos_Aires';
+
+const formatDateTimeForMySQLInArgentina = (dateInput) => {
+    const date = dateInput instanceof Date ? dateInput : new Date(dateInput);
+
+    if (Number.isNaN(date.getTime())) {
+        throw new Error('Fecha inválida');
+    }
+
+    return new Intl.DateTimeFormat('sv-SE', {
+        timeZone: STORE_TIMEZONE,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+    }).format(date);
+};
 
 const extraNormalizado = (extra = {}) => {
     const cantidad = Math.max(1, parseInt(extra?.cantidad, 10) || 1);
@@ -918,7 +938,8 @@ const actualizarHorarioEntrega = async (req, res) => {
 
         const prioridad = horarioEntrega ? 'NORMAL' : 'ALTA';
         const tiempoEstimado = datosAnteriores.tiempo_estimado_preparacion || 15;
-        let horaInicioPreparacion = null;
+        let horarioEntregaMysql = null;
+        let horaInicioPreparacionMysql = null;
 
         if (horarioEntrega) {
             const horarioEntregaDate = new Date(horarioEntrega);
@@ -928,9 +949,11 @@ const actualizarHorarioEntrega = async (req, res) => {
                     message: 'Horario de entrega inválido'
                 });
             }
-            horaInicioPreparacion = new Date(
+            horarioEntregaMysql = formatDateTimeForMySQLInArgentina(horarioEntregaDate);
+            const horaInicioPreparacionDate = new Date(
                 horarioEntregaDate.getTime() - tiempoEstimado * 60 * 1000
             );
+            horaInicioPreparacionMysql = formatDateTimeForMySQLInArgentina(horaInicioPreparacionDate);
         }
 
         await db.execute(
@@ -939,7 +962,7 @@ const actualizarHorarioEntrega = async (req, res) => {
                  prioridad = ?,
                  hora_inicio_preparacion = ?
              WHERE id = ?`,
-            [horarioEntrega || null, prioridad, horaInicioPreparacion, id]
+            [horarioEntregaMysql, prioridad, horaInicioPreparacionMysql, id]
         );
 
         await auditarOperacion(req, {
@@ -949,9 +972,9 @@ const actualizarHorarioEntrega = async (req, res) => {
             datosAnteriores,
             datosNuevos: {
                 ...datosAnteriores,
-                horario_entrega: horarioEntrega || null,
+                horario_entrega: horarioEntregaMysql,
                 prioridad,
-                hora_inicio_preparacion: horaInicioPreparacion
+                hora_inicio_preparacion: horaInicioPreparacionMysql
             }
         });
 
@@ -959,7 +982,7 @@ const actualizarHorarioEntrega = async (req, res) => {
 
         const io = req.app.get('io');
         if (io && pedidoActualizado) {
-            const { getSocketService } = require('../services/SocketService');
+            const { getInstance: getSocketService } = require('../services/SocketService');
             const socketService = getSocketService(io);
             if (socketService) {
                 socketService.emitPedidoActualizado(id, pedidoActualizado);
