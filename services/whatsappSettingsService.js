@@ -6,6 +6,7 @@ const {
     TEMPLATE_KEYS,
     TEMPLATE_DB_KEYS,
     DEFAULT_TEMPLATES,
+    DEFAULT_TEMPLATE_CLIENTE_AL_LOCAL,
     getDefaultTemplatesCopy,
 } = require('./whatsappTemplateDefaults');
 const { isTemplateValid } = require('./whatsappTemplateValidator');
@@ -13,6 +14,9 @@ const { isTemplateValid } = require('./whatsappTemplateValidator');
 const KEYS = {
     NOTIFICACIONES_ACTIVAS: 'WHATSAPP_NOTIFICACIONES_ACTIVAS',
     ALIAS_TRANSFERENCIA: 'ALIAS_TRANSFERENCIA',
+    CLIENTE_ENVIA_AL_LOCAL: 'WHATSAPP_CLIENTE_ENVIA_AL_LOCAL',
+    NUMERO_CONTACTO: 'WHATSAPP_NUMERO_CONTACTO',
+    TEMPLATE_CLIENTE_AL_LOCAL: 'WHATSAPP_TEMPLATE_CLIENTE_AL_LOCAL',
     ...TEMPLATE_DB_KEYS,
 };
 
@@ -51,6 +55,9 @@ const fetchSettingsFromDb = async () => {
     const claves = [
         KEYS.NOTIFICACIONES_ACTIVAS,
         KEYS.ALIAS_TRANSFERENCIA,
+        KEYS.CLIENTE_ENVIA_AL_LOCAL,
+        KEYS.NUMERO_CONTACTO,
+        KEYS.TEMPLATE_CLIENTE_AL_LOCAL,
         ...Object.values(TEMPLATE_DB_KEYS),
     ];
     const placeholders = claves.map(() => '?').join(',');
@@ -66,9 +73,17 @@ const fetchSettingsFromDb = async () => {
 
     const alias = (map[KEYS.ALIAS_TRANSFERENCIA] || process.env.ALIAS_TRANSFERENCIA || 'ALIAS.NO.CONFIGURADO').trim();
 
+    const templateClienteAlLocal = String(
+        map[KEYS.TEMPLATE_CLIENTE_AL_LOCAL] ?? DEFAULT_TEMPLATE_CLIENTE_AL_LOCAL
+    ).trim() || DEFAULT_TEMPLATE_CLIENTE_AL_LOCAL;
+
     return {
         notificacionesActivas: parseBoolean(map[KEYS.NOTIFICACIONES_ACTIVAS], true),
         aliasTransferencia: alias,
+        clienteEnviaAlLocal: parseBoolean(map[KEYS.CLIENTE_ENVIA_AL_LOCAL], false),
+        numeroContacto: String(map[KEYS.NUMERO_CONTACTO] ?? '').trim(),
+        templateClienteAlLocal,
+        templateClienteAlLocalDefault: DEFAULT_TEMPLATE_CLIENTE_AL_LOCAL,
         nombreNegocio: BUSINESS_NAME,
         plantillas: buildPlantillasFromMap(map),
         plantillasDefault: getDefaultTemplatesCopy(),
@@ -95,6 +110,10 @@ const getSettings = async () => {
         return {
             notificacionesActivas: true,
             aliasTransferencia: (process.env.ALIAS_TRANSFERENCIA || 'ALIAS.NO.CONFIGURADO').trim(),
+            clienteEnviaAlLocal: false,
+            numeroContacto: String(process.env.WHATSAPP_NUMERO_CONTACTO || '').trim(),
+            templateClienteAlLocal: DEFAULT_TEMPLATE_CLIENTE_AL_LOCAL,
+            templateClienteAlLocalDefault: DEFAULT_TEMPLATE_CLIENTE_AL_LOCAL,
             nombreNegocio: BUSINESS_NAME,
             plantillas: getDefaultTemplatesCopy(),
             plantillasDefault: getDefaultTemplatesCopy(),
@@ -116,6 +135,27 @@ const updateSettings = async (payload = {}) => {
         updates.push([
             KEYS.ALIAS_TRANSFERENCIA,
             String(payload.aliasTransferencia || '').trim(),
+            'STRING',
+        ]);
+    }
+    if (payload.clienteEnviaAlLocal !== undefined) {
+        updates.push([
+            KEYS.CLIENTE_ENVIA_AL_LOCAL,
+            payload.clienteEnviaAlLocal ? 'true' : 'false',
+            'BOOLEAN',
+        ]);
+    }
+    if (payload.numeroContacto !== undefined) {
+        updates.push([
+            KEYS.NUMERO_CONTACTO,
+            String(payload.numeroContacto || '').trim(),
+            'STRING',
+        ]);
+    }
+    if (payload.templateClienteAlLocal !== undefined) {
+        updates.push([
+            KEYS.TEMPLATE_CLIENTE_AL_LOCAL,
+            String(payload.templateClienteAlLocal ?? '').trim(),
             'STRING',
         ]);
     }

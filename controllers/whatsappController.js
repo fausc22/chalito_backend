@@ -97,7 +97,7 @@ const obtenerPreviews = async (req, res) => {
 
 const actualizarSettings = async (req, res) => {
     try {
-        const { notificacionesActivas, aliasTransferencia, plantillas } = req.body || {};
+        const { notificacionesActivas, aliasTransferencia, plantillas, clienteEnviaAlLocal, numeroContacto, templateClienteAlLocal } = req.body || {};
 
         if (aliasTransferencia !== undefined) {
             const trimmed = String(aliasTransferencia).trim();
@@ -137,6 +137,9 @@ const actualizarSettings = async (req, res) => {
             notificacionesActivas,
             aliasTransferencia,
             plantillas,
+            clienteEnviaAlLocal,
+            numeroContacto,
+            templateClienteAlLocal,
         });
 
         res.json({ success: true, message: 'Configuración guardada', data });

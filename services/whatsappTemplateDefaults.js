@@ -99,6 +99,53 @@ const MOCK_ITEMS = [
     { cantidad: 1, articulo_nombre: 'Gaseosa 1.5L' },
 ];
 
+const DEFAULT_TEMPLATE_CLIENTE_AL_LOCAL = `Hola! soy {{cliente}}, quiero hacer un pedido para {{modalidad}}
+
+{{bloque_retiro}}{{bloque_entrega}}{{bloque_horario}}
+
+Mi pedido:
+
+{{contenido}}
+
+{{bloque_descuento}}Total pedido: {{total}}
+
+Forma de pago: {{medio_pago}}
+{{bloque_abono}}{{bloque_transferencia}}{{bloque_mercadopago}}
+
+Pedido: {{codigo_pedido}}
+
+Si no te contestamos en la brevedad es porque estamos ocupados. Por favor, aguardá un momento.
+
+¡Gracias por elegirnos!`;
+
+const REQUIRED_PLACEHOLDERS_CLIENTE_AL_LOCAL = [
+    'cliente',
+    'modalidad',
+    'contenido',
+    'total',
+    'medio_pago',
+    'codigo_pedido',
+];
+
+const CLIENTE_AL_LOCAL_PLACEHOLDERS = [
+    ...REQUIRED_PLACEHOLDERS_CLIENTE_AL_LOCAL,
+    'subtotal',
+    'bloque_retiro',
+    'bloque_entrega',
+    'bloque_horario',
+    'bloque_descuento',
+    'bloque_abono',
+    'bloque_transferencia',
+    'bloque_mercadopago',
+    'alias',
+    'cupon',
+    'descuento',
+    'horario',
+    'telefono',
+    'id',
+    'local',
+];
+
 const getDefaultTemplatesCopy = () => ({ ...DEFAULT_TEMPLATES });
 
 module.exports = {
@@ -109,5 +156,8 @@ module.exports = {
     REQUIRED_PLACEHOLDERS_ALL,
     REQUIRED_PLACEHOLDERS_TRANSFERENCIA,
     MOCK_ITEMS,
+    DEFAULT_TEMPLATE_CLIENTE_AL_LOCAL,
+    REQUIRED_PLACEHOLDERS_CLIENTE_AL_LOCAL,
+    CLIENTE_AL_LOCAL_PLACEHOLDERS,
     getDefaultTemplatesCopy,
 };
