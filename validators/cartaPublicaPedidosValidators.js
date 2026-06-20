@@ -7,6 +7,21 @@
  * - scheduledTime / horarioEntrega / horario_entrega / deliveryTime (string "HH:MM" o ISO)
  */
 const { z } = require('zod');
+const { normalizeWaMeNumber, isValidWhatsAppNumber } = require('../services/whatsappPhoneUtils');
+
+const telefonoWhatsAppField = z
+    .string()
+    .min(1, 'El teléfono es requerido')
+    .max(50)
+    .superRefine((val, ctx) => {
+        if (!isValidWhatsAppNumber(val)) {
+            ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: 'Teléfono inválido. Usá código de área sin 0, ej: 2302 651250',
+            });
+        }
+    })
+    .transform((val) => normalizeWaMeNumber(val));
 
 const extraItemSchema = z.union([
     z.coerce.number().int().positive('id de extra debe ser un número positivo'),
@@ -42,7 +57,7 @@ function parseMontoAbona(value) {
 const crearPedidoCartaSchema = z.object({
     customer: z.object({
         nombre: z.string().min(1, 'El nombre del cliente es requerido').max(150),
-        telefono: z.string().min(1, 'El teléfono es requerido').max(50),
+        telefono: telefonoWhatsAppField,
         email: z.string().email('Email inválido').max(100).optional().nullable()
     }),
     deliveryType: z.enum(['DELIVERY', 'RETIRO'], {
@@ -107,7 +122,7 @@ const crearPedidoCartaSchema = z.object({
 const checkoutMercadoPagoSchema = z.object({
     cliente: z.object({
         nombre: z.string().trim().min(1, 'cliente.nombre es requerido').max(150),
-        telefono: z.string().trim().min(1, 'cliente.telefono es requerido').max(50),
+        telefono: telefonoWhatsAppField,
         email: z.string().email('cliente.email inválido').max(100).optional().nullable(),
         direccion: z.string().trim().max(255).optional().nullable()
     }),

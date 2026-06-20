@@ -1,8 +1,8 @@
-const whatsappService = require('./whatsappService');
 const whatsappSettingsService = require('./whatsappSettingsService');
 const { loadPedidoContenidoForWhatsApp } = require('./pedidoContenidoLoader');
 const { mapExtrasNames } = require('./print/printPayloadShared');
-const { normalizeWaMeNumber } = require('./whatsappPhoneUtils');
+const { resolveNumeroContacto } = require('./whatsappContactResolver');
+const { normalizeWaMeNumber, normalizePhoneArgentina } = require('./whatsappPhoneUtils');
 const {
     formatCurrencyArs,
     normalizeMedioPago,
@@ -33,28 +33,6 @@ const parseBoolean = (value, defaultValue = false) => {
     if (['1', 'true', 'si', 'sí', 'on'].includes(normalized)) return true;
     if (['0', 'false', 'no', 'off', ''].includes(normalized)) return false;
     return defaultValue;
-};
-
-const resolveNumeroContacto = (configuredDb) => {
-    const estado = whatsappService.obtenerEstado();
-    if (estado?.connected && estado?.phone) {
-        const fromBaileys = normalizeWaMeNumber(estado.phone);
-        if (fromBaileys) return fromBaileys;
-    }
-
-    const envNum = String(process.env.WHATSAPP_NUMERO_CONTACTO ?? '').trim();
-    if (envNum) {
-        const fromEnv = normalizeWaMeNumber(envNum);
-        if (fromEnv) return fromEnv;
-    }
-
-    const configuredTrim = String(configuredDb ?? '').trim();
-    if (configuredTrim) {
-        const fromDb = normalizeWaMeNumber(configuredTrim);
-        if (fromDb) return fromDb;
-    }
-
-    return null;
 };
 
 const resolveTemplateClienteAlLocal = (dbValue) => {
@@ -318,7 +296,7 @@ const buildClienteAlLocalMessage = ({
         subtotal: formatCurrencyArs(pedido.subtotal ?? pedido.total),
         total: formatCurrencyArs(pedido.total),
         cliente: String(pedido.cliente_nombre || 'Cliente').trim(),
-        telefono: String(pedido.cliente_telefono || '').trim(),
+        telefono: normalizePhoneArgentina(pedido.cliente_telefono) || String(pedido.cliente_telefono || '').trim(),
         modalidad: normalizeModalidad(pedido.modalidad),
         medio_pago: normalizeMedioPago(pedido.medio_pago),
         bloque_retiro: buildBloqueRetiro(pedido),

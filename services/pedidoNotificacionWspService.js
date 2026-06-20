@@ -6,6 +6,7 @@ const {
     normalizeMedioPago,
     isAliasTransferenciaValido,
 } = require('./whatsappMessageBuilder');
+const { isValidWhatsAppNumber, normalizePhoneArgentina } = require('./whatsappPhoneUtils');
 
 async function assertPuedeEnviar() {
     const settings = await whatsappSettingsService.getSettings();
@@ -32,6 +33,14 @@ async function notificarPedidoWhatsApp({
         return null;
     }
 
+    const telefonoNormalizado = normalizePhoneArgentina(cliente_telefono);
+    if (!isValidWhatsAppNumber(telefonoNormalizado)) {
+        console.warn(
+            `[WA] Telefono invalido para pedido #${id}: "${cliente_telefono}" (normalizado: "${telefonoNormalizado}")`
+        );
+        return null;
+    }
+
     const { settings } = check;
     const mp = normalizeMedioPago(medioPago);
 
@@ -51,7 +60,7 @@ async function notificarPedidoWhatsApp({
         plantillas: settings.plantillas,
     });
 
-    return enviarWhatsApp(cliente_telefono, mensaje);
+    return enviarWhatsApp(telefonoNormalizado, mensaje, { pedidoId: id });
 }
 
 async function notificarPedidoEfectivo(params) {

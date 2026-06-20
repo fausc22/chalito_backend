@@ -16,8 +16,8 @@ const {
 } = require('../../services/whatsappClienteAlLocalService');
 const { DEFAULT_TEMPLATE_CLIENTE_AL_LOCAL } = require('../../services/whatsappTemplateDefaults');
 
-test('normalizeWaMeNumber agrega prefijo Argentina', () => {
-    assert.equal(normalizeWaMeNumber('2302633818'), '542302633818');
+test('normalizeWaMeNumber agrega prefijo Argentina movil', () => {
+    assert.equal(normalizeWaMeNumber('2302633818'), '5492302633818');
     assert.equal(normalizeWaMeNumber('5492302633818'), '5492302633818');
 });
 

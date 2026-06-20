@@ -2,8 +2,7 @@ function getDb() {
     return require('../controllers/dbPromise');
 }
 
-const whatsappService = require('./whatsappService');
-const { normalizeWaMeNumber } = require('./whatsappPhoneUtils');
+const { resolveNumeroContactoConFuente } = require('./whatsappContactResolver');
 const {
     TEMPLATE_KEYS,
     TEMPLATE_DB_KEYS,
@@ -50,34 +49,6 @@ const deriveModoPedidosWeb = ({ notificacionesActivas, clienteEnviaAlLocal }) =>
     if (notif) return 'local_a_cliente';
     if (cliente) return 'cliente_a_local';
     return 'desactivado';
-};
-
-const resolveNumeroContactoConFuente = (configuredDb = '') => {
-    const estado = whatsappService.obtenerEstado();
-    if (estado?.connected && estado?.phone) {
-        const fromBaileys = normalizeWaMeNumber(estado.phone);
-        if (fromBaileys) {
-            return { numero: fromBaileys, fuente: 'baileys' };
-        }
-    }
-
-    const envNum = String(process.env.WHATSAPP_NUMERO_CONTACTO ?? '').trim();
-    if (envNum) {
-        const fromEnv = normalizeWaMeNumber(envNum);
-        if (fromEnv) {
-            return { numero: fromEnv, fuente: 'env' };
-        }
-    }
-
-    const configuredTrim = String(configuredDb ?? '').trim();
-    if (configuredTrim) {
-        const fromDb = normalizeWaMeNumber(configuredTrim);
-        if (fromDb) {
-            return { numero: fromDb, fuente: 'db' };
-        }
-    }
-
-    return { numero: null, fuente: null };
 };
 
 const resolvePlantillaFromDb = (templateKey, dbValue) => {
