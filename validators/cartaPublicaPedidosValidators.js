@@ -18,6 +18,11 @@ const extraItemSchema = z.union([
 
 const montoAbonaInputSchema = z.union([z.string(), z.number()]).optional().nullable();
 
+function direccionTieneEntreCalles(direccion) {
+    const match = String(direccion ?? '').match(/Entre calles:\s*(.+?)(?:\s*\||$)/i);
+    return Boolean(match?.[1]?.trim().length >= 2);
+}
+
 function parseMontoAbona(value) {
     if (value === null || value === undefined) return null;
     if (typeof value === 'number') {
@@ -64,6 +69,24 @@ const crearPedidoCartaSchema = z.object({
         itemNotes: z.string().max(255).optional().nullable()
     })).min(1, 'Debe incluir al menos un item')
 }).superRefine((data, ctx) => {
+    const deliveryType = String(data.deliveryType || '').trim().toUpperCase();
+    if (deliveryType === 'DELIVERY') {
+        const address = data.address;
+        if (!address || !String(address).trim()) {
+            ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ['address'],
+                message: 'address es obligatoria cuando deliveryType es DELIVERY'
+            });
+        } else if (!direccionTieneEntreCalles(address)) {
+            ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ['address'],
+                message: 'Para delivery, indicá entre qué calles se encuentra el domicilio'
+            });
+        }
+    }
+
     const paymentMethod = String(data.paymentMethod || '').trim().toUpperCase();
     if (paymentMethod !== 'EFECTIVO') {
         return;
@@ -118,6 +141,12 @@ const checkoutMercadoPagoSchema = z.object({
             code: z.ZodIssueCode.custom,
             path: ['cliente', 'direccion'],
             message: 'cliente.direccion es obligatoria cuando pedido.modalidad es DELIVERY'
+        });
+    } else if (modalidad === 'DELIVERY' && !direccionTieneEntreCalles(direccion)) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['cliente', 'direccion'],
+            message: 'Para delivery, indicá entre qué calles se encuentra el domicilio'
         });
     }
 });

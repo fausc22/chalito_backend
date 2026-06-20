@@ -6,6 +6,7 @@ const {
 } = require('../services/whatsappMessageBuilder');
 const {
     validatePlantillasPayload,
+    validatePlantillasClienteLocalPayload,
     hasValidationErrors,
 } = require('../services/whatsappTemplateValidator');
 
@@ -95,9 +96,47 @@ const obtenerPreviews = async (req, res) => {
     }
 };
 
+const parseFlag = (value) => {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value === 'boolean') return value;
+    const normalized = String(value).trim().toLowerCase();
+    if (['1', 'true', 'si', 'sí', 'on'].includes(normalized)) return true;
+    if (['0', 'false', 'no', 'off', ''].includes(normalized)) return false;
+    return undefined;
+};
+
 const actualizarSettings = async (req, res) => {
     try {
-        const { notificacionesActivas, aliasTransferencia, plantillas, clienteEnviaAlLocal, numeroContacto, templateClienteAlLocal } = req.body || {};
+        const {
+            notificacionesActivas,
+            aliasTransferencia,
+            plantillas,
+            plantillasClienteLocal,
+            clienteEnviaAlLocal,
+            numeroContacto,
+            templateClienteAlLocal,
+        } = req.body || {};
+
+        const notifFlag = parseFlag(notificacionesActivas);
+        const clienteFlag = parseFlag(clienteEnviaAlLocal);
+
+        if (notifFlag === true && clienteFlag === true) {
+            return res.status(400).json({
+                success: false,
+                message: 'Los modos local→cliente y cliente→local no pueden estar activos a la vez',
+            });
+        }
+
+        const current = await whatsappSettingsService.getSettings();
+        const effectiveNotif =
+            notifFlag !== undefined ? notifFlag : current.notificacionesActivas;
+        const effectiveCliente =
+            clienteFlag !== undefined ? clienteFlag : current.clienteEnviaAlLocal;
+
+        const modoPayload = whatsappSettingsService.deriveModoPedidosWeb({
+            notificacionesActivas: effectiveNotif,
+            clienteEnviaAlLocal: effectiveCliente,
+        });
 
         if (aliasTransferencia !== undefined) {
             const trimmed = String(aliasTransferencia).trim();
@@ -123,21 +162,48 @@ const actualizarSettings = async (req, res) => {
                 });
             }
 
-            const errors = validatePlantillasPayload(plantillas);
-            if (hasValidationErrors(errors)) {
+            if (modoPayload === 'local_a_cliente') {
+                const errors = validatePlantillasPayload(plantillas);
+                if (hasValidationErrors(errors)) {
+                    return res.status(400).json({
+                        success: false,
+                        message: 'Hay plantillas con placeholders obligatorios faltantes',
+                        errors,
+                    });
+                }
+            }
+        }
+
+        if (plantillasClienteLocal !== undefined) {
+            if (
+                typeof plantillasClienteLocal !== 'object' ||
+                plantillasClienteLocal === null ||
+                Array.isArray(plantillasClienteLocal)
+            ) {
                 return res.status(400).json({
                     success: false,
-                    message: 'Hay plantillas con placeholders obligatorios faltantes',
-                    errors,
+                    message: 'El campo plantillasClienteLocal debe ser un objeto',
                 });
+            }
+
+            if (modoPayload === 'cliente_a_local') {
+                const errors = validatePlantillasClienteLocalPayload(plantillasClienteLocal);
+                if (hasValidationErrors(errors)) {
+                    return res.status(400).json({
+                        success: false,
+                        message: 'Hay plantillas cliente→local con placeholders obligatorios faltantes',
+                        errors,
+                    });
+                }
             }
         }
 
         const data = await whatsappSettingsService.updateSettings({
-            notificacionesActivas,
+            notificacionesActivas: notifFlag,
             aliasTransferencia,
             plantillas,
-            clienteEnviaAlLocal,
+            plantillasClienteLocal,
+            clienteEnviaAlLocal: clienteFlag,
             numeroContacto,
             templateClienteAlLocal,
         });

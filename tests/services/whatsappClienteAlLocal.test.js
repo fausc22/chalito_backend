@@ -4,6 +4,7 @@ const {
     normalizeWaMeNumber,
     buildWaMeUrl,
     resolveTemplateClienteAlLocal,
+    resolveClienteLocalTemplateForPedido,
     buildClienteAlLocalMessage,
     buildBloqueEntrega,
     buildBloqueRetiro,
@@ -32,17 +33,18 @@ test('formatContenidoClienteAlLocal usa emoji y precio por linea', () => {
     assert.ok(contenido.includes('✅ 1 x HAMBURGUESA WEISSMAN Triple'));
 });
 
-test('buildBloqueEntrega incluye direccion completa y observaciones', () => {
+test('buildBloqueEntrega incluye direccion completa, entre calles y observaciones', () => {
     const bloque = buildBloqueEntrega({
         modalidad: 'DELIVERY',
-        cliente_direccion: 'Calle: 403 | Altura: 195 | Edificio/Casa: Torre A | Piso/Depto: 2B',
-        observaciones: 'Entre calles Entre 300 y 404',
+        cliente_direccion: 'Calle: 403 | Altura: 195 | Entre calles: 300 y 404 | Edificio/Casa: Torre A | Piso/Depto: 2B',
+        observaciones: 'Timbre roto',
     });
 
     assert.ok(bloque.includes('Entregar en Calle 403 número 195'));
+    assert.ok(bloque.includes('Entre calles: 300 y 404'));
     assert.ok(bloque.includes('Edificio/Casa: Torre A'));
     assert.ok(bloque.includes('Piso/Depto: 2B'));
-    assert.ok(bloque.includes('Entre calles Entre 300 y 404'));
+    assert.ok(bloque.includes('Timbre roto'));
 });
 
 test('buildBloqueRetiro solo en retiro', () => {
@@ -82,8 +84,8 @@ test('buildClienteAlLocalMessage delivery efectivo y transferencia', () => {
         modalidad: 'DELIVERY',
         subtotal: 29000,
         total: 29000,
-        cliente_direccion: 'Calle: 403 | Altura: 195',
-        observaciones: 'Entre calles Entre 300 y 404',
+        cliente_direccion: 'Calle: 403 | Altura: 195 | Entre calles: 300 y 404',
+        observaciones: 'Timbre roto',
     };
     const items = [
         { cantidad: 1, articulo_nombre: 'HAMBURGUESA WEISSMAN Triple', subtotal: 15000 },
@@ -123,4 +125,31 @@ test('resolveTemplateClienteAlLocal usa default si faltan placeholders obligator
 test('buildWaMeUrl genera enlace wa.me', () => {
     const url = buildWaMeUrl('5492302633818', 'Hola pedido');
     assert.ok(url.startsWith('https://wa.me/5492302633818?text='));
+});
+
+test('resolveClienteLocalTemplateForPedido resuelve las 6 combinaciones medio/modalidad', () => {
+    const templates = {
+        EFECTIVO_RETIRO: 'Hola {{cliente}} {{modalidad}} {{contenido}} {{total}} {{medio_pago}} {{codigo_pedido}} EF_R',
+        EFECTIVO_DELIVERY: 'Hola {{cliente}} {{modalidad}} {{contenido}} {{total}} {{medio_pago}} {{codigo_pedido}} EF_D',
+        TRANSFERENCIA_RETIRO: 'Hola {{cliente}} {{modalidad}} {{contenido}} {{total}} {{medio_pago}} {{codigo_pedido}} TR_R',
+        TRANSFERENCIA_DELIVERY: 'Hola {{cliente}} {{modalidad}} {{contenido}} {{total}} {{medio_pago}} {{codigo_pedido}} TR_D',
+        MERCADOPAGO_RETIRO: 'Hola {{cliente}} {{modalidad}} {{contenido}} {{total}} {{medio_pago}} {{codigo_pedido}} MP_R',
+        MERCADOPAGO_DELIVERY: 'Hola {{cliente}} {{modalidad}} {{contenido}} {{total}} {{medio_pago}} {{codigo_pedido}} MP_D',
+    };
+    const settings = {
+        plantillasClienteLocal: templates,
+        templateClienteAlLocal: DEFAULT_TEMPLATE_CLIENTE_AL_LOCAL,
+    };
+
+    for (const [key, expectedSuffix] of Object.entries({
+        EFECTIVO_RETIRO: 'EF_R',
+        EFECTIVO_DELIVERY: 'EF_D',
+        TRANSFERENCIA_RETIRO: 'TR_R',
+        TRANSFERENCIA_DELIVERY: 'TR_D',
+        MERCADOPAGO_RETIRO: 'MP_R',
+        MERCADOPAGO_DELIVERY: 'MP_D',
+    })) {
+        const result = resolveClienteLocalTemplateForPedido(key, settings);
+        assert.ok(result.endsWith(expectedSuffix), `clave ${key}`);
+    }
 });

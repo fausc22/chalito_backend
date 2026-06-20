@@ -2,17 +2,21 @@ const whatsappService = require('./whatsappService');
 const whatsappSettingsService = require('./whatsappSettingsService');
 const { loadPedidoContenidoForWhatsApp } = require('./pedidoContenidoLoader');
 const { mapExtrasNames } = require('./print/printPayloadShared');
+const { normalizeWaMeNumber } = require('./whatsappPhoneUtils');
 const {
     formatCurrencyArs,
     normalizeMedioPago,
     normalizeModalidad,
     isAliasTransferenciaValido,
+    buildTemplateKey,
 } = require('./whatsappMessageBuilder');
 const {
     DEFAULT_TEMPLATE_CLIENTE_AL_LOCAL,
+    DEFAULT_TEMPLATES_CLIENTE_LOCAL,
     REQUIRED_PLACEHOLDERS_CLIENTE_AL_LOCAL,
     CLIENTE_AL_LOCAL_PLACEHOLDERS,
 } = require('./whatsappTemplateDefaults');
+const { isClienteLocalTemplateValid } = require('./whatsappTemplateValidator');
 
 function getDb() {
     return require('../controllers/dbPromise');
@@ -31,43 +35,23 @@ const parseBoolean = (value, defaultValue = false) => {
     return defaultValue;
 };
 
-const normalizeWaMeNumber = (raw) => {
-    let digits = String(raw ?? '').replace(/\D/g, '');
-    if (!digits) return null;
-
-    if (digits.startsWith('00')) {
-        digits = digits.slice(2);
-    }
-
-    if (digits.length === 10 && /^[1-9]/.test(digits)) {
-        digits = `54${digits}`;
-    }
-
-    if (digits.length === 11 && digits.startsWith('9')) {
-        digits = `54${digits}`;
-    }
-
-    if (digits.length < 10 || digits.length > 15) {
-        return null;
-    }
-
-    return digits;
-};
-
-const resolveNumeroContacto = (configured) => {
-    const configuredTrim = String(configured ?? '').trim();
-    if (configuredTrim) {
-        return normalizeWaMeNumber(configuredTrim);
+const resolveNumeroContacto = (configuredDb) => {
+    const estado = whatsappService.obtenerEstado();
+    if (estado?.connected && estado?.phone) {
+        const fromBaileys = normalizeWaMeNumber(estado.phone);
+        if (fromBaileys) return fromBaileys;
     }
 
     const envNum = String(process.env.WHATSAPP_NUMERO_CONTACTO ?? '').trim();
     if (envNum) {
-        return normalizeWaMeNumber(envNum);
+        const fromEnv = normalizeWaMeNumber(envNum);
+        if (fromEnv) return fromEnv;
     }
 
-    const baileysPhone = whatsappService.obtenerEstado()?.phone;
-    if (baileysPhone) {
-        return normalizeWaMeNumber(baileysPhone);
+    const configuredTrim = String(configuredDb ?? '').trim();
+    if (configuredTrim) {
+        const fromDb = normalizeWaMeNumber(configuredTrim);
+        if (fromDb) return fromDb;
     }
 
     return null;
@@ -92,6 +76,20 @@ const resolveTemplateClienteAlLocal = (dbValue) => {
     return trimmed;
 };
 
+const resolveClienteLocalTemplateForPedido = (templateKey, settings) => {
+    const fromNew = String(settings.plantillasClienteLocal?.[templateKey] ?? '').trim();
+    if (fromNew && isClienteLocalTemplateValid(fromNew)) {
+        return fromNew;
+    }
+
+    const legacy = resolveTemplateClienteAlLocal(settings.templateClienteAlLocal);
+    if (legacy && isClienteLocalTemplateValid(legacy)) {
+        return legacy;
+    }
+
+    return DEFAULT_TEMPLATES_CLIENTE_LOCAL[templateKey] || DEFAULT_TEMPLATE_CLIENTE_AL_LOCAL;
+};
+
 const parseDireccionPedido = (raw) => {
     const text = String(raw ?? '').trim();
     if (!text) {
@@ -113,6 +111,7 @@ const parseDireccionPedido = (raw) => {
 
     const calle = map.calle || '';
     const altura = map.altura || '';
+    const entreCalles = map['entre calles'] || '';
     const edificio = map['edificio/casa'] || map.edificio || '';
     const piso = map['piso/depto'] || map.piso || '';
     const lines = [];
@@ -123,6 +122,9 @@ const parseDireccionPedido = (raw) => {
         lines.push(`Entregar en ${text.replace(/\s*\|\s*/g, ', ')}`);
     }
 
+    if (entreCalles) {
+        lines.push(`Entre calles: ${entreCalles}`);
+    }
     if (edificio) {
         lines.push(`Edificio/Casa: ${edificio}`);
     }
@@ -403,7 +405,8 @@ async function obtenerWhatsAppClienteParaPedido(pedidoId) {
         return { activo: false, motivo: 'sin_numero' };
     }
 
-    const template = resolveTemplateClienteAlLocal(settings.templateClienteAlLocal);
+    const templateKey = buildTemplateKey(medioPago, pedido.modalidad);
+    const template = resolveClienteLocalTemplateForPedido(templateKey, settings);
     const mensaje = buildClienteAlLocalMessage({
         template,
         pedido,
@@ -426,6 +429,7 @@ module.exports = {
     normalizeWaMeNumber,
     resolveNumeroContacto,
     resolveTemplateClienteAlLocal,
+    resolveClienteLocalTemplateForPedido,
     buildBloqueRetiro,
     buildBloqueEntrega,
     buildBloqueHorario,
