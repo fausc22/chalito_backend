@@ -8,6 +8,7 @@ const {
 } = require('../services/CartaPublicaMercadoPagoCheckoutService');
 const { buildPedidoSnapshotById } = require('../services/pedidoRealtimeSerializer');
 const { logMpEvent } = require('../services/mercadoPagoPaymentLogger');
+const envioGratisSettingsService = require('../services/envioGratisSettingsService');
 
 async function crearCheckoutMercadoPagoController(req, res) {
     try {
@@ -231,6 +232,26 @@ async function reconciliarSesionMpController(req, res) {
     }
 }
 
+async function obtenerEnvioGratisPublicoController(req, res) {
+    try {
+        const settings = await envioGratisSettingsService.getSettings();
+        return res.status(200).json({
+            success: true,
+            data: {
+                activo: settings.activo,
+                montoMinimo: settings.montoMinimo,
+            },
+        });
+    } catch (error) {
+        console.error('❌ Error al consultar envío gratis (carta):', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Error al consultar la configuración de envío gratis.',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+        });
+    }
+}
+
 async function webhookMercadoPagoController(req, res) {
     try {
         let resultado = await procesarWebhookMercadoPago(db, req);
@@ -261,5 +282,6 @@ module.exports = {
     obtenerEstadoPagoPedidoController,
     obtenerEstadoSesionMpController,
     reconciliarSesionMpController,
+    obtenerEnvioGratisPublicoController,
     webhookMercadoPagoController
 };

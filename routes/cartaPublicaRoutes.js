@@ -23,6 +23,7 @@ const {
   obtenerEstadoPagoPedidoController,
   obtenerEstadoSesionMpController,
   reconciliarSesionMpController,
+  obtenerEnvioGratisPublicoController,
   webhookMercadoPagoController
 } = require('../controllers/cartaPublicaCheckoutController');
 const {
@@ -81,6 +82,9 @@ router.get('/estado-tienda', apiRateLimiter, obtenerEstadoPublico);
 
 // GET /carta-publica/branding - Nombre, logo y colores web (público)
 router.get('/branding', apiRateLimiter, obtenerBrandingPublico);
+
+// GET /carta-publica/config/envio-gratis - Configuración pública de envío gratis por monto
+router.get('/config/envio-gratis', apiRateLimiter, obtenerEnvioGratisPublicoController);
 
 // POST /carta-publica/cupones/validar - Preview de cupón (sin redimir)
 router.post('/cupones/validar', apiRateLimiter, validate(validarCuponSchema), validarCuponCarta);

@@ -1,13 +1,22 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
-// Evitar conexión MySQL en tests de payload (branding)
+// Evitar conexión MySQL en tests de payload (branding + envío gratis)
 require.cache[require.resolve('../services/brandingSettingsService')] = {
     id: require.resolve('../services/brandingSettingsService'),
     filename: require.resolve('../services/brandingSettingsService'),
     loaded: true,
     exports: {
         getSettings: async () => ({ nombreNegocio: 'El Chalito Test' })
+    }
+};
+
+require.cache[require.resolve('../services/envioGratisSettingsService')] = {
+    id: require.resolve('../services/envioGratisSettingsService'),
+    filename: require.resolve('../services/envioGratisSettingsService'),
+    loaded: true,
+    exports: {
+        aplicaEnvioGratis: async () => false
     }
 };
 
@@ -74,7 +83,7 @@ describe('buildKitchenPayload', () => {
             articulos: [
                 {
                     articulo_id: 1,
-                    articulo_nombre: 'Burger',
+                    articulo_nombre: 'Milanesa completa',
                     cantidad: 1,
                     personalizaciones: JSON.stringify({
                         extras: [{ nombre: 'Extra cheddar', precio_extra: 350, cantidad: 2 }]
@@ -84,6 +93,37 @@ describe('buildKitchenPayload', () => {
         });
 
         assert.deepEqual(payload.lines[0].modifiers, ['Extra cheddar x2']);
+    });
+
+    it('agrega SIMPLE en hamburguesas sin doble o triple', async () => {
+        const payload = await buildKitchenPayload({
+            id: 301,
+            fecha: '2026-05-19T14:00:00.000Z',
+            modalidad: 'RETIRO',
+            estado_pago: 'PENDIENTE',
+            estado: 'RECIBIDO',
+            total: 9000,
+            cliente_nombre: 'Ana',
+            articulos: [
+                {
+                    articulo_id: 1,
+                    articulo_nombre: 'Hamburguesa Weissman',
+                    cantidad: 1,
+                    personalizaciones: null,
+                },
+                {
+                    articulo_id: 2,
+                    articulo_nombre: 'Hamburguesa Diabla',
+                    cantidad: 1,
+                    personalizaciones: JSON.stringify({
+                        extras: [{ nombre: 'Hacela doble', precio_extra: 1500 }]
+                    })
+                }
+            ]
+        });
+
+        assert.deepEqual(payload.lines[0].modifiers, ['SIMPLE']);
+        assert.deepEqual(payload.lines[1].modifiers, ['Hacela doble']);
     });
 });
 

@@ -4,6 +4,7 @@ const brandingSettingsService = require('../services/brandingSettingsService');
 const carouselSettingsService = require('../services/carouselSettingsService');
 const { uploadImageToFileServer } = require('../config/fileStorage');
 const storeScheduleService = require('../services/storeScheduleService');
+const envioGratisSettingsService = require('../services/envioGratisSettingsService');
 
 const TIME_REGEX = /^([01]?\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/;
 
@@ -276,6 +277,42 @@ const eliminarSlideCarousel = async (req, res) => {
     }
 };
 
+const obtenerEnvioGratis = async (req, res) => {
+    try {
+        const settings = await envioGratisSettingsService.getSettings();
+        res.json({ success: true, data: settings });
+    } catch (error) {
+        console.error('Error obteniendo envío gratis:', error);
+        res.status(500).json({ success: false, message: 'Error al obtener envío gratis' });
+    }
+};
+
+const actualizarEnvioGratis = async (req, res) => {
+    try {
+        const { activo, montoMinimo } = req.body || {};
+
+        if (montoMinimo !== undefined) {
+            const parsed = Number.parseFloat(String(montoMinimo).replace(',', '.'));
+            if (!Number.isFinite(parsed) || parsed < 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'montoMinimo debe ser un número mayor o igual a 0',
+                });
+            }
+        }
+
+        const data = await envioGratisSettingsService.updateSettings({ activo, montoMinimo });
+        res.json({
+            success: true,
+            message: 'Configuración de envío gratis guardada',
+            data,
+        });
+    } catch (error) {
+        console.error('Error actualizando envío gratis:', error);
+        res.status(500).json({ success: false, message: 'Error al guardar envío gratis' });
+    }
+};
+
 module.exports = {
     obtenerHorarios,
     actualizarHorarioDia,
@@ -288,5 +325,7 @@ module.exports = {
     obtenerCarousel,
     actualizarCarousel,
     subirImagenCarousel,
-    eliminarSlideCarousel
+    eliminarSlideCarousel,
+    obtenerEnvioGratis,
+    actualizarEnvioGratis,
 };

@@ -14,7 +14,9 @@ const {
     obtenerCarousel,
     actualizarCarousel,
     subirImagenCarousel,
-    eliminarSlideCarousel
+    eliminarSlideCarousel,
+    obtenerEnvioGratis,
+    actualizarEnvioGratis,
 } = require('../controllers/tiendaOnlineController');
 
 router.get('/horarios', apiRateLimiter, ...readConfiguracion, obtenerHorarios);
@@ -28,5 +30,7 @@ router.get('/carousel', apiRateLimiter, ...readConfiguracion, obtenerCarousel);
 router.put('/carousel', apiRateLimiter, ...writeConfiguracion, actualizarCarousel);
 router.post('/carousel/upload', apiRateLimiter, ...writeConfiguracion, uploadSingleImage, subirImagenCarousel);
 router.delete('/carousel/:slideId', apiRateLimiter, ...writeConfiguracion, eliminarSlideCarousel);
+router.get('/envio-gratis', apiRateLimiter, ...readConfiguracion, obtenerEnvioGratis);
+router.put('/envio-gratis', apiRateLimiter, ...writeConfiguracion, actualizarEnvioGratis);
 
 module.exports = router;
