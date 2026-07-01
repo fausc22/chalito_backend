@@ -12,6 +12,7 @@ const {
     registrarIngresoAsistencia,
     registrarEgresoAsistencia,
     corregirAsistencia,
+    ajustarIngresoAsistencia,
     obtenerMovimientos,
     obtenerMovimientoPorId,
     crearMovimiento,
@@ -33,6 +34,7 @@ const {
     registrarIngresoAsistenciaSchema,
     registrarEgresoAsistenciaSchema,
     corregirAsistenciaSchema,
+    ajustarIngresoAsistenciaSchema,
     crearMovimientoSchema,
     editarMovimientoSchema,
     guardarLiquidacionSchema,
@@ -68,6 +70,7 @@ const soloDuenioEncargadoAdmin = writeEmpleados;
 router.get('/asistencias', apiRateLimiter, ...soloDuenioEncargadoAdmin, validateQuery(filtrosAsistenciasQuerySchema), obtenerAsistencias);
 router.post('/asistencias/ingreso', apiRateLimiter, ...soloDuenioEncargadoAdmin, validate(registrarIngresoAsistenciaSchema), registrarIngresoAsistencia);
 router.post('/asistencias/egreso', apiRateLimiter, ...soloDuenioEncargadoAdmin, validate(registrarEgresoAsistenciaSchema), registrarEgresoAsistencia);
+router.patch('/asistencias/:id/ajustar-ingreso', apiRateLimiter, ...soloDuenioEncargadoAdmin, validateParams(idParamSchema), validate(ajustarIngresoAsistenciaSchema), ajustarIngresoAsistencia);
 router.get('/asistencias/:id', apiRateLimiter, ...soloDuenioEncargadoAdmin, validateParams(idParamSchema), obtenerAsistenciaPorId);
 router.put('/asistencias/:id', apiRateLimiter, ...soloDuenioEncargadoAdmin, validateParams(idParamSchema), validate(corregirAsistenciaSchema), corregirAsistencia);
 

@@ -43,8 +43,20 @@ const MOVIMIENTOS_SELECT = `
     LEFT JOIN usuarios u ON u.id = m.registrado_por_usuario_id
 `;
 
-/** Estados de liquidacion que vinculan movimientos al historial (no ANULADA). */
+/** Estados de liquidacion que bloquean cambios sobre movimientos/asistencias (no ANULADA). */
 const ESTADOS_LIQUIDACION_BLOQUEAN_ELIMINAR_MOVIMIENTO = ['BORRADOR', 'CERRADA', 'PAGADA'];
+
+const ESTADOS_LIQUIDACION_BLOQUEAN_CAMBIOS_ASISTENCIA = ESTADOS_LIQUIDACION_BLOQUEAN_ELIMINAR_MOVIMIENTO;
+
+const SUBQUERY_ASISTENCIA_ESTA_LIQUIDADO = `
+    EXISTS (
+        SELECT 1
+        FROM empleados_liquidaciones l
+        WHERE l.empleado_id = a.empleado_id
+          AND a.fecha BETWEEN l.fecha_desde AND l.fecha_hasta
+          AND l.estado IN ('BORRADOR', 'CERRADA', 'PAGADA')
+    ) AS esta_liquidado
+`;
 
 const enriquecerMovimientoRespuesta = (row) => {
     if (!row) {
@@ -62,8 +74,13 @@ const enriquecerMovimientoRespuesta = (row) => {
  * Indica si un movimiento (empleado + fecha) cae en el rango de alguna liquidacion
  * en estado BORRADOR, CERRADA o PAGADA.
  */
-const movimientoCubiertoPorLiquidacionGuardada = async (connection, empleadoId, fecha) => {
-    const placeholders = ESTADOS_LIQUIDACION_BLOQUEAN_ELIMINAR_MOVIMIENTO.map(() => '?').join(', ');
+const periodoCubiertoPorLiquidacionGuardada = async (
+    connection,
+    empleadoId,
+    fecha,
+    estados = ESTADOS_LIQUIDACION_BLOQUEAN_ELIMINAR_MOVIMIENTO
+) => {
+    const placeholders = estados.map(() => '?').join(', ');
     const [rows] = await connection.execute(
         `
         SELECT l.id
@@ -73,9 +90,40 @@ const movimientoCubiertoPorLiquidacionGuardada = async (connection, empleadoId, 
           AND l.estado IN (${placeholders})
         LIMIT 1
         `,
-        [empleadoId, fecha, ...ESTADOS_LIQUIDACION_BLOQUEAN_ELIMINAR_MOVIMIENTO]
+        [empleadoId, fecha, ...estados]
     );
     return rows.length > 0;
+};
+
+const movimientoCubiertoPorLiquidacionGuardada = async (connection, empleadoId, fecha) =>
+    periodoCubiertoPorLiquidacionGuardada(connection, empleadoId, fecha);
+
+const asistenciaCubiertaPorLiquidacionGuardada = async (connection, empleadoId, fecha) =>
+    periodoCubiertoPorLiquidacionGuardada(
+        connection,
+        empleadoId,
+        fecha,
+        ESTADOS_LIQUIDACION_BLOQUEAN_CAMBIOS_ASISTENCIA
+    );
+
+const enriquecerAsistenciaRespuesta = (row) => {
+    if (!row) {
+        return null;
+    }
+
+    const estaLiquidado = Boolean(Number(row.esta_liquidado));
+    const estado = row.estado || null;
+    const tieneIngreso = Boolean(row.hora_ingreso);
+    const turnoAbierto = estado === 'ABIERTO' && !row.hora_egreso;
+    const puedeAjustarIngreso = tieneIngreso
+        && turnoAbierto
+        && !estaLiquidado;
+
+    return {
+        ...row,
+        esta_liquidado: estaLiquidado,
+        puede_ajustar_ingreso: puedeAjustarIngreso
+    };
 };
 
 const obtenerEmpleados = async ({ activo }) => {
@@ -186,7 +234,8 @@ const obtenerAsistencias = async ({ empleado_id, fecha_desde, fecha_hasta, estad
             e.nombre AS empleado_nombre,
             e.apellido AS empleado_apellido,
             ur.nombre AS registrado_por_nombre,
-            uc.nombre AS corregido_por_nombre
+            uc.nombre AS corregido_por_nombre,
+            ${SUBQUERY_ASISTENCIA_ESTA_LIQUIDADO}
         FROM empleados_asistencias a
         LEFT JOIN empleados e ON e.id = a.empleado_id
         LEFT JOIN usuarios ur ON ur.id = a.registrado_por_usuario_id
@@ -217,7 +266,7 @@ const obtenerAsistencias = async ({ empleado_id, fecha_desde, fecha_hasta, estad
 
     query += ' ORDER BY a.fecha DESC, a.id DESC';
     const [rows] = await db.execute(query, params);
-    return rows;
+    return rows.map((row) => enriquecerAsistenciaRespuesta(row));
 };
 
 const obtenerAsistenciaPorId = async (id) => {
@@ -240,7 +289,8 @@ const obtenerAsistenciaPorId = async (id) => {
             e.nombre AS empleado_nombre,
             e.apellido AS empleado_apellido,
             ur.nombre AS registrado_por_nombre,
-            uc.nombre AS corregido_por_nombre
+            uc.nombre AS corregido_por_nombre,
+            ${SUBQUERY_ASISTENCIA_ESTA_LIQUIDADO}
         FROM empleados_asistencias a
         LEFT JOIN empleados e ON e.id = a.empleado_id
         LEFT JOIN usuarios ur ON ur.id = a.registrado_por_usuario_id
@@ -249,7 +299,7 @@ const obtenerAsistenciaPorId = async (id) => {
         `,
         [id]
     );
-    return rows[0] || null;
+    return enriquecerAsistenciaRespuesta(rows[0] || null);
 };
 
 const buildBusinessError = (message, status, code) => {
@@ -319,6 +369,63 @@ const obtenerFechaLocalActual = (date = new Date()) => {
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const day = String(date.getDate()).padStart(2, '0');
     return `${year}-${month}-${day}`;
+};
+
+const obtenerFechaLocalDesdeDatetime = (value) => {
+    const date = value instanceof Date ? value : new Date(value);
+    if (!Number.isFinite(date.getTime())) {
+        return null;
+    }
+    return obtenerFechaLocalActual(date);
+};
+
+const normalizarMotivoAjuste = (motivo) => {
+    if (motivo === undefined || motivo === null) {
+        return null;
+    }
+    const trimmed = String(motivo).trim();
+    return trimmed === '' ? null : trimmed;
+};
+
+const intervalosSeSolapan = (inicioA, finA, inicioB, finB) =>
+    inicioA.getTime() < finB.getTime() && inicioB.getTime() < finA.getTime();
+
+const validarSolapamientoAjusteIngreso = async (connection, asistencia, horaIngresoNueva) => {
+    const ahora = new Date();
+    const finTurnoAbierto = asistencia.hora_egreso
+        ? new Date(asistencia.hora_egreso)
+        : ahora;
+
+    const fechaAsistencia = typeof asistencia.fecha === 'string'
+        ? asistencia.fecha.slice(0, 10)
+        : obtenerFechaLocalActual(new Date(asistencia.fecha));
+
+    const [otrasAsistencias] = await connection.execute(
+        `
+        SELECT id, hora_ingreso, hora_egreso
+        FROM empleados_asistencias
+        WHERE empleado_id = ?
+          AND fecha = ?
+          AND id <> ?
+          AND estado IN ('CERRADO', 'CORREGIDO')
+          AND hora_ingreso IS NOT NULL
+          AND hora_egreso IS NOT NULL
+        `,
+        [asistencia.empleado_id, fechaAsistencia, asistencia.id]
+    );
+
+    for (const otra of otrasAsistencias) {
+        const inicioOtra = new Date(otra.hora_ingreso);
+        const finOtra = new Date(otra.hora_egreso);
+
+        if (intervalosSeSolapan(horaIngresoNueva, finTurnoAbierto, inicioOtra, finOtra)) {
+            throw buildBusinessError(
+                'La nueva hora de ingreso se solapa con otro turno del mismo dia',
+                409,
+                'HORARIO_SOLAPADO'
+            );
+        }
+    }
 };
 
 const registrarIngresoAsistencia = async ({ empleado_id }, usuario = {}) => {
@@ -409,7 +516,7 @@ const corregirAsistencia = async (id, data, usuario = {}) => {
         const usuarioId = obtenerUsuarioIdRequerido(usuario);
 
         const [rows] = await connection.execute(
-            `SELECT id, hora_ingreso, hora_egreso
+            `SELECT id, empleado_id, fecha, estado, hora_ingreso, hora_egreso, minutos_trabajados
              FROM empleados_asistencias
              WHERE id = ?
              LIMIT 1
@@ -422,6 +529,28 @@ const corregirAsistencia = async (id, data, usuario = {}) => {
         }
 
         const asistencia = rows[0];
+
+        if (asistencia.estado === 'ANULADO') {
+            throw buildBusinessError(
+                'No se puede corregir una asistencia anulada',
+                409,
+                'ASISTENCIA_ANULADA'
+            );
+        }
+
+        const cubierta = await asistenciaCubiertaPorLiquidacionGuardada(
+            connection,
+            asistencia.empleado_id,
+            asistencia.fecha
+        );
+        if (cubierta) {
+            throw buildBusinessError(
+                'No es posible corregir esta asistencia porque ya forma parte de una liquidacion guardada',
+                409,
+                'ASISTENCIA_INCLUIDA_EN_LIQUIDACION'
+            );
+        }
+
         const horaIngresoFinal = data.hora_ingreso ?? asistencia.hora_ingreso;
         const horaEgresoFinal = data.hora_egreso ?? asistencia.hora_egreso;
 
@@ -461,6 +590,150 @@ const corregirAsistencia = async (id, data, usuario = {}) => {
                 usuarioId,
                 data.observaciones ?? null,
                 data.motivo_correccion,
+                id
+            ]
+        );
+
+        await connection.commit();
+        return await obtenerAsistenciaPorId(id);
+    } catch (error) {
+        await connection.rollback();
+        throw error;
+    } finally {
+        connection.release();
+    }
+};
+
+const ajustarIngresoAsistencia = async (id, data, usuario = {}) => {
+    const connection = await db.getConnection();
+
+    try {
+        await connection.beginTransaction();
+        const usuarioId = obtenerUsuarioIdRequerido(usuario);
+
+        const [rows] = await connection.execute(
+            `SELECT id, empleado_id, fecha, estado, hora_ingreso, hora_egreso, minutos_trabajados
+             FROM empleados_asistencias
+             WHERE id = ?
+             LIMIT 1
+             FOR UPDATE`,
+            [id]
+        );
+
+        if (rows.length === 0) {
+            throw buildBusinessError('Asistencia no encontrada', 404, 'ASISTENCIA_NO_ENCONTRADA');
+        }
+
+        const asistencia = rows[0];
+        const turnoAbierto = asistencia.estado === 'ABIERTO' && !asistencia.hora_egreso;
+
+        if (!turnoAbierto) {
+            throw buildBusinessError(
+                'Solo se puede ajustar el ingreso mientras el turno esta abierto',
+                409,
+                'ASISTENCIA_NO_ABIERTA'
+            );
+        }
+
+        if (!asistencia.hora_ingreso) {
+            throw buildBusinessError(
+                'La asistencia no tiene hora de ingreso registrada',
+                400,
+                'SIN_HORA_INGRESO'
+            );
+        }
+
+        const cubierta = await asistenciaCubiertaPorLiquidacionGuardada(
+            connection,
+            asistencia.empleado_id,
+            asistencia.fecha
+        );
+        if (cubierta) {
+            throw buildBusinessError(
+                'No es posible ajustar el ingreso porque la asistencia ya forma parte de una liquidacion guardada',
+                409,
+                'ASISTENCIA_INCLUIDA_EN_LIQUIDACION'
+            );
+        }
+
+        const horaIngresoNueva = new Date(data.hora_ingreso_nueva);
+        if (!Number.isFinite(horaIngresoNueva.getTime())) {
+            throw buildBusinessError(
+                'hora_ingreso_nueva debe ser una fecha y hora valida',
+                400,
+                'HORA_INGRESO_INVALIDA'
+            );
+        }
+
+        const ahora = new Date();
+        if (horaIngresoNueva.getTime() > ahora.getTime()) {
+            throw buildBusinessError(
+                'La nueva hora de ingreso no puede ser futura',
+                400,
+                'HORA_FUTURA'
+            );
+        }
+
+        const fechaIngresoNueva = obtenerFechaLocalDesdeDatetime(horaIngresoNueva);
+        const fechaAsistencia = typeof asistencia.fecha === 'string'
+            ? asistencia.fecha.slice(0, 10)
+            : obtenerFechaLocalActual(new Date(asistencia.fecha));
+
+        if (fechaIngresoNueva !== fechaAsistencia) {
+            throw buildBusinessError(
+                'La nueva hora de ingreso debe corresponder al mismo dia de la asistencia',
+                400,
+                'FECHA_INGRESO_INVALIDA'
+            );
+        }
+
+        const horaIngresoAnterior = new Date(asistencia.hora_ingreso);
+        if (horaIngresoNueva.getTime() === horaIngresoAnterior.getTime()) {
+            throw buildBusinessError(
+                'La nueva hora de ingreso debe ser distinta a la actual',
+                400,
+                'SIN_CAMBIOS'
+            );
+        }
+
+        await validarSolapamientoAjusteIngreso(connection, asistencia, horaIngresoNueva);
+
+        const motivoFinal = normalizarMotivoAjuste(data.motivo);
+        const minutosAnterior = Number(asistencia.minutos_trabajados) || 0;
+        const minutosNuevo = 0;
+
+        await connection.execute(
+            `INSERT INTO empleados_asistencias_ajustes (
+                asistencia_id, empleado_id, hora_ingreso_anterior, hora_ingreso_nueva,
+                minutos_trabajados_anterior, minutos_trabajados_nuevo, motivo, ajustado_por_usuario_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+                asistencia.id,
+                asistencia.empleado_id,
+                asistencia.hora_ingreso,
+                horaIngresoNueva,
+                minutosAnterior,
+                minutosNuevo,
+                motivoFinal,
+                usuarioId
+            ]
+        );
+
+        await connection.execute(
+            `UPDATE empleados_asistencias
+             SET
+                hora_ingreso = ?,
+                minutos_trabajados = ?,
+                estado = 'ABIERTO',
+                corregido_por_usuario_id = ?,
+                motivo_correccion = ?,
+                updated_at = NOW()
+             WHERE id = ?`,
+            [
+                horaIngresoNueva,
+                minutosNuevo,
+                usuarioId,
+                motivoFinal,
                 id
             ]
         );
@@ -1038,6 +1311,7 @@ module.exports = {
     registrarIngresoAsistencia,
     registrarEgresoAsistencia,
     corregirAsistencia,
+    ajustarIngresoAsistencia,
     obtenerMovimientos,
     obtenerMovimientoPorId,
     crearMovimiento,

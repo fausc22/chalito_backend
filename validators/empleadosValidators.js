@@ -71,6 +71,11 @@ const corregirAsistenciaSchema = z
         path: ['hora_egreso']
     });
 
+const ajustarIngresoAsistenciaSchema = z.object({
+    hora_ingreso_nueva: z.string().datetime('hora_ingreso_nueva debe tener formato ISO'),
+    motivo: sanitizedNullableString
+});
+
 const crearMovimientoSchema = z.object({
     empleado_id: z.number().int().positive('empleado_id debe ser un numero positivo'),
     fecha: fechaSchema,
@@ -304,6 +309,7 @@ module.exports = {
     registrarIngresoAsistenciaSchema,
     registrarEgresoAsistenciaSchema,
     corregirAsistenciaSchema,
+    ajustarIngresoAsistenciaSchema,
     crearMovimientoSchema,
     editarMovimientoSchema,
     guardarLiquidacionSchema,

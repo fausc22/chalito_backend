@@ -9,6 +9,7 @@ const {
     registrarIngresoAsistencia: registrarIngresoAsistenciaService,
     registrarEgresoAsistencia: registrarEgresoAsistenciaService,
     corregirAsistencia: corregirAsistenciaService,
+    ajustarIngresoAsistencia: ajustarIngresoAsistenciaService,
     obtenerMovimientos: obtenerMovimientosService,
     obtenerMovimientoPorId: obtenerMovimientoPorIdService,
     crearMovimiento: crearMovimientoService,
@@ -322,6 +323,50 @@ const corregirAsistencia = async (req, res) => {
     }
 };
 
+const ajustarIngresoAsistencia = async (req, res) => {
+    try {
+        const { id } = req.validatedParams || req.params;
+        const payload = req.validatedData || req.body;
+        const anterior = await obtenerAsistenciaPorIdService(id);
+
+        if (!anterior) {
+            return res.status(404).json({
+                success: false,
+                message: 'Asistencia no encontrada'
+            });
+        }
+
+        const data = await ajustarIngresoAsistenciaService(id, payload, req.user || {});
+
+        await auditarOperacion(req, {
+            accion: 'ASISTENCIA_INGRESO_AJUSTADO',
+            tabla: 'empleados_asistencias',
+            registroId: id,
+            datosAnteriores: {
+                hora_ingreso: anterior.hora_ingreso,
+                minutos_trabajados: anterior.minutos_trabajados,
+                estado: anterior.estado
+            },
+            datosNuevos: {
+                hora_ingreso: data?.hora_ingreso,
+                minutos_trabajados: data?.minutos_trabajados,
+                estado: data?.estado,
+                motivo: payload.motivo
+            },
+            detallesAdicionales: `Ingreso ajustado en asistencia #${id} para empleado #${anterior.empleado_id}`
+        });
+
+        res.json({
+            success: true,
+            message: 'Hora de ingreso ajustada exitosamente',
+            data
+        });
+    } catch (error) {
+        console.error('❌ Error al ajustar ingreso de asistencia:', error);
+        return responderError(res, error, 'Error al ajustar hora de ingreso');
+    }
+};
+
 const obtenerMovimientos = async (req, res) => {
     try {
         const filters = req.validatedQuery || req.query || {};
@@ -581,6 +626,7 @@ module.exports = {
     registrarIngresoAsistencia,
     registrarEgresoAsistencia,
     corregirAsistencia,
+    ajustarIngresoAsistencia,
     obtenerMovimientos,
     obtenerMovimientoPorId,
     crearMovimiento,
