@@ -109,7 +109,11 @@ describe('buildKitchenPayload', () => {
                     articulo_id: 1,
                     articulo_nombre: 'Hamburguesa Weissman',
                     cantidad: 1,
-                    personalizaciones: null,
+                    personalizaciones: JSON.stringify({
+                        presentacion: 'SIMPLE',
+                        extras: [],
+                        extrasTotal: 0
+                    }),
                 },
                 {
                     articulo_id: 2,
@@ -124,6 +128,32 @@ describe('buildKitchenPayload', () => {
 
         assert.deepEqual(payload.lines[0].modifiers, ['SIMPLE']);
         assert.deepEqual(payload.lines[1].modifiers, ['Hacela doble']);
+    });
+
+    it('no confunde extras con "doble" en el nombre con presentación doble', async () => {
+        const payload = await buildKitchenPayload({
+            id: 302,
+            fecha: '2026-05-19T14:00:00.000Z',
+            modalidad: 'RETIRO',
+            estado_pago: 'PENDIENTE',
+            estado: 'RECIBIDO',
+            total: 9000,
+            cliente_nombre: 'Ana',
+            articulos: [
+                {
+                    articulo_id: 1,
+                    articulo_nombre: 'Hamburguesa Parmesana',
+                    cantidad: 1,
+                    personalizaciones: JSON.stringify({
+                        presentacion: 'SIMPLE',
+                        extras: [{ nombre: 'Extra queso doble', precio_extra: 500 }],
+                        extrasTotal: 500
+                    }),
+                }
+            ]
+        });
+
+        assert.deepEqual(payload.lines[0].modifiers, ['SIMPLE', 'Extra queso doble']);
     });
 });
 

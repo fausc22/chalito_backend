@@ -3,7 +3,7 @@
  */
 const {
     validarExtrasNoDobleYTriple,
-    construirPersonalizaciones,
+    construirPersonalizacionesParaArticulo,
     parsearExtrasDelPayload,
     construirSnapshotExtrasDesdeDb
 } = require('./PersonalizacionesService');
@@ -61,7 +61,10 @@ async function calcularCarritoDesdeItems(connection, items = []) {
         }
 
         const [articuloRows] = await connection.execute(
-            'SELECT id, nombre, precio, controla_stock FROM articulos WHERE id = ? AND activo = 1',
+            `SELECT a.id, a.nombre, a.precio, a.controla_stock, c.nombre AS categoria_nombre
+             FROM articulos a
+             LEFT JOIN categorias c ON c.id = a.categoria_id
+             WHERE a.id = ? AND a.activo = 1`,
             [productId]
         );
 
@@ -100,6 +103,11 @@ async function calcularCarritoDesdeItems(connection, items = []) {
         const precioUnitario = precioBase + extrasTotal;
         const subtotal = precioUnitario * quantity;
 
+        const personalizaciones = construirPersonalizacionesParaArticulo(extrasSnapshot, {
+            categoriaNombre: articulo.categoria_nombre,
+            articuloNombre: articulo.nombre
+        });
+
         articulosNormalizados.push({
             articulo_id: articulo.id,
             articulo_nombre: articulo.nombre,
@@ -107,7 +115,7 @@ async function calcularCarritoDesdeItems(connection, items = []) {
             precio: precioUnitario,
             precio_unitario: precioUnitario,
             subtotal,
-            personalizaciones: extrasSnapshot.length > 0 ? construirPersonalizaciones(extrasSnapshot) : null,
+            personalizaciones,
             observaciones: item.itemNotes ?? item.observaciones ?? null
         });
     }

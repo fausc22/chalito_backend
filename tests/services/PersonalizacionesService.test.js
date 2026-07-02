@@ -111,6 +111,54 @@ test('consolidarExtrasPorId suma cantidades por id', () => {
     assert.deepEqual(result, [{ id: 3, cantidad: 5 }]);
 });
 
+test('construirPersonalizacionesParaArticulo agrega SIMPLE en hamburguesas sin extra de presentación', () => {
+    const {
+        construirPersonalizacionesParaArticulo,
+        resolverPresentacionParaCocina
+    } = require('../../services/PersonalizacionesService');
+
+    const pers = construirPersonalizacionesParaArticulo([], {
+        categoriaNombre: 'HAMBURGUESAS',
+        articuloNombre: 'Hamburguesa Parmesana'
+    });
+
+    assert.deepEqual(pers, {
+        presentacion: 'SIMPLE',
+        extras: [],
+        extrasTotal: 0
+    });
+    assert.equal(
+        resolverPresentacionParaCocina(pers, 'Hamburguesa Parmesana', 'HAMBURGUESAS'),
+        'SIMPLE'
+    );
+});
+
+test('construirPersonalizacionesParaArticulo mantiene DOBLE cuando corresponde', () => {
+    const { construirPersonalizacionesParaArticulo } = require('../../services/PersonalizacionesService');
+
+    const pers = construirPersonalizacionesParaArticulo(
+        [{ id: 9, nombre: 'Hacela doble', precio_extra: 1000 }],
+        {
+            categoriaNombre: 'HAMBURGUESAS',
+            articuloNombre: 'Hamburguesa Parmesana'
+        }
+    );
+
+    assert.equal(pers.presentacion, 'DOBLE');
+    assert.equal(pers.extras.length, 1);
+});
+
+test('construirPersonalizacionesParaArticulo no agrega SIMPLE en empanadas', () => {
+    const { construirPersonalizacionesParaArticulo } = require('../../services/PersonalizacionesService');
+
+    const pers = construirPersonalizacionesParaArticulo([], {
+        categoriaNombre: 'EMPANADAS',
+        articuloNombre: 'Empanada de carne'
+    });
+
+    assert.equal(pers, null);
+});
+
 test('mapCartaItemsToMpFormat preserva cantidad en extras', () => {
     const { mapCartaItemsToMpFormat } = require('../../services/cartaPedidoPricingService');
     const mapped = mapCartaItemsToMpFormat([

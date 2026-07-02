@@ -4,7 +4,7 @@ const KitchenCapacityService = require('../services/KitchenCapacityService');
 const PrintService = require('../services/PrintService');
 const { mapPrintError } = require('../services/print/printPayloadShared');
 const TimeCalculationService = require('../services/TimeCalculationService');
-const { validarExtrasNoDobleYTriple, construirPersonalizaciones, obtenerCantidadExtra } = require('../services/PersonalizacionesService');
+const { validarExtrasNoDobleYTriple, construirPersonalizacionesParaArticulo, obtenerCantidadExtra, inferirPresentacionDesdeExtras, resolverPresentacionParaCocina } = require('../services/PersonalizacionesService');
 const { OrderQueueEngine } = require('../services/OrderQueueEngine');
 const {
     pedidoEstaHabilitadoOperativamente,
@@ -21,7 +21,7 @@ const {
 } = require('../services/totalesPrecioFinal');
 const ClientesService = require('../services/ClientesService');
 
-const PRESENTACIONES_VALIDAS = new Set(['SIMPLE', 'DOBLE', 'TRIPLE']);
+const PRESENTACIONES_VALIDAS = new Set(['SIMPLE', 'DOBLE', 'TRIPLE', 'CUADRUPLE']);
 const STORE_TIMEZONE = 'America/Argentina/Buenos_Aires';
 
 const formatDateTimeForMySQLInArgentina = (dateInput) => {
@@ -57,17 +57,18 @@ const extraNormalizado = (extra = {}) => {
     return normalizado;
 };
 
-const inferirPresentacion = (personalizaciones, extras) => {
+const inferirPresentacion = (personalizaciones, extras, articuloNombre) => {
     const presentacionExplicita = String(personalizaciones?.presentacion || '').trim().toUpperCase();
     if (PRESENTACIONES_VALIDAS.has(presentacionExplicita)) {
         return presentacionExplicita;
     }
 
-    const nombres = extras.map((e) => String(e.nombre || '').toLowerCase());
-    if (nombres.some((n) => n.includes('triple'))) return 'TRIPLE';
-    if (nombres.some((n) => n.includes('doble'))) return 'DOBLE';
-    if (nombres.some((n) => n.includes('simple'))) return 'SIMPLE';
-    return null;
+    const desdeExtras = inferirPresentacionDesdeExtras(extras);
+    if (desdeExtras) return desdeExtras;
+
+    return resolverPresentacionParaCocina(personalizaciones, articuloNombre) === 'SIMPLE'
+        ? 'SIMPLE'
+        : null;
 };
 
 const normalizarItemPedidoParaDetalle = (articulo = {}) => {
@@ -93,7 +94,7 @@ const normalizarItemPedidoParaDetalle = (articulo = {}) => {
         ...articulo,
         extras,
         extrasTotal: extrasTotalFinal,
-        presentacion: inferirPresentacion(personalizaciones, extras)
+        presentacion: inferirPresentacion(personalizaciones, extras, articulo.articulo_nombre || articulo.nombre)
     };
 };
 
@@ -116,7 +117,7 @@ const crearPedido = async (req, res) => {
             // Validar y normalizar personalizaciones en articulos (formato legado)
             if (articulosNormalizados.length > 0) {
                 for (const art of articulosNormalizados) {
-                    const extras = art.personalizaciones?.extras;
+                    const extras = art.personalizaciones?.extras ?? [];
                     if (Array.isArray(extras) && extras.length > 0) {
                         const validacion = validarExtrasNoDobleYTriple(extras);
                         if (!validacion.valid) {
@@ -127,8 +128,11 @@ const crearPedido = async (req, res) => {
                                 code: 'EXTRAS_DOBLE_TRIPLE_INCOMPATIBLES'
                             });
                         }
-                        art.personalizaciones = construirPersonalizaciones(extras);
                     }
+                    art.personalizaciones = construirPersonalizacionesParaArticulo(extras, {
+                        categoriaNombre: art.categoria_nombre,
+                        articuloNombre: art.articulo_nombre
+                    });
                 }
             }
 
@@ -141,7 +145,10 @@ const crearPedido = async (req, res) => {
                     const observacionesItem = item.observaciones || null;
 
                     const [productoRows] = await connection.execute(
-                        'SELECT id, nombre, precio, controla_stock FROM articulos WHERE id = ?',
+                        `SELECT a.id, a.nombre, a.precio, a.controla_stock, c.nombre AS categoria_nombre
+                         FROM articulos a
+                         LEFT JOIN categorias c ON c.id = a.categoria_id
+                         WHERE a.id = ?`,
                         [productId]
                     );
 
@@ -162,8 +169,11 @@ const crearPedido = async (req, res) => {
                         });
                     }
 
-                    const personalizaciones = construirPersonalizaciones(extras);
-                    const precioExtras = personalizaciones.extrasTotal;
+                    const personalizaciones = construirPersonalizacionesParaArticulo(extras, {
+                        categoriaNombre: producto.categoria_nombre,
+                        articuloNombre: producto.nombre
+                    });
+                    const precioExtras = personalizaciones?.extrasTotal ?? 0;
                     const precioUnitario = precioBase + precioExtras;
                     const subtotal = precioUnitario * quantity;
 
@@ -173,7 +183,7 @@ const crearPedido = async (req, res) => {
                         cantidad: quantity,
                         precio: precioUnitario,
                         subtotal,
-                        personalizaciones: extras.length > 0 ? personalizaciones : null,
+                        personalizaciones,
                         observaciones: observacionesItem
                     });
                 }
@@ -527,8 +537,23 @@ const obtenerPedidoPorId = async (req, res) => {
                 [id]
             );
 
+            let mediosPagoRows = [];
+            try {
+                const [rows] = await db.execute(
+                    'SELECT medio_pago, monto, orden FROM pedidos_medios_pago WHERE pedido_id = ? ORDER BY orden',
+                    [id]
+                );
+                mediosPagoRows = rows;
+            } catch (_) {
+                // Tabla puede no existir si la migración aún no corrió
+            }
+
             const articulosNormalizados = articulos.map(normalizarItemPedidoParaDetalle);
-            const pedidoCompleto = enrichPedidoRealtime({ ...pedidos[0], articulos: articulosNormalizados });
+            const pedidoCompleto = enrichPedidoRealtime({
+                ...pedidos[0],
+                articulos: articulosNormalizados,
+                ...(mediosPagoRows.length >= 2 ? { medios_pago: mediosPagoRows } : {})
+            });
             res.json({
                 success: true,
                 data: pedidoCompleto
@@ -1163,7 +1188,7 @@ const actualizarPedido = async (req, res) => {
 
         // 6. Validar y normalizar personalizaciones en articulos
         for (const art of articulos) {
-            const extras = art.personalizaciones?.extras;
+            const extras = art.personalizaciones?.extras ?? [];
             if (Array.isArray(extras) && extras.length > 0) {
                 const validacion = validarExtrasNoDobleYTriple(extras);
                 if (!validacion.valid) {
@@ -1174,8 +1199,11 @@ const actualizarPedido = async (req, res) => {
                         code: 'EXTRAS_DOBLE_TRIPLE_INCOMPATIBLES'
                     });
                 }
-                art.personalizaciones = construirPersonalizaciones(extras);
             }
+            art.personalizaciones = construirPersonalizacionesParaArticulo(extras, {
+                categoriaNombre: art.categoria_nombre,
+                articuloNombre: art.articulo_nombre
+            });
         }
 
         // 7. DELETE pedidos_contenido
@@ -1356,7 +1384,7 @@ const agregarArticulo = async (req, res) => {
             const { id } = req.validatedParams || req.params;
             const articulo = req.validatedData || req.body;
 
-            const extras = articulo.personalizaciones?.extras;
+            const extras = articulo.personalizaciones?.extras ?? [];
             if (Array.isArray(extras) && extras.length > 0) {
                 const validacion = validarExtrasNoDobleYTriple(extras);
                 if (!validacion.valid) {
@@ -1366,8 +1394,11 @@ const agregarArticulo = async (req, res) => {
                         code: 'EXTRAS_DOBLE_TRIPLE_INCOMPATIBLES'
                     });
                 }
-                articulo.personalizaciones = construirPersonalizaciones(extras);
             }
+            articulo.personalizaciones = construirPersonalizacionesParaArticulo(extras, {
+                categoriaNombre: articulo.categoria_nombre,
+                articuloNombre: articulo.articulo_nombre
+            });
             
             // Verificar que el pedido existe
             const [pedidos] = await connection.execute('SELECT * FROM pedidos WHERE id = ?', [id]);
@@ -1893,12 +1924,13 @@ const cobrarPedido = async (req, res) => {
             });
         }
 
-        const { medio_pago, descuento_porcentaje = 0 } = req.validatedData || req.body || {};
+        const { medio_pago, medios_pago, descuento_porcentaje = 0 } = req.validatedData || req.body || {};
         const { cobrarPedidoIdempotente } = require('../services/PedidoCobroService');
 
         const result = await cobrarPedidoIdempotente({
             pedidoId: id,
             medioPago: medio_pago,
+            mediosPago: medios_pago,
             descuentoPorcentaje: descuento_porcentaje,
             usuario: req.user || {},
             req

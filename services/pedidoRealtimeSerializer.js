@@ -45,9 +45,21 @@ async function buildPedidoSnapshotById({ pedidoId, connection = null, includeArt
             articulos = articulosRows;
         }
 
+        let mediosPagoRows = [];
+        try {
+            const [rows] = await dbConn.execute(
+                'SELECT medio_pago, monto, orden FROM pedidos_medios_pago WHERE pedido_id = ? ORDER BY orden',
+                [pedidoId]
+            );
+            mediosPagoRows = rows;
+        } catch (_) {
+            // Tabla puede no existir si la migración aún no corrió
+        }
+
         return enrichPedidoRealtime({
             ...pedidoRows[0],
-            ...(includeArticulos ? { articulos } : {})
+            ...(includeArticulos ? { articulos } : {}),
+            ...(mediosPagoRows.length >= 2 ? { medios_pago: mediosPagoRows } : {})
         });
     } finally {
         if (releaseAfter) {
