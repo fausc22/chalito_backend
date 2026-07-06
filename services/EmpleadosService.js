@@ -1,4 +1,7 @@
+const moment = require('moment-timezone');
 const db = require('../controllers/dbPromise');
+
+const STORE_TIMEZONE = 'America/Argentina/Buenos_Aires';
 
 const EMPLEADOS_SELECT = `
     SELECT
@@ -302,12 +305,34 @@ const obtenerAsistenciaPorId = async (id) => {
     return enriquecerAsistenciaRespuesta(rows[0] || null);
 };
 
-const buildBusinessError = (message, status, code) => {
+const buildBusinessError = (message, status, code, details = null) => {
     const error = new Error(message);
     error.status = status;
     error.code = code;
+    if (details) {
+        error.details = details;
+    }
     return error;
 };
+
+const obtenerAhoraStore = () => moment.tz(STORE_TIMEZONE);
+
+const normalizarFechaAsistencia = (fecha) => {
+    if (typeof fecha === 'string') {
+        return fecha.slice(0, 10);
+    }
+    if (fecha instanceof Date) {
+        return obtenerFechaLocalDesdeDatetime(fecha);
+    }
+    return obtenerFechaLocalDesdeDatetime(fecha);
+};
+
+const buildDetalleAsistenciaAbierta = (abierta) => ({
+    asistencia_id: abierta.id,
+    empleado_id: abierta.empleado_id,
+    fecha: normalizarFechaAsistencia(abierta.fecha),
+    hora_ingreso: abierta.hora_ingreso
+});
 
 const obtenerUsuarioIdRequerido = (usuario) => {
     const usuarioId = Number(usuario?.id);
@@ -364,19 +389,47 @@ const calcularMinutosTrabajados = (horaIngreso, horaEgreso) => {
     return Math.floor(diffMs / 60000);
 };
 
-const obtenerFechaLocalActual = (date = new Date()) => {
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
+const obtenerFechaLocalActual = (date = null) => {
+    const m = date
+        ? moment(date).tz(STORE_TIMEZONE)
+        : obtenerAhoraStore();
+    return m.format('YYYY-MM-DD');
 };
 
 const obtenerFechaLocalDesdeDatetime = (value) => {
-    const date = value instanceof Date ? value : new Date(value);
-    if (!Number.isFinite(date.getTime())) {
+    const m = moment(value);
+    if (!m.isValid()) {
         return null;
     }
-    return obtenerFechaLocalActual(date);
+    return m.tz(STORE_TIMEZONE).format('YYYY-MM-DD');
+};
+
+const obtenerFechaMinimaRegistroManual = () => {
+    const ahora = obtenerAhoraStore();
+    const inicioMes = ahora.clone().startOf('month');
+    const hace30Dias = ahora.clone().subtract(30, 'days').startOf('day');
+    const minima = moment.max(inicioMes, hace30Dias);
+    return minima.format('YYYY-MM-DD');
+};
+
+const validarVentanaFechaManual = (fecha) => {
+    const fechaNormalizada = String(fecha || '').slice(0, 10);
+    const fechaMoment = moment.tz(fechaNormalizada, 'YYYY-MM-DD', true, STORE_TIMEZONE);
+    if (!fechaMoment.isValid()) {
+        throw buildBusinessError('La fecha del turno no es valida', 400, 'FECHA_INVALIDA');
+    }
+
+    const minima = obtenerFechaMinimaRegistroManual();
+    const maxima = obtenerFechaLocalActual();
+    if (fechaNormalizada < minima || fechaNormalizada > maxima) {
+        throw buildBusinessError(
+            'La fecha esta fuera del periodo permitido para registro manual',
+            400,
+            'FECHA_FUERA_DE_VENTANA'
+        );
+    }
+
+    return fechaNormalizada;
 };
 
 const normalizarMotivoAjuste = (motivo) => {
@@ -390,42 +443,58 @@ const normalizarMotivoAjuste = (motivo) => {
 const intervalosSeSolapan = (inicioA, finA, inicioB, finB) =>
     inicioA.getTime() < finB.getTime() && inicioB.getTime() < finA.getTime();
 
-const validarSolapamientoAjusteIngreso = async (connection, asistencia, horaIngresoNueva) => {
-    const ahora = new Date();
-    const finTurnoAbierto = asistencia.hora_egreso
-        ? new Date(asistencia.hora_egreso)
-        : ahora;
-
-    const fechaAsistencia = typeof asistencia.fecha === 'string'
-        ? asistencia.fecha.slice(0, 10)
-        : obtenerFechaLocalActual(new Date(asistencia.fecha));
-
-    const [otrasAsistencias] = await connection.execute(
-        `
-        SELECT id, hora_ingreso, hora_egreso
+const validarSolapamientoTurno = async (connection, {
+    empleadoId,
+    fecha,
+    horaIngreso,
+    horaEgreso = null,
+    excluirAsistenciaId = null
+}) => {
+    const fechaAsistencia = normalizarFechaAsistencia(fecha);
+    let query = `
+        SELECT id, hora_ingreso, hora_egreso, estado
         FROM empleados_asistencias
         WHERE empleado_id = ?
           AND fecha = ?
-          AND id <> ?
-          AND estado IN ('CERRADO', 'CORREGIDO')
+          AND estado IN ('ABIERTO', 'CERRADO', 'CORREGIDO')
           AND hora_ingreso IS NOT NULL
-          AND hora_egreso IS NOT NULL
-        `,
-        [asistencia.empleado_id, fechaAsistencia, asistencia.id]
-    );
+    `;
+    const params = [empleadoId, fechaAsistencia];
+
+    if (excluirAsistenciaId) {
+        query += ' AND id <> ?';
+        params.push(excluirAsistenciaId);
+    }
+
+    const [otrasAsistencias] = await connection.execute(query, params);
+    const ahora = obtenerAhoraStore().toDate();
+    const inicioNuevo = horaIngreso instanceof Date ? horaIngreso : new Date(horaIngreso);
+    const finNuevo = horaEgreso
+        ? (horaEgreso instanceof Date ? horaEgreso : new Date(horaEgreso))
+        : ahora;
 
     for (const otra of otrasAsistencias) {
         const inicioOtra = new Date(otra.hora_ingreso);
-        const finOtra = new Date(otra.hora_egreso);
+        const finOtra = otra.hora_egreso ? new Date(otra.hora_egreso) : ahora;
 
-        if (intervalosSeSolapan(horaIngresoNueva, finTurnoAbierto, inicioOtra, finOtra)) {
+        if (intervalosSeSolapan(inicioNuevo, finNuevo, inicioOtra, finOtra)) {
             throw buildBusinessError(
-                'La nueva hora de ingreso se solapa con otro turno del mismo dia',
+                'El horario se solapa con otro turno del mismo dia',
                 409,
                 'HORARIO_SOLAPADO'
             );
         }
     }
+};
+
+const validarSolapamientoAjusteIngreso = async (connection, asistencia, horaIngresoNueva) => {
+    await validarSolapamientoTurno(connection, {
+        empleadoId: asistencia.empleado_id,
+        fecha: asistencia.fecha,
+        horaIngreso: horaIngresoNueva,
+        horaEgreso: null,
+        excluirAsistenciaId: asistencia.id
+    });
 };
 
 const registrarIngresoAsistencia = async ({ empleado_id }, usuario = {}) => {
@@ -441,11 +510,12 @@ const registrarIngresoAsistencia = async ({ empleado_id }, usuario = {}) => {
             throw buildBusinessError(
                 'El empleado ya tiene una asistencia abierta',
                 409,
-                'ASISTENCIA_ABIERTA_EXISTENTE'
+                'ASISTENCIA_ABIERTA_EXISTENTE',
+                buildDetalleAsistenciaAbierta(abierta)
             );
         }
 
-        const ahora = new Date();
+        const ahora = obtenerAhoraStore().toDate();
         const fechaLocal = obtenerFechaLocalActual(ahora);
 
         const [result] = await connection.execute(
@@ -466,7 +536,61 @@ const registrarIngresoAsistencia = async ({ empleado_id }, usuario = {}) => {
     }
 };
 
-const registrarEgresoAsistencia = async ({ empleado_id }) => {
+const requiereHoraEgresoExplicita = (fechaTurno, fechaHoy = obtenerFechaLocalActual()) =>
+    normalizarFechaAsistencia(fechaTurno) !== fechaHoy;
+
+const validarHoraEgresoCierre = (asistenciaAbierta, horaEgresoInput) => {
+    const fechaTurno = normalizarFechaAsistencia(asistenciaAbierta.fecha);
+    const horaEgreso = horaEgresoInput instanceof Date ? horaEgresoInput : new Date(horaEgresoInput);
+
+    if (!Number.isFinite(horaEgreso.getTime())) {
+        throw buildBusinessError(
+            'hora_egreso debe ser una fecha y hora valida',
+            400,
+            'HORA_EGRESO_INVALIDA'
+        );
+    }
+
+    const fechaEgreso = obtenerFechaLocalDesdeDatetime(horaEgreso);
+    if (fechaEgreso !== fechaTurno) {
+        throw buildBusinessError(
+            'La hora de egreso debe corresponder al mismo dia del turno',
+            400,
+            'FECHA_EGRESO_INVALIDA'
+        );
+    }
+
+    const horaIngreso = new Date(asistenciaAbierta.hora_ingreso);
+    if (horaEgreso.getTime() <= horaIngreso.getTime()) {
+        throw buildBusinessError(
+            'hora_egreso debe ser mayor a hora_ingreso',
+            400,
+            'RANGO_HORARIO_INVALIDO'
+        );
+    }
+
+    const ahora = obtenerAhoraStore();
+    if (requiereHoraEgresoExplicita(fechaTurno)) {
+        const finDelDiaTurno = moment.tz(fechaTurno, 'YYYY-MM-DD', STORE_TIMEZONE).endOf('day');
+        if (moment(horaEgreso).isAfter(finDelDiaTurno)) {
+            throw buildBusinessError(
+                'La hora de egreso no puede ser posterior al fin del dia del turno',
+                400,
+                'HORA_EGRESO_INVALIDA'
+            );
+        }
+    } else if (moment(horaEgreso).isAfter(ahora)) {
+        throw buildBusinessError(
+            'La hora de egreso no puede ser futura',
+            400,
+            'HORA_FUTURA'
+        );
+    }
+
+    return horaEgreso;
+};
+
+const registrarEgresoAsistencia = async ({ empleado_id, hora_egreso }) => {
     const connection = await db.getConnection();
 
     try {
@@ -481,9 +605,45 @@ const registrarEgresoAsistencia = async ({ empleado_id }) => {
             );
         }
 
-        const horaEgreso = new Date();
+        const fechaTurno = normalizarFechaAsistencia(asistenciaAbierta.fecha);
+        const fechaHoy = obtenerFechaLocalActual();
+        const pendienteDeOtroDia = requiereHoraEgresoExplicita(fechaTurno, fechaHoy);
+
+        if (pendienteDeOtroDia && !hora_egreso) {
+            throw buildBusinessError(
+                'Para cerrar un turno pendiente de otro dia debe indicar la hora de egreso real',
+                400,
+                'HORA_EGRESO_REQUERIDA'
+            );
+        }
+
+        const horaEgreso = hora_egreso
+            ? validarHoraEgresoCierre(asistenciaAbierta, hora_egreso)
+            : obtenerAhoraStore().toDate();
+
+        const cubierta = await asistenciaCubiertaPorLiquidacionGuardada(
+            connection,
+            asistenciaAbierta.empleado_id,
+            fechaTurno
+        );
+        if (cubierta) {
+            throw buildBusinessError(
+                'No es posible cerrar esta asistencia porque ya forma parte de una liquidacion guardada',
+                409,
+                'ASISTENCIA_INCLUIDA_EN_LIQUIDACION'
+            );
+        }
+
+        await validarSolapamientoTurno(connection, {
+            empleadoId: asistenciaAbierta.empleado_id,
+            fecha: fechaTurno,
+            horaIngreso: asistenciaAbierta.hora_ingreso,
+            horaEgreso,
+            excluirAsistenciaId: asistenciaAbierta.id
+        });
+
         const minutosTrabajados = calcularMinutosTrabajados(asistenciaAbierta.hora_ingreso, horaEgreso);
-        if (minutosTrabajados === null) {
+        if (minutosTrabajados === null || minutosTrabajados <= 0) {
             throw buildBusinessError(
                 'No se pudo calcular minutos trabajados para el egreso',
                 400,
@@ -665,8 +825,8 @@ const ajustarIngresoAsistencia = async (id, data, usuario = {}) => {
             );
         }
 
-        const ahora = new Date();
-        if (horaIngresoNueva.getTime() > ahora.getTime()) {
+        const ahora = obtenerAhoraStore();
+        if (horaIngresoNueva.getTime() > ahora.toDate().getTime()) {
             throw buildBusinessError(
                 'La nueva hora de ingreso no puede ser futura',
                 400,
@@ -675,9 +835,7 @@ const ajustarIngresoAsistencia = async (id, data, usuario = {}) => {
         }
 
         const fechaIngresoNueva = obtenerFechaLocalDesdeDatetime(horaIngresoNueva);
-        const fechaAsistencia = typeof asistencia.fecha === 'string'
-            ? asistencia.fecha.slice(0, 10)
-            : obtenerFechaLocalActual(new Date(asistencia.fecha));
+        const fechaAsistencia = normalizarFechaAsistencia(asistencia.fecha);
 
         if (fechaIngresoNueva !== fechaAsistencia) {
             throw buildBusinessError(
@@ -740,6 +898,114 @@ const ajustarIngresoAsistencia = async (id, data, usuario = {}) => {
 
         await connection.commit();
         return await obtenerAsistenciaPorId(id);
+    } catch (error) {
+        await connection.rollback();
+        throw error;
+    } finally {
+        connection.release();
+    }
+};
+
+const registrarAsistenciaManual = async (data, usuario = {}) => {
+    const connection = await db.getConnection();
+
+    try {
+        await connection.beginTransaction();
+        const usuarioId = obtenerUsuarioIdRequerido(usuario);
+        const { empleado_id, fecha, hora_ingreso, hora_egreso, motivo } = data;
+
+        await obtenerEmpleadoActivo(connection, empleado_id, 'El empleado se encuentra inactivo');
+
+        const abierta = await obtenerAsistenciaAbierta(connection, empleado_id);
+        if (abierta) {
+            throw buildBusinessError(
+                'Cierra el turno abierto pendiente antes de registrar uno manual',
+                409,
+                'ASISTENCIA_ABIERTA_EXISTENTE',
+                buildDetalleAsistenciaAbierta(abierta)
+            );
+        }
+
+        const fechaNormalizada = validarVentanaFechaManual(fecha);
+
+        const horaIngresoDt = new Date(hora_ingreso);
+        const horaEgresoDt = new Date(hora_egreso);
+        if (!Number.isFinite(horaIngresoDt.getTime()) || !Number.isFinite(horaEgresoDt.getTime())) {
+            throw buildBusinessError(
+                'hora_ingreso y hora_egreso deben ser fechas y horas validas',
+                400,
+                'HORARIO_INVALIDO'
+            );
+        }
+
+        const fechaIngreso = obtenerFechaLocalDesdeDatetime(horaIngresoDt);
+        const fechaEgreso = obtenerFechaLocalDesdeDatetime(horaEgresoDt);
+        if (fechaIngreso !== fechaNormalizada || fechaEgreso !== fechaNormalizada) {
+            throw buildBusinessError(
+                'El ingreso y egreso deben corresponder al mismo dia de la asistencia',
+                400,
+                'FECHA_INGRESO_INVALIDA'
+            );
+        }
+
+        const ahora = obtenerAhoraStore();
+        if (moment(horaIngresoDt).isAfter(ahora) || moment(horaEgresoDt).isAfter(ahora)) {
+            throw buildBusinessError(
+                'Las horas del turno no pueden ser futuras',
+                400,
+                'HORA_FUTURA'
+            );
+        }
+
+        const minutosTrabajados = calcularMinutosTrabajados(horaIngresoDt, horaEgresoDt);
+        if (minutosTrabajados === null || minutosTrabajados <= 0) {
+            throw buildBusinessError(
+                'hora_egreso debe ser mayor a hora_ingreso',
+                400,
+                'RANGO_HORARIO_INVALIDO'
+            );
+        }
+
+        const cubierta = await asistenciaCubiertaPorLiquidacionGuardada(
+            connection,
+            empleado_id,
+            fechaNormalizada
+        );
+        if (cubierta) {
+            throw buildBusinessError(
+                'No es posible registrar asistencia manual en una fecha incluida en una liquidacion guardada',
+                409,
+                'ASISTENCIA_INCLUIDA_EN_LIQUIDACION'
+            );
+        }
+
+        await validarSolapamientoTurno(connection, {
+            empleadoId: empleado_id,
+            fecha: fechaNormalizada,
+            horaIngreso: horaIngresoDt,
+            horaEgreso: horaEgresoDt
+        });
+
+        const motivoFinal = normalizarMotivoAjuste(motivo);
+
+        const [result] = await connection.execute(
+            `INSERT INTO empleados_asistencias (
+                empleado_id, fecha, hora_ingreso, hora_egreso, minutos_trabajados,
+                estado, registrado_por_usuario_id, observaciones, motivo_correccion
+            ) VALUES (?, ?, ?, ?, ?, 'CERRADO', ?, ?, NULL)`,
+            [
+                empleado_id,
+                fechaNormalizada,
+                horaIngresoDt,
+                horaEgresoDt,
+                minutosTrabajados,
+                usuarioId,
+                motivoFinal
+            ]
+        );
+
+        await connection.commit();
+        return await obtenerAsistenciaPorId(result.insertId);
     } catch (error) {
         await connection.rollback();
         throw error;
@@ -1312,6 +1578,13 @@ module.exports = {
     registrarEgresoAsistencia,
     corregirAsistencia,
     ajustarIngresoAsistencia,
+    registrarAsistenciaManual,
+    requiereHoraEgresoExplicita,
+    obtenerFechaMinimaRegistroManual,
+    validarVentanaFechaManual,
+    obtenerFechaLocalActual,
+    obtenerFechaLocalDesdeDatetime,
+    STORE_TIMEZONE,
     obtenerMovimientos,
     obtenerMovimientoPorId,
     crearMovimiento,

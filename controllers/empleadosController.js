@@ -10,6 +10,7 @@ const {
     registrarEgresoAsistencia: registrarEgresoAsistenciaService,
     corregirAsistencia: corregirAsistenciaService,
     ajustarIngresoAsistencia: ajustarIngresoAsistenciaService,
+    registrarAsistenciaManual: registrarAsistenciaManualService,
     obtenerMovimientos: obtenerMovimientosService,
     obtenerMovimientoPorId: obtenerMovimientoPorIdService,
     crearMovimiento: crearMovimientoService,
@@ -31,6 +32,10 @@ const responderError = (res, error, fallbackMessage) => {
 
     if (error?.code) {
         payload.code = error.code;
+    }
+
+    if (error?.details) {
+        payload.details = error.details;
     }
 
     if (process.env.NODE_ENV === 'development') {
@@ -278,6 +283,7 @@ const registrarEgresoAsistencia = async (req, res) => {
             registroId: data?.id || null,
             datosNuevos: {
                 empleado_id: payload.empleado_id,
+                hora_egreso: payload.hora_egreso || data?.hora_egreso || null,
                 minutos_trabajados: data?.minutos_trabajados,
                 estado: 'CERRADO'
             },
@@ -364,6 +370,36 @@ const ajustarIngresoAsistencia = async (req, res) => {
     } catch (error) {
         console.error('❌ Error al ajustar ingreso de asistencia:', error);
         return responderError(res, error, 'Error al ajustar hora de ingreso');
+    }
+};
+
+const registrarAsistenciaManual = async (req, res) => {
+    try {
+        const payload = req.validatedData || req.body;
+        const data = await registrarAsistenciaManualService(payload, req.user || {});
+
+        await auditarOperacion(req, {
+            accion: 'ASISTENCIA_MANUAL',
+            tabla: 'empleados_asistencias',
+            registroId: data?.id || null,
+            datosNuevos: {
+                empleado_id: payload.empleado_id,
+                fecha: payload.fecha,
+                hora_ingreso: payload.hora_ingreso,
+                hora_egreso: payload.hora_egreso,
+                estado: 'CERRADO'
+            },
+            detallesAdicionales: `Asistencia manual registrada para empleado #${payload.empleado_id}`
+        });
+
+        res.status(201).json({
+            success: true,
+            message: 'Asistencia manual registrada exitosamente',
+            data
+        });
+    } catch (error) {
+        console.error('❌ Error al registrar asistencia manual:', error);
+        return responderError(res, error, 'Error al registrar asistencia manual');
     }
 };
 
@@ -627,6 +663,7 @@ module.exports = {
     registrarEgresoAsistencia,
     corregirAsistencia,
     ajustarIngresoAsistencia,
+    registrarAsistenciaManual,
     obtenerMovimientos,
     obtenerMovimientoPorId,
     crearMovimiento,
