@@ -56,7 +56,8 @@ const registrarIngresoAsistenciaSchema = z.object({
 });
 
 const registrarEgresoAsistenciaSchema = z.object({
-    empleado_id: z.number().int().positive('empleado_id debe ser un numero positivo')
+    empleado_id: z.number().int().positive('empleado_id debe ser un numero positivo'),
+    hora_egreso: z.string().datetime('hora_egreso debe tener formato ISO').optional()
 });
 
 const corregirAsistenciaSchema = z
@@ -75,6 +76,19 @@ const ajustarIngresoAsistenciaSchema = z.object({
     hora_ingreso_nueva: z.string().datetime('hora_ingreso_nueva debe tener formato ISO'),
     motivo: sanitizedNullableString
 });
+
+const registrarAsistenciaManualSchema = z
+    .object({
+        empleado_id: z.number().int().positive('empleado_id debe ser un numero positivo'),
+        fecha: fechaSchema,
+        hora_ingreso: z.string().datetime('hora_ingreso debe tener formato ISO'),
+        hora_egreso: z.string().datetime('hora_egreso debe tener formato ISO'),
+        motivo: sanitizedNullableString
+    })
+    .refine((data) => new Date(data.hora_egreso).getTime() > new Date(data.hora_ingreso).getTime(), {
+        message: 'hora_egreso debe ser mayor a hora_ingreso',
+        path: ['hora_egreso']
+    });
 
 const crearMovimientoSchema = z.object({
     empleado_id: z.number().int().positive('empleado_id debe ser un numero positivo'),
@@ -310,6 +324,7 @@ module.exports = {
     registrarEgresoAsistenciaSchema,
     corregirAsistenciaSchema,
     ajustarIngresoAsistenciaSchema,
+    registrarAsistenciaManualSchema,
     crearMovimientoSchema,
     editarMovimientoSchema,
     guardarLiquidacionSchema,
