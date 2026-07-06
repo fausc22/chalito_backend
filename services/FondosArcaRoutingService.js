@@ -20,11 +20,24 @@ function resolverNombreCuenta(medioPago) {
   return requiereArca(medioPago) ? 'ARCA' : 'X';
 }
 
+/** Elige el medio fiscal: si alguno requiere ARCA lo retorna, sino el primero. */
+function resolverMedioFiscalDesdeSplit(mediosPago) {
+  const conArca = mediosPago.find((m) => requiereArca(normalizarMedioPago(m.medio_pago)));
+  return normalizarMedioPago((conArca || mediosPago[0]).medio_pago);
+}
+
+/** Genera label compuesto: "EFECTIVO + DEBITO" */
+function generarLabelMediosPago(mediosPago) {
+  return mediosPago.map((m) => normalizarMedioPago(m.medio_pago)).join(' + ');
+}
+
 module.exports = {
   MEDIOS_ARCA,
   normalizarMedioPago,
   requiereArca,
   resolverTipoFactura,
   resolverCaeEstadoInicial,
-  resolverNombreCuenta
+  resolverNombreCuenta,
+  resolverMedioFiscalDesdeSplit,
+  generarLabelMediosPago
 };

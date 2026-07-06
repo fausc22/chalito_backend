@@ -16,25 +16,20 @@ const {
     buildMeta
 } = require('./printPayloadShared');
 const { aplicaEnvioGratis } = require('../envioGratisSettingsService');
-
-const SIMPLE_LABEL_KEYWORDS = ['hambur', 'burger'];
-
-const hasDobleTripleModifier = (modifiers = []) =>
-    modifiers.some((modifier) => /doble|triple/i.test(String(modifier ?? '')));
-
-const shouldAddSimpleLabel = (name, modifiers = []) => {
-    const normalizedName = String(name ?? '').toLowerCase();
-    const matchesKeyword = SIMPLE_LABEL_KEYWORDS.some((keyword) => normalizedName.includes(keyword));
-    return matchesKeyword && !hasDobleTripleModifier(modifiers);
-};
+const { resolverPresentacionParaCocina } = require('../PersonalizacionesService');
 
 const buildKitchenLines = (articulos = []) =>
     articulos.map((articulo) => {
         const name = articulo.articulo_nombre || articulo.nombre || 'Artículo';
         const modifiers = mapExtrasNames(articulo);
-        const finalModifiers = shouldAddSimpleLabel(name, modifiers)
-            ? ['SIMPLE', ...modifiers]
-            : modifiers;
+        const presentacion = resolverPresentacionParaCocina(
+            articulo.personalizaciones,
+            name,
+            articulo.categoria_nombre
+        );
+
+        const finalModifiers =
+            presentacion === 'SIMPLE' ? ['SIMPLE', ...modifiers] : modifiers;
 
         return {
             qty: articulo.cantidad || 1,
@@ -88,4 +83,4 @@ const buildKitchenPayload = async (pedido) => {
     };
 };
 
-module.exports = { buildKitchenPayload, shouldAddSimpleLabel };
+module.exports = { buildKitchenPayload };

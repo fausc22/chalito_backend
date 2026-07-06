@@ -11,6 +11,77 @@ const NOMBRES_EXTRAS_INCOMPATIBLES = [
     'Hacela triple'
 ];
 
+const ES_HACELA_DOBLE = (n) => /hacela\s*doble/i.test(n || '');
+const ES_HACELA_TRIPLE = (n) => /hacela\s*triple/i.test(n || '');
+const ES_HACELA_CUADRUPLE = (n) => /hacela\s*cu[aá]druple/i.test(n || '');
+
+const extraNombre = (extra) => String(extra?.nombre ?? extra?.nombre_adicional ?? '').trim();
+
+const inferirPresentacionDesdeExtras = (extras = []) => {
+    const arr = Array.isArray(extras) ? extras : [];
+    for (const extra of arr) {
+        const nombre = extraNombre(extra);
+        if (ES_HACELA_CUADRUPLE(nombre)) return 'CUADRUPLE';
+        if (ES_HACELA_TRIPLE(nombre)) return 'TRIPLE';
+        if (ES_HACELA_DOBLE(nombre)) return 'DOBLE';
+    }
+    return null;
+};
+
+const esArticuloConPresentacion = ({ categoriaNombre, articuloNombre } = {}) => {
+    const categoria = String(categoriaNombre ?? '').trim().toLowerCase();
+    if (
+        categoria.includes('hamburguesa') ||
+        categoria.includes('sandwich') ||
+        categoria.includes('sándwich')
+    ) {
+        return true;
+    }
+
+    const nombre = String(articuloNombre ?? '').trim().toLowerCase();
+    return nombre.includes('hambur') || nombre.includes('burger');
+};
+
+const parsePersonalizacionesObjeto = (personalizaciones) => {
+    if (!personalizaciones) return null;
+    if (typeof personalizaciones === 'string') {
+        try {
+            return JSON.parse(personalizaciones);
+        } catch (_) {
+            return null;
+        }
+    }
+    return typeof personalizaciones === 'object' ? personalizaciones : null;
+};
+
+/**
+ * Resuelve la presentación para cocina/impresión (SIMPLE, DOBLE, TRIPLE, CUADRUPLE o null).
+ */
+const resolverPresentacionParaCocina = (personalizaciones, articuloNombre, categoriaNombre) => {
+    if (Array.isArray(personalizaciones)) {
+        const desdeExtras = inferirPresentacionDesdeExtras(personalizaciones);
+        if (desdeExtras) return desdeExtras;
+        if (esArticuloConPresentacion({ categoriaNombre, articuloNombre })) {
+            return 'SIMPLE';
+        }
+        return null;
+    }
+
+    const pers = parsePersonalizacionesObjeto(personalizaciones);
+    const explicita = String(pers?.presentacion || '').trim().toUpperCase();
+    if (explicita) return explicita;
+
+    const extras = Array.isArray(pers?.extras) ? pers.extras : [];
+    const desdeExtras = inferirPresentacionDesdeExtras(extras);
+    if (desdeExtras) return desdeExtras;
+
+    if (esArticuloConPresentacion({ categoriaNombre, articuloNombre })) {
+        return 'SIMPLE';
+    }
+
+    return null;
+};
+
 const normalizarNombre = (s) => (s || '').trim().toLowerCase();
 
 const esExtraIncompatible = (nombre) => {
@@ -235,9 +306,45 @@ const construirPersonalizaciones = (extras) => {
     };
 };
 
+/**
+ * Construye personalizaciones con presentación explícita cuando corresponde.
+ * Para hamburguesas/sándwiches sin "Hacela doble/triple/cuadruple", guarda presentacion: 'SIMPLE'.
+ */
+const construirPersonalizacionesParaArticulo = (extras, { categoriaNombre, articuloNombre } = {}) => {
+    const { extras: extrasNorm, extrasTotal } = normalizarExtras(extras);
+    const presentacionDesdeExtras = inferirPresentacionDesdeExtras(extrasNorm);
+
+    let presentacion = presentacionDesdeExtras;
+    if (!presentacion && esArticuloConPresentacion({ categoriaNombre, articuloNombre })) {
+        presentacion = 'SIMPLE';
+    }
+
+    if (extrasNorm.length === 0 && !presentacion) {
+        return null;
+    }
+
+    const result = {
+        extras: extrasNorm,
+        extrasTotal
+    };
+
+    if (presentacion) {
+        result.presentacion = presentacion;
+    }
+
+    return result;
+};
+
 module.exports = {
     CANTIDAD_EXTRA_MAXIMA,
     NOMBRES_EXTRAS_INCOMPATIBLES,
+    ES_HACELA_DOBLE,
+    ES_HACELA_TRIPLE,
+    ES_HACELA_CUADRUPLE,
+    inferirPresentacionDesdeExtras,
+    esArticuloConPresentacion,
+    resolverPresentacionParaCocina,
+    parsePersonalizacionesObjeto,
     validarExtrasNoDobleYTriple,
     parsearCantidadExtra,
     parsearExtrasDelPayload,
@@ -246,5 +353,6 @@ module.exports = {
     construirSnapshotExtrasDesdeDb,
     obtenerCantidadExtra,
     normalizarExtras,
-    construirPersonalizaciones
+    construirPersonalizaciones,
+    construirPersonalizacionesParaArticulo
 };

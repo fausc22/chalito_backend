@@ -121,10 +121,19 @@ const editarPedidoCompletoSchema = z.object({
     articulos: z.array(pedidoContenidoSchema).min(1, 'Debe incluir al menos un artículo')
 });
 
+const medioPagoItemSchema = z.object({
+    medio_pago: z.string().max(50),
+    monto: z.coerce.number().positive('El monto debe ser mayor a 0')
+});
+
 const cobrarPedidoSchema = z.object({
     medio_pago: z.string().max(50).optional().nullable(),
+    medios_pago: z.array(medioPagoItemSchema).min(1).max(2).optional(),
     descuento_porcentaje: z.coerce.number().min(0, 'El descuento porcentual no puede ser menor a 0').max(100, 'El descuento porcentual no puede ser mayor a 100').optional().default(0)
-});
+}).refine(
+    (data) => data.medio_pago != null || (Array.isArray(data.medios_pago) && data.medios_pago.length > 0),
+    { message: 'Debe especificar medio_pago o medios_pago' }
+);
 
 // Middleware de validación genérico
 const validate = (schema) => {

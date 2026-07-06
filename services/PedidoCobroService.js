@@ -10,12 +10,26 @@ const FondosArcaRouting = require('./FondosArcaRoutingService');
 const CuentasSistema = require('./CuentasSistemaService');
 const { buscarVentaAsociada } = require('./PrintService');
 
+function normalizarInputMedios(medioPago, mediosPago, totalFinal, medioPedidoFallback) {
+  if (Array.isArray(mediosPago) && mediosPago.length > 0) {
+    return mediosPago.map((m) => ({
+      medio_pago: FondosArcaRouting.normalizarMedioPago(m.medio_pago),
+      monto: parseFloat(m.monto)
+    }));
+  }
+  return [{
+    medio_pago: FondosArcaRouting.normalizarMedioPago(medioPago || medioPedidoFallback),
+    monto: totalFinal
+  }];
+}
+
 /**
  * Cobro idempotente de pedido → venta + movimiento de fondos.
  */
 async function cobrarPedidoIdempotente({
   pedidoId,
   medioPago,
+  mediosPago = null,
   descuentoPorcentaje = 0,
   usuario = {},
   req = null,
@@ -78,12 +92,6 @@ async function cobrarPedidoIdempotente({
       return { success: false, status: 400, message: 'El pedido no tiene artículos' };
     }
 
-    const medio = FondosArcaRouting.normalizarMedioPago(medioPago || pedido.medio_pago);
-    const tipoFactura = FondosArcaRouting.resolverTipoFactura(medio);
-    const caeEstado = FondosArcaRouting.resolverCaeEstadoInicial(medio);
-    const nombreCuenta = FondosArcaRouting.resolverNombreCuenta(medio);
-    const cuenta = await CuentasSistema.obtenerCuentaPorNombre(nombreCuenta, connection);
-
     const porcentaje = Number(descuentoPorcentaje);
     if (!Number.isFinite(porcentaje) || porcentaje < 0 || porcentaje > 100) {
       if (ownConnection) await connection.rollback();
@@ -101,6 +109,53 @@ async function cobrarPedidoIdempotente({
       if (ownConnection) await connection.rollback();
       return { success: false, status: 400, message: 'El total final no puede ser negativo', code: 'TOTAL_FINAL_NEGATIVO' };
     }
+
+    const mediosNorm = normalizarInputMedios(medioPago, mediosPago, totalesVenta.total, pedido.medio_pago);
+
+    for (const linea of mediosNorm) {
+      if (!Number.isFinite(linea.monto) || linea.monto <= 0) {
+        if (ownConnection) await connection.rollback();
+        return {
+          success: false,
+          status: 400,
+          message: 'Cada medio de pago debe tener un monto mayor a 0',
+          code: 'MONTO_MEDIO_INVALIDO'
+        };
+      }
+    }
+
+    if (mediosNorm.length > 1) {
+      const mediosUnicos = new Set(mediosNorm.map((m) => m.medio_pago));
+      if (mediosUnicos.size !== mediosNorm.length) {
+        if (ownConnection) await connection.rollback();
+        return {
+          success: false,
+          status: 400,
+          message: 'Los medios de pago deben ser distintos',
+          code: 'MEDIOS_DUPLICADOS'
+        };
+      }
+    }
+
+    const sumaMontos = mediosNorm.reduce((s, m) => s + m.monto, 0);
+    if (Math.abs(sumaMontos - totalesVenta.total) > 0.01) {
+      if (ownConnection) await connection.rollback();
+      return {
+        success: false,
+        status: 400,
+        message: `La suma de los medios ($${sumaMontos.toFixed(2)}) no coincide con el total a cobrar ($${totalesVenta.total.toFixed(2)})`,
+        code: 'SUMA_MEDIOS_INVALIDA'
+      };
+    }
+
+    const medioFiscal = FondosArcaRouting.resolverMedioFiscalDesdeSplit(mediosNorm);
+    const tipoFactura = FondosArcaRouting.resolverTipoFactura(medioFiscal);
+    const caeEstado = FondosArcaRouting.resolverCaeEstadoInicial(medioFiscal);
+    const nombreCuenta = FondosArcaRouting.resolverNombreCuenta(medioFiscal);
+    const cuentaFiscal = await CuentasSistema.obtenerCuentaPorNombre(nombreCuenta, connection);
+    const labelMedio = mediosNorm.length > 1
+      ? FondosArcaRouting.generarLabelMediosPago(mediosNorm)
+      : mediosNorm[0].medio_pago;
 
     const ventaInsert = `
       INSERT INTO ventas (
@@ -120,8 +175,8 @@ async function cobrarPedidoIdempotente({
       totalesVenta.iva_total,
       totalesVenta.descuento,
       totalesVenta.total,
-      medio,
-      cuenta.id,
+      labelMedio,
+      cuentaFiscal.id,
       pedido.observaciones,
       tipoFactura,
       caeEstado,
@@ -170,16 +225,29 @@ async function cobrarPedidoIdempotente({
     const totalesPedido = calcularTotalesDesdePrecioFinal(totalPedidoCobro);
     await connection.execute(
       `UPDATE pedidos SET estado_pago = 'PAGADO', medio_pago = ?, subtotal = ?, iva_total = ?, total = ?, fecha_modificacion = NOW() WHERE id = ?`,
-      [medio, totalesPedido.subtotal, totalesPedido.iva_total, totalesPedido.total, pedidoId]
+      [labelMedio, totalesPedido.subtotal, totalesPedido.iva_total, totalesPedido.total, pedidoId]
     );
 
-    await CuentasSistema.acreditarCuenta(
-      connection,
-      cuenta.id,
-      totalesVenta.total,
-      `Venta #${ventaId} (Pedido #${pedidoId})`,
-      ventaId
-    );
+    for (const linea of mediosNorm) {
+      const nombreCuentaLinea = FondosArcaRouting.resolverNombreCuenta(linea.medio_pago);
+      const cuentaLinea = await CuentasSistema.obtenerCuentaPorNombre(nombreCuentaLinea, connection);
+      await CuentasSistema.acreditarCuenta(
+        connection,
+        cuentaLinea.id,
+        linea.monto,
+        `Venta #${ventaId} (Pedido #${pedidoId}) - ${linea.medio_pago}`,
+        ventaId
+      );
+    }
+
+    if (mediosNorm.length > 1) {
+      for (let i = 0; i < mediosNorm.length; i++) {
+        await connection.execute(
+          `INSERT INTO pedidos_medios_pago (pedido_id, medio_pago, monto, orden) VALUES (?, ?, ?, ?)`,
+          [pedidoId, mediosNorm[i].medio_pago, mediosNorm[i].monto, i + 1]
+        );
+      }
+    }
 
     if (ownConnection) {
       await connection.commit();
@@ -192,7 +260,9 @@ async function cobrarPedidoIdempotente({
         registroId: pedidoId,
         datosAnteriores: pedido,
         datosNuevos: { ...pedido, estado_pago: 'PAGADO' },
-        detallesAdicionales: `Pedido cobrado - Venta #${ventaId} - Cuenta ${nombreCuenta}`
+        detallesAdicionales: mediosNorm.length > 1
+          ? `Pedido cobrado - Venta #${ventaId} - Split: ${labelMedio}`
+          : `Pedido cobrado - Venta #${ventaId} - Cuenta ${nombreCuenta}`
       });
     }
 
@@ -207,9 +277,9 @@ async function cobrarPedidoIdempotente({
       cobroNuevo: true,
       pedido: pedidoActualizado,
       ventaId,
-      medio,
+      medio: labelMedio,
       tipoFactura,
-      requiereArca: FondosArcaRouting.requiereArca(medio),
+      requiereArca: FondosArcaRouting.requiereArca(medioFiscal),
       total: totalesVenta.total
     };
 
