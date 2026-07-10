@@ -1,5 +1,5 @@
 /**
- * Tests de reglas de asistencia de empleados (fechas y ventana manual).
+ * Tests de reglas de asistencia de empleados (fechas, turnos nocturnos y ventana manual).
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -10,11 +10,17 @@ const {
     obtenerFechaLocalActual,
     obtenerFechaLocalDesdeDatetime,
     requiereHoraEgresoExplicita,
+    esTurnoActivoNocturno,
+    HORAS_MAX_TURNO_ACTIVO,
     STORE_TIMEZONE,
 } = require('../../services/EmpleadosService');
 
 test('STORE_TIMEZONE es America/Argentina/Buenos_Aires', () => {
     assert.equal(STORE_TIMEZONE, 'America/Argentina/Buenos_Aires');
+});
+
+test('HORAS_MAX_TURNO_ACTIVO es 16', () => {
+    assert.equal(HORAS_MAX_TURNO_ACTIVO, 16);
 });
 
 test('obtenerFechaLocalDesdeDatetime respeta dia calendario en Argentina', () => {
@@ -52,16 +58,39 @@ test('validarVentanaFechaManual rechaza fecha anterior a la ventana', () => {
     );
 });
 
-test('requiereHoraEgresoExplicita detecta turnos de otro dia', () => {
-    const hoy = obtenerFechaLocalActual();
-    const ayer = moment.tz(hoy, 'YYYY-MM-DD', STORE_TIMEZONE).subtract(1, 'day').format('YYYY-MM-DD');
-    assert.equal(requiereHoraEgresoExplicita(ayer, hoy), true);
-    assert.equal(requiereHoraEgresoExplicita(hoy, hoy), false);
-});
-
 test('validarVentanaFechaManual rechaza fecha invalida', () => {
     assert.throws(
         () => validarVentanaFechaManual('no-es-fecha'),
         (error) => error.code === 'FECHA_INVALIDA'
     );
+});
+
+test('esTurnoActivoNocturno retorna true para ingreso hace 4 horas', () => {
+    const ingreso = moment.tz(STORE_TIMEZONE).subtract(4, 'hours').toDate();
+    assert.equal(esTurnoActivoNocturno(ingreso), true);
+});
+
+test('esTurnoActivoNocturno retorna false para ingreso hace 20 horas', () => {
+    const ingreso = moment.tz(STORE_TIMEZONE).subtract(20, 'hours').toDate();
+    assert.equal(esTurnoActivoNocturno(ingreso), false);
+});
+
+test('requiereHoraEgresoExplicita retorna false para turno del mismo dia', () => {
+    const hoy = obtenerFechaLocalActual();
+    const ingreso = moment.tz(STORE_TIMEZONE).subtract(2, 'hours').toDate();
+    assert.equal(requiereHoraEgresoExplicita(hoy, ingreso, hoy), false);
+});
+
+test('requiereHoraEgresoExplicita retorna false para turno nocturno activo de ayer', () => {
+    const hoy = obtenerFechaLocalActual();
+    const ayer = moment.tz(hoy, 'YYYY-MM-DD', STORE_TIMEZONE).subtract(1, 'day').format('YYYY-MM-DD');
+    const ingreso = moment.tz(STORE_TIMEZONE).subtract(4, 'hours').toDate();
+    assert.equal(requiereHoraEgresoExplicita(ayer, ingreso, hoy), false);
+});
+
+test('requiereHoraEgresoExplicita retorna true para turno olvidado de ayer', () => {
+    const hoy = obtenerFechaLocalActual();
+    const ayer = moment.tz(hoy, 'YYYY-MM-DD', STORE_TIMEZONE).subtract(1, 'day').format('YYYY-MM-DD');
+    const ingreso = moment.tz(STORE_TIMEZONE).subtract(20, 'hours').toDate();
+    assert.equal(requiereHoraEgresoExplicita(ayer, ingreso, hoy), true);
 });

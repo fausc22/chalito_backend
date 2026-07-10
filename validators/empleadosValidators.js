@@ -52,7 +52,8 @@ const actualizarEstadoEmpleadoSchema = z.object({
 });
 
 const registrarIngresoAsistenciaSchema = z.object({
-    empleado_id: z.number().int().positive('empleado_id debe ser un numero positivo')
+    empleado_id: z.number().int().positive('empleado_id debe ser un numero positivo'),
+    es_feriado: z.boolean().optional().default(false)
 });
 
 const registrarEgresoAsistenciaSchema = z.object({
@@ -83,7 +84,8 @@ const registrarAsistenciaManualSchema = z
         fecha: fechaSchema,
         hora_ingreso: z.string().datetime('hora_ingreso debe tener formato ISO'),
         hora_egreso: z.string().datetime('hora_egreso debe tener formato ISO'),
-        motivo: sanitizedNullableString
+        motivo: sanitizedNullableString,
+        es_feriado: z.boolean().optional().default(false)
     })
     .refine((data) => new Date(data.hora_egreso).getTime() > new Date(data.hora_ingreso).getTime(), {
         message: 'hora_egreso debe ser mayor a hora_ingreso',

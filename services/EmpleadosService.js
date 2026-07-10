@@ -2,6 +2,7 @@ const moment = require('moment-timezone');
 const db = require('../controllers/dbPromise');
 
 const STORE_TIMEZONE = 'America/Argentina/Buenos_Aires';
+const HORAS_MAX_TURNO_ACTIVO = 16;
 
 const EMPLEADOS_SELECT = `
     SELECT
@@ -227,6 +228,7 @@ const obtenerAsistencias = async ({ empleado_id, fecha_desde, fecha_hasta, estad
             a.hora_ingreso,
             a.hora_egreso,
             a.minutos_trabajados,
+            a.es_feriado,
             a.estado,
             a.registrado_por_usuario_id,
             a.corregido_por_usuario_id,
@@ -282,6 +284,7 @@ const obtenerAsistenciaPorId = async (id) => {
             a.hora_ingreso,
             a.hora_egreso,
             a.minutos_trabajados,
+            a.es_feriado,
             a.estado,
             a.registrado_por_usuario_id,
             a.corregido_por_usuario_id,
@@ -387,6 +390,37 @@ const calcularMinutosTrabajados = (horaIngreso, horaEgreso) => {
     }
 
     return Math.floor(diffMs / 60000);
+};
+
+const esTurnoActivoNocturno = (horaIngreso) => {
+    const ingreso = new Date(horaIngreso);
+    const ahora = obtenerAhoraStore().toDate();
+    const horas = (ahora.getTime() - ingreso.getTime()) / (1000 * 60 * 60);
+    return Number.isFinite(horas) && horas > 0 && horas <= HORAS_MAX_TURNO_ACTIVO;
+};
+
+const validarRangoHorarioTurno = (horaIngreso, horaEgreso) => {
+    const ingreso = horaIngreso instanceof Date ? horaIngreso : new Date(horaIngreso);
+    const egreso = horaEgreso instanceof Date ? horaEgreso : new Date(horaEgreso);
+
+    if (!Number.isFinite(ingreso.getTime()) || !Number.isFinite(egreso.getTime())) {
+        throw buildBusinessError(
+            'hora_ingreso y hora_egreso deben ser fechas y horas validas',
+            400,
+            'HORARIO_INVALIDO'
+        );
+    }
+
+    const diffHoras = (egreso.getTime() - ingreso.getTime()) / (1000 * 60 * 60);
+    if (diffHoras <= 0 || diffHoras > HORAS_MAX_TURNO_ACTIVO) {
+        throw buildBusinessError(
+            `El egreso debe ser posterior al ingreso y dentro de las ${HORAS_MAX_TURNO_ACTIVO} horas de turno`,
+            400,
+            'RANGO_HORARIO_INVALIDO'
+        );
+    }
+
+    return { ingreso, egreso, diffHoras };
 };
 
 const obtenerFechaLocalActual = (date = null) => {
@@ -497,7 +531,7 @@ const validarSolapamientoAjusteIngreso = async (connection, asistencia, horaIngr
     });
 };
 
-const registrarIngresoAsistencia = async ({ empleado_id }, usuario = {}) => {
+const registrarIngresoAsistencia = async ({ empleado_id, es_feriado = false }, usuario = {}) => {
     const connection = await db.getConnection();
 
     try {
@@ -517,13 +551,14 @@ const registrarIngresoAsistencia = async ({ empleado_id }, usuario = {}) => {
 
         const ahora = obtenerAhoraStore().toDate();
         const fechaLocal = obtenerFechaLocalActual(ahora);
+        const esFeriado = es_feriado ? 1 : 0;
 
         const [result] = await connection.execute(
             `INSERT INTO empleados_asistencias (
-                empleado_id, fecha, hora_ingreso, hora_egreso, minutos_trabajados,
+                empleado_id, fecha, hora_ingreso, hora_egreso, minutos_trabajados, es_feriado,
                 estado, registrado_por_usuario_id, observaciones, motivo_correccion
-            ) VALUES (?, ?, ?, NULL, 0, 'ABIERTO', ?, NULL, NULL)`,
-            [empleado_id, fechaLocal, ahora, usuarioId]
+            ) VALUES (?, ?, ?, NULL, 0, ?, 'ABIERTO', ?, NULL, NULL)`,
+            [empleado_id, fechaLocal, ahora, esFeriado, usuarioId]
         );
 
         await connection.commit();
@@ -536,8 +571,15 @@ const registrarIngresoAsistencia = async ({ empleado_id }, usuario = {}) => {
     }
 };
 
-const requiereHoraEgresoExplicita = (fechaTurno, fechaHoy = obtenerFechaLocalActual()) =>
-    normalizarFechaAsistencia(fechaTurno) !== fechaHoy;
+const requiereHoraEgresoExplicita = (fechaTurno, horaIngreso, fechaHoy = obtenerFechaLocalActual()) => {
+    if (normalizarFechaAsistencia(fechaTurno) === fechaHoy) {
+        return false;
+    }
+    if (esTurnoActivoNocturno(horaIngreso)) {
+        return false;
+    }
+    return true;
+};
 
 const validarHoraEgresoCierre = (asistenciaAbierta, horaEgresoInput) => {
     const fechaTurno = normalizarFechaAsistencia(asistenciaAbierta.fecha);
@@ -551,35 +593,13 @@ const validarHoraEgresoCierre = (asistenciaAbierta, horaEgresoInput) => {
         );
     }
 
-    const fechaEgreso = obtenerFechaLocalDesdeDatetime(horaEgreso);
-    if (fechaEgreso !== fechaTurno) {
-        throw buildBusinessError(
-            'La hora de egreso debe corresponder al mismo dia del turno',
-            400,
-            'FECHA_EGRESO_INVALIDA'
-        );
-    }
-
-    const horaIngreso = new Date(asistenciaAbierta.hora_ingreso);
-    if (horaEgreso.getTime() <= horaIngreso.getTime()) {
-        throw buildBusinessError(
-            'hora_egreso debe ser mayor a hora_ingreso',
-            400,
-            'RANGO_HORARIO_INVALIDO'
-        );
-    }
+    const { ingreso: horaIngreso, egreso: egresoValidado } = validarRangoHorarioTurno(
+        asistenciaAbierta.hora_ingreso,
+        horaEgreso
+    );
 
     const ahora = obtenerAhoraStore();
-    if (requiereHoraEgresoExplicita(fechaTurno)) {
-        const finDelDiaTurno = moment.tz(fechaTurno, 'YYYY-MM-DD', STORE_TIMEZONE).endOf('day');
-        if (moment(horaEgreso).isAfter(finDelDiaTurno)) {
-            throw buildBusinessError(
-                'La hora de egreso no puede ser posterior al fin del dia del turno',
-                400,
-                'HORA_EGRESO_INVALIDA'
-            );
-        }
-    } else if (moment(horaEgreso).isAfter(ahora)) {
+    if (moment(egresoValidado).isAfter(ahora)) {
         throw buildBusinessError(
             'La hora de egreso no puede ser futura',
             400,
@@ -587,7 +607,16 @@ const validarHoraEgresoCierre = (asistenciaAbierta, horaEgresoInput) => {
         );
     }
 
-    return horaEgreso;
+    const fechaIngreso = obtenerFechaLocalDesdeDatetime(horaIngreso);
+    if (fechaIngreso !== fechaTurno) {
+        throw buildBusinessError(
+            'La hora de ingreso debe corresponder al dia del turno',
+            400,
+            'FECHA_INGRESO_INVALIDA'
+        );
+    }
+
+    return egresoValidado;
 };
 
 const registrarEgresoAsistencia = async ({ empleado_id, hora_egreso }) => {
@@ -607,7 +636,11 @@ const registrarEgresoAsistencia = async ({ empleado_id, hora_egreso }) => {
 
         const fechaTurno = normalizarFechaAsistencia(asistenciaAbierta.fecha);
         const fechaHoy = obtenerFechaLocalActual();
-        const pendienteDeOtroDia = requiereHoraEgresoExplicita(fechaTurno, fechaHoy);
+        const pendienteDeOtroDia = requiereHoraEgresoExplicita(
+            fechaTurno,
+            asistenciaAbierta.hora_ingreso,
+            fechaHoy
+        );
 
         if (pendienteDeOtroDia && !hora_egreso) {
             throw buildBusinessError(
@@ -912,7 +945,7 @@ const registrarAsistenciaManual = async (data, usuario = {}) => {
     try {
         await connection.beginTransaction();
         const usuarioId = obtenerUsuarioIdRequerido(usuario);
-        const { empleado_id, fecha, hora_ingreso, hora_egreso, motivo } = data;
+        const { empleado_id, fecha, hora_ingreso, hora_egreso, motivo, es_feriado = false } = data;
 
         await obtenerEmpleadoActivo(connection, empleado_id, 'El empleado se encuentra inactivo');
 
@@ -928,21 +961,15 @@ const registrarAsistenciaManual = async (data, usuario = {}) => {
 
         const fechaNormalizada = validarVentanaFechaManual(fecha);
 
-        const horaIngresoDt = new Date(hora_ingreso);
-        const horaEgresoDt = new Date(hora_egreso);
-        if (!Number.isFinite(horaIngresoDt.getTime()) || !Number.isFinite(horaEgresoDt.getTime())) {
-            throw buildBusinessError(
-                'hora_ingreso y hora_egreso deben ser fechas y horas validas',
-                400,
-                'HORARIO_INVALIDO'
-            );
-        }
+        const { ingreso: horaIngresoDt, egreso: horaEgresoDt } = validarRangoHorarioTurno(
+            hora_ingreso,
+            hora_egreso
+        );
 
         const fechaIngreso = obtenerFechaLocalDesdeDatetime(horaIngresoDt);
-        const fechaEgreso = obtenerFechaLocalDesdeDatetime(horaEgresoDt);
-        if (fechaIngreso !== fechaNormalizada || fechaEgreso !== fechaNormalizada) {
+        if (fechaIngreso !== fechaNormalizada) {
             throw buildBusinessError(
-                'El ingreso y egreso deben corresponder al mismo dia de la asistencia',
+                'El ingreso debe corresponder al dia de la asistencia',
                 400,
                 'FECHA_INGRESO_INVALIDA'
             );
@@ -987,18 +1014,20 @@ const registrarAsistenciaManual = async (data, usuario = {}) => {
         });
 
         const motivoFinal = normalizarMotivoAjuste(motivo);
+        const esFeriado = es_feriado ? 1 : 0;
 
         const [result] = await connection.execute(
             `INSERT INTO empleados_asistencias (
-                empleado_id, fecha, hora_ingreso, hora_egreso, minutos_trabajados,
+                empleado_id, fecha, hora_ingreso, hora_egreso, minutos_trabajados, es_feriado,
                 estado, registrado_por_usuario_id, observaciones, motivo_correccion
-            ) VALUES (?, ?, ?, ?, ?, 'CERRADO', ?, ?, NULL)`,
+            ) VALUES (?, ?, ?, ?, ?, ?, 'CERRADO', ?, ?, NULL)`,
             [
                 empleado_id,
                 fechaNormalizada,
                 horaIngresoDt,
                 horaEgresoDt,
                 minutosTrabajados,
+                esFeriado,
                 usuarioId,
                 motivoFinal
             ]
@@ -1252,6 +1281,8 @@ const calcularResumenLiquidacion = async ({
         SELECT
             COUNT(*) AS total_asistencias,
             COALESCE(SUM(minutos_trabajados), 0) AS total_minutos,
+            COALESCE(SUM(CASE WHEN es_feriado = 0 THEN minutos_trabajados ELSE 0 END), 0) AS minutos_normales,
+            COALESCE(SUM(CASE WHEN es_feriado = 1 THEN minutos_trabajados ELSE 0 END), 0) AS minutos_feriado,
             MAX(fecha) AS ultima_asistencia_fecha
         FROM empleados_asistencias
         WHERE empleado_id = ?
@@ -1278,7 +1309,12 @@ const calcularResumenLiquidacion = async ({
         [empleado_id, fecha_desde, fecha_hasta]
     );
 
-    const asistenciaResumen = asistenciaResumenRows[0] || { total_asistencias: 0, total_minutos: 0 };
+    const asistenciaResumen = asistenciaResumenRows[0] || {
+        total_asistencias: 0,
+        total_minutos: 0,
+        minutos_normales: 0,
+        minutos_feriado: 0
+    };
     const movimientosResumen = movimientosResumenRows[0] || {
         total_bonos: 0,
         total_adelantos: 0,
@@ -1288,8 +1324,13 @@ const calcularResumenLiquidacion = async ({
 
     const totalAsistencias = Number(asistenciaResumen.total_asistencias) || 0;
     const totalMinutos = Number(asistenciaResumen.total_minutos) || 0;
-    const totalHorasRaw = totalMinutos / 60;
-    const totalBase = totalHorasRaw * empleado.valor_hora;
+    const minutosNormales = Number(asistenciaResumen.minutos_normales) || 0;
+    const minutosFeriado = Number(asistenciaResumen.minutos_feriado) || 0;
+    const horasNormales = minutosNormales / 60;
+    const horasFeriado = minutosFeriado / 60;
+    const totalBaseNormales = horasNormales * empleado.valor_hora;
+    const totalBaseFeriado = horasFeriado * empleado.valor_hora * 2;
+    const totalBase = totalBaseNormales + totalBaseFeriado;
     const totalBonos = Number(movimientosResumen.total_bonos) || 0;
     const totalAdelantos = Number(movimientosResumen.total_adelantos) || 0;
     const totalDescuentos = Number(movimientosResumen.total_descuentos) || 0;
@@ -1310,8 +1351,12 @@ const calcularResumenLiquidacion = async ({
         valor_hora: redondearMoneda(empleado.valor_hora),
         total_asistencias: totalAsistencias,
         total_minutos: totalMinutos,
+        minutos_normales: minutosNormales,
+        minutos_feriado: minutosFeriado,
         ultima_asistencia_fecha: asistenciaResumen.ultima_asistencia_fecha || null,
         total_horas: calcularHorasDesdeMinutos(totalMinutos),
+        horas_feriado: calcularHorasDesdeMinutos(minutosFeriado),
+        total_feriado: redondearMoneda(totalBaseFeriado),
         total_base: redondearMoneda(totalBase),
         total_bonos: redondearMoneda(totalBonos),
         total_adelantos: redondearMoneda(totalAdelantos),
@@ -1331,6 +1376,7 @@ const calcularResumenLiquidacion = async ({
                 hora_ingreso,
                 hora_egreso,
                 minutos_trabajados,
+                es_feriado,
                 estado,
                 registrado_por_usuario_id,
                 corregido_por_usuario_id,
@@ -1580,6 +1626,8 @@ module.exports = {
     ajustarIngresoAsistencia,
     registrarAsistenciaManual,
     requiereHoraEgresoExplicita,
+    esTurnoActivoNocturno,
+    HORAS_MAX_TURNO_ACTIVO,
     obtenerFechaMinimaRegistroManual,
     validarVentanaFechaManual,
     obtenerFechaLocalActual,
