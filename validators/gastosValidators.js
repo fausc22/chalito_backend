@@ -25,8 +25,9 @@ const fechaGastoOptionalSchema = fechaSchema
 const crearGastoSchema = z.object({
     categoria_id: z.number().int().positive('El ID de categoría debe ser un número positivo'),
     descripcion: z.string()
-        .min(1, 'La descripción es obligatoria')
-        .max(255, 'La descripción no puede exceder 255 caracteres'),
+        .max(255, 'La descripción no puede exceder 255 caracteres')
+        .optional()
+        .nullable(),
     monto: z.number()
         .positive('El monto debe ser mayor a 0')
         .max(99999999.99, 'El monto excede el máximo permitido'),
@@ -46,9 +47,9 @@ const crearGastoSchema = z.object({
 const editarGastoSchema = z.object({
     categoria_id: z.number().int().positive('El ID de categoría debe ser un número positivo').optional(),
     descripcion: z.string()
-        .min(1, 'La descripción es obligatoria')
         .max(255, 'La descripción no puede exceder 255 caracteres')
-        .optional(),
+        .optional()
+        .nullable(),
     monto: z.number()
         .positive('El monto debe ser mayor a 0')
         .max(99999999.99, 'El monto excede el máximo permitido')

@@ -59,6 +59,8 @@ const crearGasto = async (req, res) => {
         }
         
         const montoNum = parseFloat(monto);
+        // Columna NOT NULL: vacío / ausente se guarda como ''
+        const descripcionFinal = typeof descripcion === 'string' ? descripcion.trim() : '';
         
         // Insertar el gasto
         const queryGasto = `
@@ -72,7 +74,7 @@ const crearGasto = async (req, res) => {
             fechaGasto,
             categoria_id,
             categoria[0].nombre,
-            descripcion,
+            descripcionFinal,
             montoNum,
             forma_pago,
             observaciones || null,
@@ -101,12 +103,12 @@ const crearGasto = async (req, res) => {
                 fecha: fechaGasto,
                 categoria_id,
                 categoria_nombre: categoria[0].nombre,
-                descripcion,
+                descripcion: descripcionFinal,
                 monto,
                 forma_pago,
                 cuenta_id
             }),
-            detallesAdicionales: `Gasto registrado: ${descripcion} - $${monto} (${categoria[0].nombre})`
+            detallesAdicionales: `Gasto registrado: ${descripcionFinal || '(sin descripción)'} - $${monto} (${categoria[0].nombre})`
         });
         
         console.log(`✅ Gasto creado: ID ${gastoId} - $${monto}`);
@@ -119,7 +121,7 @@ const crearGasto = async (req, res) => {
                 fecha: fechaGasto,
                 categoria_id,
                 categoria_nombre: categoria[0].nombre,
-                descripcion,
+                descripcion: descripcionFinal,
                 monto: montoNum,
                 forma_pago,
                 cuenta_id
@@ -437,7 +439,8 @@ const editarGasto = async (req, res) => {
         }
         if (descripcion !== undefined) {
             camposActualizar.push('descripcion = ?');
-            valoresActualizar.push(descripcion);
+            // Columna NOT NULL: vacío / null se guarda como ''
+            valoresActualizar.push(typeof descripcion === 'string' ? descripcion.trim() : '');
         }
         if (monto !== undefined) {
             camposActualizar.push('monto = ?');
