@@ -92,56 +92,53 @@ class OrderQueueEngine {
 
             console.log('🔄 [OrderQueueEngine] Evaluando cola de pedidos...');
             
-            // 1. Obtener información de capacidad
-            const infoCapacidad = await KitchenCapacityService.obtenerInfoCapacidad();
-            
-            if (infoCapacidad.estaLlena) {
-                console.log(`⚠️ [OrderQueueEngine] Cocina al máximo (${infoCapacidad.pedidosEnPreparacion}/${infoCapacidad.capacidadMaxima})`);
-                return { procesados: 0, mensaje: 'Cocina al máximo' };
-            }
-            
-            const espaciosDisponibles = infoCapacidad.espaciosDisponibles;
-            console.log(`✅ [OrderQueueEngine] ${espaciosDisponibles} espacio(s) disponible(s)`);
-            
-            // 2. Auditoría rápida de candidatos vs pedidos excluidos por transición manual
-            try {
-                const [stats] = await db.execute(
-                    `SELECT 
-                        COUNT(*) AS total_pendientes,
-                        SUM(CASE WHEN transicion_automatica = TRUE THEN 1 ELSE 0 END) AS pendientes_automaticos,
-                        SUM(CASE WHEN transicion_automatica = FALSE THEN 1 ELSE 0 END) AS pendientes_manuales
-                     FROM pedidos
-                     WHERE DATE(fecha) = CURDATE()
-                       AND estado IN ('RECIBIDO', 'PROGRAMADO', 'programado')
-                       ${SQL_AND_PEDIDO_HABILITADO_OPERATIVAMENTE}`
-                );
-                const row = stats[0] || {};
-                console.log(
-                    `ℹ️ [OrderQueueEngine] Pendientes hoy (RECIBIDO/PROGRAMADO): ` +
-                    `${row.total_pendientes || 0} total | ` +
-                    `${row.pendientes_automaticos || 0} automáticos (transicion_automatica=TRUE) | ` +
-                    `${row.pendientes_manuales || 0} excluidos por transición manual (transicion_automatica=FALSE)`
-                );
-            } catch (statsError) {
-                console.warn('⚠️ [OrderQueueEngine] No se pudo obtener estadísticas de pendientes:', statsError.message);
-            }
-            
-            // 3. Obtener pedidos RECIBIDOS/PROGRAMADOS pendientes del día actual, ordenados por prioridad y fecha
-            // Prioridad: ALTA primero, luego NORMAL
-            // Dentro de cada prioridad, más antiguos primero
-            // Solo considerar pedidos del día actual para mantener limpieza del sistema
-            // IMPORTANTE: MySQL no acepta parámetros preparados en LIMIT, así que lo construimos directamente
-            // Es seguro porque ya validamos que espaciosDisponibles es un número
-            const limitValue = Math.max(1, parseInt(espaciosDisponibles, 10) || 10); // Default 10 si hay algún problema
-            
-            // Obtener conexión para transacción con SELECT FOR UPDATE
-            // SELECT FOR UPDATE bloquea las filas seleccionadas hasta que termine la transacción
-            // Esto previene race conditions: si dos ejecuciones del worker corren simultáneamente,
-            // solo una podrá procesar cada pedido. La otra esperará hasta que se haga commit o rollback.
+            // 1. Obtener y bloquear capacidad canónica dentro de la transacción
             const connection = await db.getConnection();
             
             try {
                 await connection.beginTransaction();
+
+                const infoCapacidad = await KitchenCapacityService.obtenerInfoCapacidadEnTransaccion(connection);
+            
+                if (infoCapacidad.estaLlena) {
+                    await connection.rollback();
+                    console.log(`⚠️ [OrderQueueEngine] Cocina al máximo (${infoCapacidad.pedidosEnPreparacion}/${infoCapacidad.capacidadMaxima})`);
+                    return { procesados: 0, mensaje: 'Cocina al máximo' };
+                }
+            
+                const espaciosDisponibles = infoCapacidad.espaciosDisponibles;
+                console.log(`✅ [OrderQueueEngine] ${espaciosDisponibles} espacio(s) disponible(s)`);
+            
+                // 2. Auditoría rápida de candidatos vs pedidos excluidos por transición manual
+                try {
+                    const [stats] = await connection.execute(
+                        `SELECT 
+                            COUNT(*) AS total_pendientes,
+                            SUM(CASE WHEN transicion_automatica = TRUE THEN 1 ELSE 0 END) AS pendientes_automaticos,
+                            SUM(CASE WHEN transicion_automatica = FALSE THEN 1 ELSE 0 END) AS pendientes_manuales
+                         FROM pedidos
+                         WHERE DATE(fecha) = CURDATE()
+                           AND estado IN ('RECIBIDO', 'PROGRAMADO', 'programado')
+                           ${SQL_AND_PEDIDO_HABILITADO_OPERATIVAMENTE}`
+                    );
+                    const row = stats[0] || {};
+                    console.log(
+                        `ℹ️ [OrderQueueEngine] Pendientes hoy (RECIBIDO/PROGRAMADO): ` +
+                        `${row.total_pendientes || 0} total | ` +
+                        `${row.pendientes_automaticos || 0} automáticos (transicion_automatica=TRUE) | ` +
+                        `${row.pendientes_manuales || 0} excluidos por transición manual (transicion_automatica=FALSE)`
+                    );
+                } catch (statsError) {
+                    console.warn('⚠️ [OrderQueueEngine] No se pudo obtener estadísticas de pendientes:', statsError.message);
+                }
+            
+                // 3. Obtener pedidos RECIBIDOS/PROGRAMADOS pendientes del día actual
+                // LIMIT = espacios disponibles exactos (sin default alternativo de capacidad)
+                const limitValue = Math.max(0, parseInt(espaciosDisponibles, 10) || 0);
+                if (limitValue < 1) {
+                    await connection.rollback();
+                    return { procesados: 0, mensaje: 'Cocina al máximo' };
+                }
                 
                 const [pedidosPendientes] = await connection.execute(
                     `SELECT 
@@ -158,14 +155,12 @@ class OrderQueueEngine {
                         END AS inicio_preparacion_calculado
                      FROM pedidos 
                      WHERE estado IN ('RECIBIDO', 'PROGRAMADO', 'programado')
-                       AND transicion_automatica = TRUE -- Solo pedidos gestionados por el flujo automático (excluye adelantados manualmente)
+                       AND transicion_automatica = TRUE
                        AND DATE(fecha) = CURDATE()
                        ${SQL_AND_PEDIDO_HABILITADO_OPERATIVAMENTE}
                        AND (
-                            -- Pedidos "cuanto antes": procesar cuando haya capacidad
                             horario_entrega IS NULL
                             OR
-                            -- Pedidos programados: iniciar según tiempo_estimado_preparacion del pedido
                             (
                                 horario_entrega IS NOT NULL
                                 AND tiempo_estimado_preparacion > 0
@@ -185,7 +180,6 @@ class OrderQueueEngine {
             
                 if (pedidosPendientes.length === 0) {
                     await connection.rollback();
-                    connection.release();
                     console.log('ℹ️ [OrderQueueEngine] No hay pedidos pendientes');
                     return { procesados: 0, mensaje: 'No hay pedidos pendientes' };
                 }

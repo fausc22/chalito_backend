@@ -681,14 +681,18 @@ const actualizarEstadoPedido = async (req, res) => {
                 // Si transicion_automatica = true, validar capacidad (el motor debería hacerlo automáticamente)
                 // Si transicion_automatica = false, permitir bypass manual (excepción)
                 if (transicionAutomatica) {
-                    const hayCapacidad = await KitchenCapacityService.hayCapacidadDisponible();
+                    const infoCapacidad = await KitchenCapacityService.obtenerInfoCapacidadEnTransaccion(connection);
                     
-                    if (!hayCapacidad) {
+                    if (infoCapacidad.estaLlena) {
                         await connection.rollback();
-                        const infoCapacidad = await KitchenCapacityService.obtenerInfoCapacidad();
                         return res.status(400).json({
                             success: false,
-                            message: `No hay capacidad disponible. Cocina al máximo (${infoCapacidad.pedidosEnPreparacion}/${infoCapacidad.capacidadMaxima} pedidos en preparación)`
+                            message: `No hay capacidad disponible. Cocina al máximo (${infoCapacidad.pedidosEnPreparacion}/${infoCapacidad.capacidadMaxima} pedidos en preparación)`,
+                            code: 'CAPACIDAD_COCINA_LLENA',
+                            data: {
+                                pedidosEnPreparacion: infoCapacidad.pedidosEnPreparacion,
+                                capacidadMaxima: infoCapacidad.capacidadMaxima
+                            }
                         });
                     }
                 } else {
@@ -1533,8 +1537,25 @@ const forzarEstadoPedido = async (req, res) => {
         }
         
         await connection.beginTransaction();
+
+        // Capacidad canónica también para forzado admin (sin tope fijo aparte).
+        if (estado === 'EN_PREPARACION' && datosAnteriores.estado !== 'EN_PREPARACION') {
+            const infoCapacidad = await KitchenCapacityService.obtenerInfoCapacidadEnTransaccion(connection);
+            if (infoCapacidad.estaLlena) {
+                await connection.rollback();
+                return res.status(409).json({
+                    success: false,
+                    message: `No hay capacidad disponible. Cocina al máximo (${infoCapacidad.pedidosEnPreparacion}/${infoCapacidad.capacidadMaxima} pedidos en preparación)`,
+                    code: 'CAPACIDAD_COCINA_LLENA',
+                    data: {
+                        pedidosEnPreparacion: infoCapacidad.pedidosEnPreparacion,
+                        capacidadMaxima: infoCapacidad.capacidadMaxima
+                    }
+                });
+            }
+        }
         
-        // Actualizar estado sin validar capacidad (bypass)
+        // Actualizar estado
         await connection.execute(
             'UPDATE pedidos SET estado = ?, fecha_modificacion = NOW() WHERE id = ?',
             [estado, id]
@@ -1748,13 +1769,10 @@ const iniciarPreparacionManual = async (req, res) => {
                 });
             }
 
-            // Validación de capacidad de cocina con tope manual de 20
-            const infoCapacidad = await KitchenCapacityService.obtenerInfoCapacidad();
-            const capacidadMaximaManual = 20;
-            const capacidadEfectiva = Math.min(
-                infoCapacidad.capacidadMaxima || capacidadMaximaManual,
-                capacidadMaximaManual
-            );
+            // Capacidad exacta desde MAX_PEDIDOS_EN_PREPARACION (sin tope fijo).
+            // Lock de config + conteo en la misma transacción para evitar overshoot concurrente.
+            const infoCapacidad = await KitchenCapacityService.obtenerInfoCapacidadEnTransaccion(connection);
+            const capacidadEfectiva = infoCapacidad.capacidadMaxima;
             const pedidosEnPreparacion = infoCapacidad.pedidosEnPreparacion || 0;
 
             if (pedidosEnPreparacion >= capacidadEfectiva) {
@@ -1903,6 +1921,108 @@ const imprimirComanda = async (req, res) => {
 };
 
 /**
+ * Registrar impresión exitosa de comanda de cocina
+ * POST /pedidos/:id/comanda-impresa
+ *
+ * Solo debe llamarse tras éxito del agente local (o confirmación manual del fallback navegador).
+ * No actualiza fecha_modificacion para no disparar badge "Actualizado".
+ */
+const registrarComandaImpresa = async (req, res) => {
+    try {
+        const { id } = req.validatedParams || req.params;
+        const { origen } = req.validatedData || req.body || {};
+        const usuario = req.user || {};
+
+        const [rows] = await db.execute(
+            'SELECT id, estado, comanda_impresiones FROM pedidos WHERE id = ? LIMIT 1',
+            [id]
+        );
+
+        if (!rows.length) {
+            return res.status(404).json({
+                success: false,
+                message: 'Pedido no encontrado',
+                code: 'PEDIDO_NO_ENCONTRADO'
+            });
+        }
+
+        const pedido = rows[0];
+        if (String(pedido.estado || '').trim().toUpperCase() === 'CANCELADO') {
+            return res.status(409).json({
+                success: false,
+                message: 'No se puede registrar impresión de un pedido cancelado',
+                code: 'PEDIDO_CANCELADO'
+            });
+        }
+
+        const usuarioId = usuario.id ?? usuario.usuario_id ?? null;
+        const usuarioNombre = usuario.nombre || usuario.usuario || usuario.username || null;
+
+        await db.execute(
+            `UPDATE pedidos
+             SET comanda_impresiones = COALESCE(comanda_impresiones, 0) + 1,
+                 comanda_impresa_en = NOW(),
+                 comanda_ultima_impresion_usuario_id = ?,
+                 comanda_ultima_impresion_usuario_nombre = ?
+             WHERE id = ?`,
+            [usuarioId, usuarioNombre, id]
+        );
+
+        const [updatedRows] = await db.execute(
+            `SELECT id, comanda_impresa_en, comanda_impresiones,
+                    comanda_ultima_impresion_usuario_id, comanda_ultima_impresion_usuario_nombre
+             FROM pedidos WHERE id = ? LIMIT 1`,
+            [id]
+        );
+        const updated = updatedRows[0];
+
+        const payload = {
+            pedido_id: updated.id,
+            comanda_impresa_en: updated.comanda_impresa_en,
+            comanda_impresiones: updated.comanda_impresiones,
+            comanda_ultima_impresion_usuario_id: updated.comanda_ultima_impresion_usuario_id,
+            comanda_ultima_impresion_usuario_nombre: updated.comanda_ultima_impresion_usuario_nombre,
+            origen: origen || null
+        };
+
+        const io = req.app.get('io');
+        if (io) {
+            const { getInstance: getSocketService } = require('../services/SocketService');
+            const socketService = getSocketService(io);
+            if (socketService) {
+                socketService.emitPedidoComandaImpresa(id, payload);
+            }
+        }
+
+        try {
+            await auditarOperacion(req, {
+                accion: 'UPDATE',
+                tabla: 'pedidos',
+                registroId: id,
+                datosAnteriores: { comanda_impresiones: pedido.comanda_impresiones || 0 },
+                datosNuevos: payload,
+                detallesAdicionales: `Comanda impresa (#${updated.comanda_impresiones})${origen ? ` origen=${origen}` : ''}`
+            });
+        } catch (auditErr) {
+            console.warn('⚠️ Auditoría comanda impresa (no bloquea):', auditErr.message);
+        }
+
+        return res.json({
+            success: true,
+            message: 'Impresión de comanda registrada',
+            data: payload
+        });
+    } catch (error) {
+        console.error('❌ Error al registrar comanda impresa:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Error al registrar impresión de comanda',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+};
+
+/**
  * Cobrar pedido
  * POST /pedidos/:id/cobrar
  * 
@@ -2006,6 +2126,7 @@ module.exports = {
     iniciarPreparacionManual,
     cobrarPedido,
     imprimirComanda,
+    registrarComandaImpresa,
     imprimirTicket
 };
 

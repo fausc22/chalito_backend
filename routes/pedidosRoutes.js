@@ -16,6 +16,7 @@ const {
     iniciarPreparacionManual,
     cobrarPedido,
     imprimirComanda,
+    registrarComandaImpresa,
     imprimirTicket
 } = require('../controllers/pedidosController');
 
@@ -29,6 +30,7 @@ const {
     agregarArticuloSchema,
     editarPedidoCompletoSchema,
     cobrarPedidoSchema,
+    registrarComandaImpresaSchema,
     validate,
     validateParams,
     idParamSchema
@@ -50,6 +52,7 @@ router.put('/:id/horario-entrega', apiRateLimiter, ...writePedidos, validatePara
 router.delete('/:id', apiRateLimiter, ...writePedidos, validateParams(idParamSchema), eliminarPedido);
 router.post('/:id/articulos', apiRateLimiter, ...writePedidos, validateParams(idParamSchema), validate(agregarArticuloSchema), agregarArticulo);
 router.get('/:id/comanda-print', apiRateLimiter, ...readPedidos, validateParams(idParamSchema), imprimirComanda);
+router.post('/:id/comanda-impresa', apiRateLimiter, ...writePedidos, validateParams(idParamSchema), validate(registrarComandaImpresaSchema), registrarComandaImpresa);
 router.get('/:id/ticket-print', apiRateLimiter, ...readPedidos, validateParams(idParamSchema), imprimirTicket);
 
 module.exports = router;

@@ -229,6 +229,29 @@ const actualizarConfiguracionOperativa = async (req, res) => {
         const actualizadas = [];
         for (const clave of clavesRecibidas) {
             const valor = payload[clave];
+
+            if (clave === 'MAX_PEDIDOS_EN_PREPARACION') {
+                const parsed = Number.parseInt(valor, 10);
+                if (!Number.isFinite(parsed) || parsed < 1 || parsed > 200) {
+                    return res.status(400).json({
+                        success: false,
+                        message: 'MAX_PEDIDOS_EN_PREPARACION debe ser un entero entre 1 y 200',
+                        code: 'CAPACIDAD_INVALIDA'
+                    });
+                }
+            }
+
+            if (clave === 'TIEMPO_BASE_PEDIDO_MINUTOS') {
+                const parsed = Number.parseInt(valor, 10);
+                if (!Number.isFinite(parsed) || parsed < 1 || parsed > 180) {
+                    return res.status(400).json({
+                        success: false,
+                        message: 'TIEMPO_BASE_PEDIDO_MINUTOS debe ser un entero entre 1 y 180',
+                        code: 'TIEMPO_BASE_INVALIDO'
+                    });
+                }
+            }
+
             const datosAnteriores = await obtenerDatosAnteriores('configuracion_sistema', clave, 'clave');
 
             if (!datosAnteriores) {
@@ -243,6 +266,8 @@ const actualizarConfiguracionOperativa = async (req, res) => {
                 valorString = JSON.stringify(valor);
             } else if (datosAnteriores.tipo === 'BOOLEAN') {
                 valorString = valor ? 'true' : 'false';
+            } else if (datosAnteriores.tipo === 'INT') {
+                valorString = String(Number.parseInt(valor, 10));
             }
 
             await db.execute(

@@ -109,6 +109,21 @@ class SocketService {
     }
 
     /**
+     * Emitir evento cuando se registra una impresión exitosa de comanda de cocina.
+     * Evento dedicado: no reutilizar pedido:actualizado (evita badge ámbar de "editado").
+     */
+    emitPedidoComandaImpresa(pedidoId, data = null) {
+        if (this.io) {
+            this.io.emit('pedido:comanda-impresa', {
+                pedidoId,
+                ...(data && typeof data === 'object' ? data : {}),
+                timestamp: new Date().toISOString()
+            });
+            console.log(`📡 [SocketService] Evento emitido: pedido:comanda-impresa - Pedido #${pedidoId}`);
+        }
+    }
+
+    /**
      * Evento de dominio para actualizaciones de pago Mercado Pago.
      */
     emitMpPaymentUpdated(payload = {}) {

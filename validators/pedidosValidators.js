@@ -135,6 +135,10 @@ const cobrarPedidoSchema = z.object({
     { message: 'Debe especificar medio_pago o medios_pago' }
 );
 
+const registrarComandaImpresaSchema = z.object({
+    origen: z.enum(['agent', 'browser']).optional()
+}).default({});
+
 // Middleware de validación genérico
 const validate = (schema) => {
     return (req, res, next) => {
@@ -195,6 +199,7 @@ module.exports = {
     actualizarArticuloPedidoSchema,
     editarPedidoCompletoSchema,
     cobrarPedidoSchema,
+    registrarComandaImpresaSchema,
     pedidoContenidoSchema,
     idParamSchema,
     validate,

@@ -58,35 +58,52 @@ describe('OrderQueueEngine.evaluarColaPedidos', () => {
     it('filtra en SQL pedidos programados por tiempo_estimado_preparacion dinámico', async () => {
         const connection = {
             beginTransaction: jest.fn().mockResolvedValue(undefined),
-            execute: jest.fn().mockResolvedValueOnce([[
-                {
-                    id: 3001,
-                    estado: 'RECIBIDO',
-                    horario_entrega: new Date('2026-02-27T21:00:00.000Z'),
-                    tiempo_estimado_preparacion: 30,
-                    prioridad: 'NORMAL',
-                    transicion_automatica: 1,
-                    inicio_preparacion_calculado: new Date('2026-02-27T20:30:00.000Z')
-                }
-            ]]),
+            execute: jest.fn()
+                // stats audit query
+                .mockResolvedValueOnce([[{ total_pendientes: 1, pendientes_automaticos: 1, pendientes_manuales: 0 }]])
+                // SELECT candidatos FOR UPDATE
+                .mockResolvedValueOnce([[
+                    {
+                        id: 3001,
+                        estado: 'RECIBIDO',
+                        horario_entrega: new Date('2026-02-27T21:00:00.000Z'),
+                        tiempo_estimado_preparacion: 30,
+                        prioridad: 'NORMAL',
+                        transicion_automatica: 1,
+                        inicio_preparacion_calculado: new Date('2026-02-27T20:30:00.000Z')
+                    }
+                ]]),
             commit: jest.fn().mockResolvedValue(undefined),
             rollback: jest.fn().mockResolvedValue(undefined),
             release: jest.fn()
         };
         db.getConnection.mockResolvedValue(connection);
 
-        jest.spyOn(KitchenCapacityService, 'obtenerInfoCapacidad').mockResolvedValue({
+        jest.spyOn(KitchenCapacityService, 'obtenerInfoCapacidadEnTransaccion').mockResolvedValue({
             estaLlena: false,
             pedidosEnPreparacion: 1,
             capacidadMaxima: 8,
-            espaciosDisponibles: 2
+            espaciosDisponibles: 2,
+            porcentajeUso: 13
+        });
+        jest.spyOn(KitchenCapacityService, 'obtenerInfoCapacidad').mockResolvedValue({
+            estaLlena: false,
+            pedidosEnPreparacion: 2,
+            capacidadMaxima: 8,
+            espaciosDisponibles: 1,
+            porcentajeUso: 25
         });
         jest.spyOn(OrderQueueEngine, 'moverPedidoAPreparacion').mockResolvedValue(undefined);
 
         const resultado = await OrderQueueEngine.evaluarColaPedidos();
 
-        expect(connection.execute).toHaveBeenCalledTimes(1);
-        const query = connection.execute.mock.calls[0][0];
+        expect(KitchenCapacityService.obtenerInfoCapacidadEnTransaccion).toHaveBeenCalledWith(connection);
+        const selectCall = connection.execute.mock.calls.find(
+            ([sql]) => typeof sql === 'string' && sql.includes("WHERE estado IN ('RECIBIDO', 'PROGRAMADO', 'programado')")
+                && sql.includes('FOR UPDATE')
+        );
+        expect(selectCall).toBeTruthy();
+        const query = selectCall[0];
         expect(query).toContain("WHERE estado IN ('RECIBIDO', 'PROGRAMADO', 'programado')");
         expect(query).toContain('MERCADOPAGO');
         expect(query).toContain('NOW() >= DATE_SUB(horario_entrega, INTERVAL tiempo_estimado_preparacion MINUTE)');

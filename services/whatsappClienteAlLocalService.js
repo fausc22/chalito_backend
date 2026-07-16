@@ -362,7 +362,7 @@ async function obtenerWhatsAppClienteParaPedido(pedidoId) {
     const activo = parseBoolean(settings.clienteEnviaAlLocal, false);
 
     if (!activo) {
-        return { activo: false };
+        return { activo: false, motivo: 'feature_desactivada' };
     }
 
     const pedidoData = await loadPedidoWebParaWhatsAppCliente(pedidoId);

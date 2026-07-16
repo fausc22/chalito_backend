@@ -1,7 +1,8 @@
 const {
     pedidoEstaHabilitadoOperativamente,
     esEstadoAvanceOperativoCocina,
-    SQL_AND_PEDIDO_HABILITADO_OPERATIVAMENTE
+    SQL_AND_PEDIDO_HABILITADO_OPERATIVAMENTE,
+    pedidoEstaBloqueadoPorMercadoPagoWebPendiente
 } = require('../../services/pedidoOperativoHelper');
 
 describe('pedidoOperativoHelper', () => {
@@ -18,16 +19,24 @@ describe('pedidoOperativoHelper', () => {
         })).toBe(true);
     });
 
-    it('bloquea Mercado Pago si estado_pago no es PAGADO', () => {
+    it('permite Mercado Pago presencial pendiente (puede ir a cocina)', () => {
+        expect(pedidoEstaHabilitadoOperativamente({
+            origen_pedido: 'MOSTRADOR',
+            medio_pago: 'MERCADOPAGO',
+            estado_pago: 'PENDIENTE'
+        })).toBe(true);
+        expect(pedidoEstaBloqueadoPorMercadoPagoWebPendiente({
+            origen_pedido: 'MOSTRADOR',
+            medio_pago: 'MERCADOPAGO',
+            estado_pago: 'RECHAZADO'
+        })).toBe(false);
+    });
+
+    it('bloquea Mercado Pago WEB si estado_pago no es PAGADO', () => {
         expect(pedidoEstaHabilitadoOperativamente({
             origen_pedido: 'WEB',
             medio_pago: 'MERCADOPAGO',
             estado_pago: 'PENDIENTE'
-        })).toBe(false);
-        expect(pedidoEstaHabilitadoOperativamente({
-            origen_pedido: 'MOSTRADOR',
-            medio_pago: 'MERCADOPAGO',
-            estado_pago: 'RECHAZADO'
         })).toBe(false);
     });
 
@@ -54,8 +63,9 @@ describe('pedidoOperativoHelper', () => {
         expect(esEstadoAvanceOperativoCocina('CANCELADO')).toBe(false);
     });
 
-    it('expone fragmento SQL reutilizable', () => {
+    it('expone fragmento SQL reutilizable solo para WEB digital pendiente', () => {
         expect(SQL_AND_PEDIDO_HABILITADO_OPERATIVAMENTE).toContain('MERCADOPAGO');
         expect(SQL_AND_PEDIDO_HABILITADO_OPERATIVAMENTE).toContain('TRANSFERENCIA');
+        expect(SQL_AND_PEDIDO_HABILITADO_OPERATIVAMENTE).toContain("'WEB'");
     });
 });
