@@ -127,7 +127,7 @@ describe('buildKitchenPayload', () => {
         });
 
         assert.deepEqual(payload.lines[0].modifiers, ['SIMPLE']);
-        assert.deepEqual(payload.lines[1].modifiers, ['Hacela doble']);
+        assert.deepEqual(payload.lines[1].modifiers, ['DOBLE']);
     });
 
     it('no confunde extras con "doble" en el nombre con presentación doble', async () => {
@@ -154,6 +154,68 @@ describe('buildKitchenPayload', () => {
         });
 
         assert.deepEqual(payload.lines[0].modifiers, ['SIMPLE', 'Extra queso doble']);
+    });
+
+    it('imprime solo DOBLE aunque presentacion haya quedado SIMPLE con extra doble', async () => {
+        const payload = await buildKitchenPayload({
+            id: 303,
+            fecha: '2026-05-19T14:00:00.000Z',
+            modalidad: 'RETIRO',
+            estado_pago: 'PENDIENTE',
+            estado: 'RECIBIDO',
+            total: 30000,
+            cliente_nombre: 'Sergio',
+            articulos: [
+                {
+                    articulo_id: 1,
+                    articulo_nombre: 'Hamburguesa Clásica',
+                    cantidad: 2,
+                    personalizaciones: JSON.stringify({
+                        presentacion: 'SIMPLE',
+                        extras: [{ nombre: 'DOBLE', precio_extra: 1500 }],
+                        extrasTotal: 1500
+                    })
+                },
+                {
+                    articulo_id: 2,
+                    articulo_nombre: 'Porcion de Papas Clásicas',
+                    cantidad: 1,
+                    personalizaciones: null
+                }
+            ]
+        });
+
+        assert.deepEqual(payload.lines[0].modifiers, ['DOBLE']);
+        assert.deepEqual(payload.lines[1].modifiers, []);
+    });
+
+    it('imprime DOBLE + extras reales sin repetir Hacela doble', async () => {
+        const payload = await buildKitchenPayload({
+            id: 304,
+            fecha: '2026-05-19T14:00:00.000Z',
+            modalidad: 'RETIRO',
+            estado_pago: 'PENDIENTE',
+            estado: 'RECIBIDO',
+            total: 12000,
+            cliente_nombre: 'Ana',
+            articulos: [
+                {
+                    articulo_id: 1,
+                    articulo_nombre: 'Hamburguesa Clásica',
+                    cantidad: 1,
+                    personalizaciones: JSON.stringify({
+                        presentacion: 'DOBLE',
+                        extras: [
+                            { nombre: 'Hacela doble', precio_extra: 1500 },
+                            { nombre: 'Extra cheddar', precio_extra: 500 }
+                        ],
+                        extrasTotal: 2000
+                    })
+                }
+            ]
+        });
+
+        assert.deepEqual(payload.lines[0].modifiers, ['DOBLE', 'Extra cheddar']);
     });
 });
 

@@ -16,25 +16,41 @@ const {
     buildMeta
 } = require('./printPayloadShared');
 const { aplicaEnvioGratis } = require('../envioGratisSettingsService');
-const { resolverPresentacionParaCocina } = require('../PersonalizacionesService');
+const {
+    resolverPresentacionParaCocina,
+    esExtraDePresentacion
+} = require('../PersonalizacionesService');
+
+/**
+ * Una sola etiqueta de presentación + extras reales (sin "Hacela doble"/etc.).
+ * Evita comandas con "+ SIMPLE" y "+ DOBLE" a la vez.
+ */
+const buildKitchenModifiers = (articulo) => {
+    const name = articulo.articulo_nombre || articulo.nombre || 'Artículo';
+    const presentacion = resolverPresentacionParaCocina(
+        articulo.personalizaciones,
+        name,
+        articulo.categoria_nombre
+    );
+
+    const extrasSinPresentacion = mapExtrasNames(articulo).filter(
+        (nombre) => !esExtraDePresentacion(nombre)
+    );
+
+    if (presentacion) {
+        return [presentacion, ...extrasSinPresentacion];
+    }
+    return extrasSinPresentacion;
+};
 
 const buildKitchenLines = (articulos = []) =>
     articulos.map((articulo) => {
         const name = articulo.articulo_nombre || articulo.nombre || 'Artículo';
-        const modifiers = mapExtrasNames(articulo);
-        const presentacion = resolverPresentacionParaCocina(
-            articulo.personalizaciones,
-            name,
-            articulo.categoria_nombre
-        );
-
-        const finalModifiers =
-            presentacion === 'SIMPLE' ? ['SIMPLE', ...modifiers] : modifiers;
 
         return {
             qty: articulo.cantidad || 1,
             name,
-            modifiers: finalModifiers,
+            modifiers: buildKitchenModifiers(articulo),
             lineNote: articulo.observaciones || null
         };
     });
@@ -83,4 +99,4 @@ const buildKitchenPayload = async (pedido) => {
     };
 };
 
-module.exports = { buildKitchenPayload };
+module.exports = { buildKitchenPayload, buildKitchenModifiers };

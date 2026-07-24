@@ -11,9 +11,36 @@ const NOMBRES_EXTRAS_INCOMPATIBLES = [
     'Hacela triple'
 ];
 
-const ES_HACELA_DOBLE = (n) => /hacela\s*doble/i.test(n || '');
-const ES_HACELA_TRIPLE = (n) => /hacela\s*triple/i.test(n || '');
-const ES_HACELA_CUADRUPLE = (n) => /hacela\s*cu[aá]druple/i.test(n || '');
+const PRESENTACIONES_VALIDAS = new Set(['SIMPLE', 'DOBLE', 'TRIPLE', 'CUADRUPLE']);
+
+/** Normaliza nombre de extra para comparar presentación (sin acentos). */
+const normalizarNombrePresentacion = (n) =>
+    String(n || '')
+        .trim()
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '');
+
+/**
+ * Detecta extras de presentación.
+ * Acepta "Hacela doble" y también el label corto "Doble"/"DOBLE".
+ * No matchea extras tipo "Extra queso doble".
+ */
+const ES_HACELA_DOBLE = (n) => {
+    const s = normalizarNombrePresentacion(n);
+    return s === 'doble' || /hacela\s*doble/.test(s);
+};
+const ES_HACELA_TRIPLE = (n) => {
+    const s = normalizarNombrePresentacion(n);
+    return s === 'triple' || /hacela\s*triple/.test(s);
+};
+const ES_HACELA_CUADRUPLE = (n) => {
+    const s = normalizarNombrePresentacion(n);
+    return s === 'cuadruple' || /hacela\s*cuadruple/.test(s);
+};
+
+const esExtraDePresentacion = (nombre) =>
+    ES_HACELA_DOBLE(nombre) || ES_HACELA_TRIPLE(nombre) || ES_HACELA_CUADRUPLE(nombre);
 
 const extraNombre = (extra) => String(extra?.nombre ?? extra?.nombre_adicional ?? '').trim();
 
@@ -33,13 +60,20 @@ const esArticuloConPresentacion = ({ categoriaNombre, articuloNombre } = {}) => 
     if (
         categoria.includes('hamburguesa') ||
         categoria.includes('sandwich') ||
-        categoria.includes('sándwich')
+        categoria.includes('sándwich') ||
+        categoria.includes('lomo')
     ) {
         return true;
     }
 
     const nombre = String(articuloNombre ?? '').trim().toLowerCase();
-    return nombre.includes('hambur') || nombre.includes('burger');
+    return (
+        nombre.includes('hambur') ||
+        nombre.includes('burger') ||
+        nombre.includes('lomo') ||
+        nombre.includes('sandwich') ||
+        nombre.includes('sándwich')
+    );
 };
 
 const parsePersonalizacionesObjeto = (personalizaciones) => {
@@ -56,6 +90,8 @@ const parsePersonalizacionesObjeto = (personalizaciones) => {
 
 /**
  * Resuelve la presentación para cocina/impresión (SIMPLE, DOBLE, TRIPLE, CUADRUPLE o null).
+ * Prioridad: extras reales > campo presentacion explícito > SIMPLE por tipo de artículo.
+ * Así un extra "doble" gana aunque presentacion haya quedado mal en 'SIMPLE'.
  */
 const resolverPresentacionParaCocina = (personalizaciones, articuloNombre, categoriaNombre) => {
     if (Array.isArray(personalizaciones)) {
@@ -68,28 +104,18 @@ const resolverPresentacionParaCocina = (personalizaciones, articuloNombre, categ
     }
 
     const pers = parsePersonalizacionesObjeto(personalizaciones);
-    const explicita = String(pers?.presentacion || '').trim().toUpperCase();
-    if (explicita) return explicita;
-
     const extras = Array.isArray(pers?.extras) ? pers.extras : [];
     const desdeExtras = inferirPresentacionDesdeExtras(extras);
     if (desdeExtras) return desdeExtras;
+
+    const explicita = String(pers?.presentacion || '').trim().toUpperCase();
+    if (PRESENTACIONES_VALIDAS.has(explicita)) return explicita;
 
     if (esArticuloConPresentacion({ categoriaNombre, articuloNombre })) {
         return 'SIMPLE';
     }
 
     return null;
-};
-
-const normalizarNombre = (s) => (s || '').trim().toLowerCase();
-
-const esExtraIncompatible = (nombre) => {
-    if (!nombre || typeof nombre !== 'string') return null;
-    const n = normalizarNombre(nombre);
-    return NOMBRES_EXTRAS_INCOMPATIBLES.find(
-        (inc) => normalizarNombre(inc) === n
-    ) || null;
 };
 
 const crearErrorExtras = (message, code) => {
@@ -193,7 +219,7 @@ const parsearExtrasDelPayload = (rawExtras) => {
 };
 
 /**
- * Valida que los extras no incluyan ambos "Hacela doble" y "Hacela triple".
+ * Valida que los extras no incluyan más de una presentación (doble/triple/cuadruple).
  * @param {Array} extras - Array de extras con { id?, nombre?, precio?, precio_extra? }
  * @param {Array} [adicionalesPorId] - Opcional: mapa de adicionales por id para resolver nombre desde id
  * @returns {{ valid: boolean, message?: string }}
@@ -208,8 +234,8 @@ const validarExtrasNoDobleYTriple = (extras, adicionalesPorId = null) => {
             const ad = adicionalesPorId.find((a) => a.id === e.id);
             nombre = ad?.nombre;
         }
-        const match = esExtraIncompatible(nombre);
-        if (match) encontrados.add(match);
+        const tipo = inferirPresentacionDesdeExtras([{ nombre }]);
+        if (tipo) encontrados.add(tipo);
     }
 
     if (encontrados.size >= 2) {
@@ -338,9 +364,11 @@ const construirPersonalizacionesParaArticulo = (extras, { categoriaNombre, artic
 module.exports = {
     CANTIDAD_EXTRA_MAXIMA,
     NOMBRES_EXTRAS_INCOMPATIBLES,
+    PRESENTACIONES_VALIDAS,
     ES_HACELA_DOBLE,
     ES_HACELA_TRIPLE,
     ES_HACELA_CUADRUPLE,
+    esExtraDePresentacion,
     inferirPresentacionDesdeExtras,
     esArticuloConPresentacion,
     resolverPresentacionParaCocina,

@@ -148,6 +148,31 @@ test('construirPersonalizacionesParaArticulo mantiene DOBLE cuando corresponde',
     assert.equal(pers.extras.length, 1);
 });
 
+test('construirPersonalizacionesParaArticulo reconoce extra llamado Doble', () => {
+    const {
+        construirPersonalizacionesParaArticulo,
+        resolverPresentacionParaCocina
+    } = require('../../services/PersonalizacionesService');
+
+    const pers = construirPersonalizacionesParaArticulo(
+        [{ id: 9, nombre: 'Doble', precio_extra: 1000 }],
+        {
+            categoriaNombre: 'HAMBURGUESAS',
+            articuloNombre: 'Hamburguesa Clásica'
+        }
+    );
+
+    assert.equal(pers.presentacion, 'DOBLE');
+    assert.equal(
+        resolverPresentacionParaCocina(
+            { presentacion: 'SIMPLE', extras: pers.extras },
+            'Hamburguesa Clásica',
+            'HAMBURGUESAS'
+        ),
+        'DOBLE'
+    );
+});
+
 test('construirPersonalizacionesParaArticulo no agrega SIMPLE en empanadas', () => {
     const { construirPersonalizacionesParaArticulo } = require('../../services/PersonalizacionesService');
 
@@ -157,6 +182,14 @@ test('construirPersonalizacionesParaArticulo no agrega SIMPLE en empanadas', () 
     });
 
     assert.equal(pers, null);
+});
+
+test('esArticuloConPresentacion incluye lomos', () => {
+    const { esArticuloConPresentacion } = require('../../services/PersonalizacionesService');
+    assert.equal(
+        esArticuloConPresentacion({ categoriaNombre: 'LOMOS', articuloNombre: 'Lomo completo' }),
+        true
+    );
 });
 
 test('mapCartaItemsToMpFormat preserva cantidad en extras', () => {
