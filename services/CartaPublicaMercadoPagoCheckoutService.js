@@ -16,13 +16,10 @@ const {
     mapearEstadoPagoUiDesdeSesion,
     resolverAccionSesionMp,
     seleccionarPagoCanonicoMp,
-    sesionReconciliable
+    sesionReconciliable,
+    esPagoAprobadoMp
 } = require('./mercadoPagoPaymentStateMachine');
-const {
-    isHardeningEnabled,
-    logMpEvent,
-    incrementMetric
-} = require('./mercadoPagoPaymentLogger');
+const mpLogger = require('./mercadoPagoPaymentLogger');
 
 const PROVEEDOR_MERCADOPAGO = 'MERCADOPAGO';
 const MONEDA_ARS = 'ARS';
@@ -483,19 +480,150 @@ function parsePayloadSesion(sesionRow) {
     }
 }
 
+/**
+ * Resumen congelado al crear la preferencia MP (anti cobro huérfano si el menú cambia después).
+ */
+function esResumenCarritoCongeladoUsable(resumen) {
+    if (!resumen || typeof resumen !== 'object') return false;
+    if (!Array.isArray(resumen.itemsNormalizados) || resumen.itemsNormalizados.length === 0) {
+        return false;
+    }
+    return Number.isFinite(Number(resumen.total));
+}
+
+function assertMontoMpCoincideConTotalSesion(montoMp, totalSesion) {
+    const total = Number(totalSesion);
+    if (!Number.isFinite(montoMp) || !Number.isFinite(total)) {
+        throw new Error(
+            `Monto MP o total de sesión inválido (mp=${montoMp}, sesion=${totalSesion})`
+        );
+    }
+    if (Math.abs(montoMp - total) > TOLERANCIA_MONTO_MP_ARS) {
+        throw new Error(
+            `Monto MP (${montoMp}) no coincide con total de sesión (${total})`
+        );
+    }
+}
+
+function buildPayloadDivergenciaMenuPostPago({
+    sessionId,
+    paymentId,
+    totalSesion,
+    totalLive,
+    montoMp
+}) {
+    const sesion = Number(totalSesion);
+    const live = Number(totalLive);
+    return {
+        sessionId,
+        paymentId: String(paymentId),
+        totalSesion: sesion,
+        totalLive: live,
+        montoMp: Number.isFinite(Number(montoMp)) ? Number(montoMp) : null,
+        delta: live - sesion
+    };
+}
+
+async function logDivergenciaMenuPostPagoSiCorresponde(
+    connection,
+    {
+        parsed,
+        resumenCongelado,
+        sessionId,
+        paymentId,
+        montoMp
+    }
+) {
+    try {
+        const couponCode = parsed.couponCode ?? parsed.payload?.couponCode ?? null;
+        const live = await recalcularCarrito(connection, parsed.payload.items, couponCode);
+        const totalLive = Number(live.total);
+        const totalSesion = Number(resumenCongelado.total);
+        if (Math.abs(totalLive - totalSesion) > TOLERANCIA_MONTO_MP_ARS) {
+            mpLogger.logMpEvent(
+                'warn',
+                'mp_menu_precio_diverge_post_pago',
+                buildPayloadDivergenciaMenuPostPago({
+                    sessionId,
+                    paymentId,
+                    totalSesion,
+                    totalLive,
+                    montoMp
+                })
+            );
+        }
+    } catch (err) {
+        mpLogger.logMpEvent('warn', 'mp_menu_recalc_live_omitido', {
+            sessionId,
+            paymentId: String(paymentId),
+            message: err.message
+        });
+    }
+}
+
+/**
+ * Persiste id_pago/estado_mp aunque falle el alta del pedido (diagnóstico / recovery).
+ * Usa el pool (fuera de la tx con rollback).
+ */
+async function persistirHuellaPagoAprobadoSinPedido(db, {
+    sessionId,
+    paymentId,
+    estadoMp,
+    errorMessage
+}) {
+    try {
+        await db.execute(
+            `UPDATE checkout_sesiones_mp
+             SET id_pago = ?,
+                 estado_mp = ?,
+                 fecha_modificacion = NOW()
+             WHERE id = ?
+               AND pedido_id IS NULL`,
+            [String(paymentId), estadoMp || 'approved', sessionId]
+        );
+        mpLogger.logMpEvent('error', 'mp_pedido_no_creado_pago_aprobado', {
+            sessionId,
+            paymentId: String(paymentId),
+            estadoMp: estadoMp || null,
+            message: errorMessage || null
+        });
+    } catch (persistErr) {
+        console.error(
+            '❌ [MP] No se pudo persistir huella de pago aprobado sin pedido:',
+            persistErr.message
+        );
+    }
+}
+
 async function crearPedidoDesdeSesion(connection, sesionRow, resumenPagoMp, paymentId) {
     const parsed = parsePayloadSesion(sesionRow);
     if (!parsed || !parsed.payload || !parsed.payload.items) {
         throw new Error('payload_checkout inválido en sesión MP');
     }
 
-    const couponCode = parsed.couponCode ?? parsed.payload?.couponCode ?? null;
-    const resumenCarrito = await recalcularCarrito(connection, parsed.payload.items, couponCode);
     const montoMp = Number(resumenPagoMp.transaction_amount);
-    if (Number.isFinite(montoMp) && Math.abs(montoMp - Number(resumenCarrito.total)) > TOLERANCIA_MONTO_MP_ARS) {
-        throw new Error(
-            `Monto MP (${montoMp}) no coincide con total recalculado (${resumenCarrito.total})`
-        );
+    const couponCode = parsed.couponCode ?? parsed.payload?.couponCode ?? null;
+    let resumenCarrito;
+
+    if (esResumenCarritoCongeladoUsable(parsed.resumenCarrito)) {
+        resumenCarrito = parsed.resumenCarrito;
+        assertMontoMpCoincideConTotalSesion(montoMp, resumenCarrito.total);
+        await logDivergenciaMenuPostPagoSiCorresponde(connection, {
+            parsed,
+            resumenCongelado: resumenCarrito,
+            sessionId: sesionRow.id,
+            paymentId,
+            montoMp
+        });
+    } else {
+        // Sesiones legacy sin resumen congelable: fallback al recalc live.
+        resumenCarrito = await recalcularCarrito(connection, parsed.payload.items, couponCode);
+        assertMontoMpCoincideConTotalSesion(montoMp, resumenCarrito.total);
+        mpLogger.logMpEvent('warn', 'mp_sesion_sin_resumen_congelado', {
+            sessionId: sesionRow.id,
+            paymentId: String(paymentId),
+            totalLive: Number(resumenCarrito.total)
+        });
     }
 
     const pedidoId = await insertarPedido(connection, parsed.payload, resumenCarrito, {
@@ -545,8 +673,8 @@ async function adquirirLockMp(connection, lockKey) {
     const [rows] = await connection.execute('SELECT GET_LOCK(?, ?) AS acquired', [lockKey, MP_LOCK_TIMEOUT_SEC]);
     const acquired = Number(rows?.[0]?.acquired) === 1;
     if (!acquired) {
-        incrementMetric('locksFallidos');
-        logMpEvent('warn', 'mp_lock_no_adquirido', { lockKey });
+        mpLogger.incrementMetric('locksFallidos');
+        mpLogger.logMpEvent('warn', 'mp_lock_no_adquirido', { lockKey });
     }
     return acquired;
 }
@@ -617,13 +745,13 @@ async function procesarPagoSesionMpConLock(db, sesionInicial, resumenPagoMp, pay
             pedidoIdExistente: row.pedido_id
         });
 
-        logMpEvent('info', 'mp_sesion_accion', {
+        mpLogger.logMpEvent('info', 'mp_sesion_accion', {
             sessionId: row.id,
             paymentId: String(paymentId),
             estadoSesion: row.estado,
             estadoProveedor,
             accion,
-            hardening: isHardeningEnabled()
+            hardening: mpLogger.isHardeningEnabled()
         });
 
         if (accion === 'idempotente') {
@@ -645,7 +773,7 @@ async function procesarPagoSesionMpConLock(db, sesionInicial, resumenPagoMp, pay
         if (accion === 'ignorar') {
             await liberarLockMp(connection, lockKey);
             await connection.commit();
-            incrementMetric('aprobacionesIgnoradas');
+            mpLogger.incrementMetric('aprobacionesIgnoradas');
             return {
                 procesado: true,
                 esPagoNuevo: false,
@@ -664,7 +792,7 @@ async function procesarPagoSesionMpConLock(db, sesionInicial, resumenPagoMp, pay
             await liberarLockMp(connection, lockKey);
             await connection.commit();
 
-            incrementMetric('aprobacionesCreadas');
+            mpLogger.incrementMetric('aprobacionesCreadas');
             try {
                 await notificarPedidoMercadoPagoAprobadoPorId(pedidoId);
             } catch (err) {
@@ -702,14 +830,14 @@ async function procesarPagoSesionMpConLock(db, sesionInicial, resumenPagoMp, pay
         }
 
         if (accion === 'registrar_no_aprobado') {
-            if (isHardeningEnabled()) {
+            if (mpLogger.isHardeningEnabled()) {
                 await actualizarActividadMpSesion(connection, row.id, paymentId, estadoProveedor);
             } else {
                 await actualizarActividadMpSesion(connection, row.id, paymentId, estadoProveedor, {
                     marcarCancelado: true
                 });
             }
-            incrementMetric('rechazosRegistrados');
+            mpLogger.incrementMetric('rechazosRegistrados');
             await liberarLockMp(connection, lockKey);
             await connection.commit();
             return {
@@ -721,7 +849,7 @@ async function procesarPagoSesionMpConLock(db, sesionInicial, resumenPagoMp, pay
                 resumenPagoMp,
                 paymentId: String(paymentId),
                 pagoRecienConfirmadoLegacy: false,
-                motivo: isHardeningEnabled() ? 'rechazo_registrado_sesion_abierta' : 'sesion_cancelada_legacy'
+                motivo: mpLogger.isHardeningEnabled() ? 'rechazo_registrado_sesion_abierta' : 'sesion_cancelada_legacy'
             };
         }
 
@@ -741,8 +869,18 @@ async function procesarPagoSesionMpConLock(db, sesionInicial, resumenPagoMp, pay
     } catch (err) {
         try { await connection.rollback(); } catch (_) { /* noop */ }
         try { await liberarLockMp(connection, lockKey); } catch (_) { /* noop */ }
-        incrementMetric('erroresProcesamiento');
+        mpLogger.incrementMetric('erroresProcesamiento');
         console.error('❌ [MP] Error procesando sesión con lock:', err.message);
+
+        if (esPagoAprobadoMp(estadoProveedor) && sesionInicial?.id) {
+            await persistirHuellaPagoAprobadoSinPedido(db, {
+                sessionId: sesionInicial.id,
+                paymentId,
+                estadoMp: estadoProveedor,
+                errorMessage: err.message
+            });
+        }
+
         throw err;
     } finally {
         connection.release();
@@ -764,8 +902,8 @@ async function buscarPagosPorReferenciaExterna(referenciaExterna) {
 
 async function reconciliarReferenciaExternaMp(db, referenciaExterna, opciones = {}) {
     const { origen = 'manual' } = opciones;
-    incrementMetric('reconciliacionesEjecutadas');
-    logMpEvent('info', 'mp_reconciliacion_iniciada', { referenciaExterna, origen });
+    mpLogger.incrementMetric('reconciliacionesEjecutadas');
+    mpLogger.logMpEvent('info', 'mp_reconciliacion_iniciada', { referenciaExterna, origen });
 
     const results = await buscarPagosPorReferenciaExterna(referenciaExterna);
     const candidato = seleccionarPagoCanonicoMp(results);
@@ -782,7 +920,7 @@ async function reconciliarReferenciaExternaMp(db, referenciaExterna, opciones = 
     const resultado = await procesarPagoMercadoPagoInterno(db, resumen, String(candidato.id));
 
     if (resultado?.pedidoId && String(resultado.estadoPagoInterno || '').toUpperCase() === ESTADO_PAGO_PAGADO) {
-        incrementMetric('aprobacionesRecuperadas');
+        mpLogger.incrementMetric('aprobacionesRecuperadas');
     }
 
     return {
@@ -877,7 +1015,7 @@ async function procesarPagoMercadoPagoInterno(db, resumenPagoMp, paymentId) {
             };
         }
 
-        incrementMetric('webhooksProcesados');
+        mpLogger.incrementMetric('webhooksProcesados');
         return procesarPagoSesionMpConLock(db, sesionRows[0], resumenPagoMp, paymentId);
     }
 
@@ -1191,6 +1329,13 @@ module.exports = {
         extraerPedidoIdDesdeReferencia,
         mapearEstadoMercadoPago,
         construirResumenPagoMp,
-        esReferenciaSesionMp
+        esReferenciaSesionMp,
+        parsePayloadSesion,
+        esResumenCarritoCongeladoUsable,
+        assertMontoMpCoincideConTotalSesion,
+        buildPayloadDivergenciaMenuPostPago,
+        crearPedidoDesdeSesion,
+        persistirHuellaPagoAprobadoSinPedido,
+        TOLERANCIA_MONTO_MP_ARS
     }
 };
