@@ -13,6 +13,7 @@ const {
     esTurnoActivoNocturno,
     HORAS_MAX_TURNO_ACTIVO,
     STORE_TIMEZONE,
+    validarAnulacionAsistencia,
 } = require('../../services/EmpleadosService');
 
 test('STORE_TIMEZONE es America/Argentina/Buenos_Aires', () => {
@@ -93,4 +94,58 @@ test('requiereHoraEgresoExplicita retorna true para turno olvidado de ayer', () 
     const ayer = moment.tz(hoy, 'YYYY-MM-DD', STORE_TIMEZONE).subtract(1, 'day').format('YYYY-MM-DD');
     const ingreso = moment.tz(STORE_TIMEZONE).subtract(20, 'hours').toDate();
     assert.equal(requiereHoraEgresoExplicita(ayer, ingreso, hoy), true);
+});
+
+const asistenciaAbierta = {
+    id: 1,
+    estado: 'ABIERTO',
+    hora_ingreso: new Date(),
+    hora_egreso: null,
+};
+
+test('validarAnulacionAsistencia acepta un turno abierto', () => {
+    assert.doesNotThrow(() => validarAnulacionAsistencia(asistenciaAbierta));
+});
+
+test('validarAnulacionAsistencia rechaza asistencia inexistente', () => {
+    assert.throws(
+        () => validarAnulacionAsistencia(null),
+        (error) => error.code === 'ASISTENCIA_NO_ENCONTRADA' && error.status === 404
+    );
+});
+
+test('validarAnulacionAsistencia rechaza asistencia ya anulada', () => {
+    assert.throws(
+        () => validarAnulacionAsistencia({ ...asistenciaAbierta, estado: 'ANULADO' }),
+        (error) => error.code === 'ASISTENCIA_YA_ANULADA' && error.status === 409
+    );
+});
+
+test('validarAnulacionAsistencia rechaza turno cerrado', () => {
+    assert.throws(
+        () => validarAnulacionAsistencia({
+            ...asistenciaAbierta,
+            estado: 'CERRADO',
+            hora_egreso: new Date(),
+        }),
+        (error) => error.code === 'ASISTENCIA_NO_ABIERTA' && error.status === 409
+    );
+});
+
+test('validarAnulacionAsistencia rechaza turno corregido', () => {
+    assert.throws(
+        () => validarAnulacionAsistencia({
+            ...asistenciaAbierta,
+            estado: 'CORREGIDO',
+            hora_egreso: new Date(),
+        }),
+        (error) => error.code === 'ASISTENCIA_NO_ABIERTA' && error.status === 409
+    );
+});
+
+test('validarAnulacionAsistencia rechaza abierto sin hora de ingreso', () => {
+    assert.throws(
+        () => validarAnulacionAsistencia({ ...asistenciaAbierta, hora_ingreso: null }),
+        (error) => error.code === 'SIN_HORA_INGRESO' && error.status === 400
+    );
 });

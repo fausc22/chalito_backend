@@ -122,11 +122,13 @@ const enriquecerAsistenciaRespuesta = (row) => {
     const puedeAjustarIngreso = tieneIngreso
         && turnoAbierto
         && !estaLiquidado;
+    const puedeAnular = puedeAjustarIngreso;
 
     return {
         ...row,
         esta_liquidado: estaLiquidado,
-        puede_ajustar_ingreso: puedeAjustarIngreso
+        puede_ajustar_ingreso: puedeAjustarIngreso,
+        puede_anular: puedeAnular
     };
 };
 
@@ -939,6 +941,97 @@ const ajustarIngresoAsistencia = async (id, data, usuario = {}) => {
     }
 };
 
+const validarAnulacionAsistencia = (asistencia) => {
+    if (!asistencia) {
+        throw buildBusinessError('Asistencia no encontrada', 404, 'ASISTENCIA_NO_ENCONTRADA');
+    }
+
+    if (asistencia.estado === 'ANULADO') {
+        throw buildBusinessError(
+            'La asistencia ya esta anulada',
+            409,
+            'ASISTENCIA_YA_ANULADA'
+        );
+    }
+
+    const turnoAbierto = asistencia.estado === 'ABIERTO' && !asistencia.hora_egreso;
+    if (!turnoAbierto) {
+        throw buildBusinessError(
+            'Solo se puede cancelar un fichaje mientras el turno esta abierto',
+            409,
+            'ASISTENCIA_NO_ABIERTA'
+        );
+    }
+
+    if (!asistencia.hora_ingreso) {
+        throw buildBusinessError(
+            'La asistencia no tiene hora de ingreso registrada',
+            400,
+            'SIN_HORA_INGRESO'
+        );
+    }
+};
+
+const anularAsistencia = async (id, data = {}, usuario = {}) => {
+    const connection = await db.getConnection();
+
+    try {
+        await connection.beginTransaction();
+        const usuarioId = obtenerUsuarioIdRequerido(usuario);
+
+        const [rows] = await connection.execute(
+            `SELECT id, empleado_id, fecha, estado, hora_ingreso, hora_egreso, minutos_trabajados
+             FROM empleados_asistencias
+             WHERE id = ?
+             LIMIT 1
+             FOR UPDATE`,
+            [id]
+        );
+
+        if (rows.length === 0) {
+            throw buildBusinessError('Asistencia no encontrada', 404, 'ASISTENCIA_NO_ENCONTRADA');
+        }
+
+        const asistencia = rows[0];
+        validarAnulacionAsistencia(asistencia);
+
+        const cubierta = await asistenciaCubiertaPorLiquidacionGuardada(
+            connection,
+            asistencia.empleado_id,
+            asistencia.fecha
+        );
+        if (cubierta) {
+            throw buildBusinessError(
+                'No es posible cancelar este fichaje porque ya forma parte de una liquidacion guardada',
+                409,
+                'ASISTENCIA_INCLUIDA_EN_LIQUIDACION'
+            );
+        }
+
+        const motivoFinal = normalizarMotivoAjuste(data?.motivo);
+
+        await connection.execute(
+            `UPDATE empleados_asistencias
+             SET
+                estado = 'ANULADO',
+                minutos_trabajados = 0,
+                corregido_por_usuario_id = ?,
+                motivo_correccion = ?,
+                updated_at = NOW()
+             WHERE id = ?`,
+            [usuarioId, motivoFinal, id]
+        );
+
+        await connection.commit();
+        return await obtenerAsistenciaPorId(id);
+    } catch (error) {
+        await connection.rollback();
+        throw error;
+    } finally {
+        connection.release();
+    }
+};
+
 const registrarAsistenciaManual = async (data, usuario = {}) => {
     const connection = await db.getConnection();
 
@@ -1624,6 +1717,8 @@ module.exports = {
     registrarEgresoAsistencia,
     corregirAsistencia,
     ajustarIngresoAsistencia,
+    anularAsistencia,
+    validarAnulacionAsistencia,
     registrarAsistenciaManual,
     requiereHoraEgresoExplicita,
     esTurnoActivoNocturno,

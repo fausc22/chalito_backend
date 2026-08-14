@@ -13,6 +13,7 @@ const {
     registrarEgresoAsistencia,
     corregirAsistencia,
     ajustarIngresoAsistencia,
+    anularAsistencia,
     registrarAsistenciaManual,
     obtenerMovimientos,
     obtenerMovimientoPorId,
@@ -36,6 +37,7 @@ const {
     registrarEgresoAsistenciaSchema,
     corregirAsistenciaSchema,
     ajustarIngresoAsistenciaSchema,
+    anularAsistenciaSchema,
     registrarAsistenciaManualSchema,
     crearMovimientoSchema,
     editarMovimientoSchema,
@@ -61,7 +63,7 @@ const soloDuenioEncargadoAdmin = writeEmpleados;
  *
  * Endpoints principales (base /empleados):
  * - Empleados: GET /, GET /:id, POST /, PUT /:id, PATCH /:id/activo
- * - Asistencias: GET /asistencias, GET /asistencias/:id, POST /asistencias/ingreso, POST /asistencias/egreso, PUT /asistencias/:id
+ * - Asistencias: GET /asistencias, GET /asistencias/:id, POST /asistencias/ingreso, POST /asistencias/egreso, PATCH /asistencias/:id/ajustar-ingreso, PATCH /asistencias/:id/anular, PUT /asistencias/:id
  * - Movimientos: GET /movimientos, GET /movimientos/:id, POST /movimientos, PUT /movimientos/:id, DELETE /movimientos/:id
  * - Liquidaciones: GET /liquidaciones/resumen (canonica), POST /liquidaciones/calcular (compatibilidad frontend), GET /liquidaciones, GET /liquidaciones/:id, POST /liquidaciones
  */
@@ -74,6 +76,7 @@ router.post('/asistencias/ingreso', apiRateLimiter, ...soloDuenioEncargadoAdmin,
 router.post('/asistencias/egreso', apiRateLimiter, ...soloDuenioEncargadoAdmin, validate(registrarEgresoAsistenciaSchema), registrarEgresoAsistencia);
 router.post('/asistencias/manual', apiRateLimiter, ...soloDuenioEncargadoAdmin, validate(registrarAsistenciaManualSchema), registrarAsistenciaManual);
 router.patch('/asistencias/:id/ajustar-ingreso', apiRateLimiter, ...soloDuenioEncargadoAdmin, validateParams(idParamSchema), validate(ajustarIngresoAsistenciaSchema), ajustarIngresoAsistencia);
+router.patch('/asistencias/:id/anular', apiRateLimiter, ...soloDuenioEncargadoAdmin, validateParams(idParamSchema), validate(anularAsistenciaSchema), anularAsistencia);
 router.get('/asistencias/:id', apiRateLimiter, ...soloDuenioEncargadoAdmin, validateParams(idParamSchema), obtenerAsistenciaPorId);
 router.put('/asistencias/:id', apiRateLimiter, ...soloDuenioEncargadoAdmin, validateParams(idParamSchema), validate(corregirAsistenciaSchema), corregirAsistencia);
 

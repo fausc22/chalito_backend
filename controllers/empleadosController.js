@@ -10,6 +10,7 @@ const {
     registrarEgresoAsistencia: registrarEgresoAsistenciaService,
     corregirAsistencia: corregirAsistenciaService,
     ajustarIngresoAsistencia: ajustarIngresoAsistenciaService,
+    anularAsistencia: anularAsistenciaService,
     registrarAsistenciaManual: registrarAsistenciaManualService,
     obtenerMovimientos: obtenerMovimientosService,
     obtenerMovimientoPorId: obtenerMovimientoPorIdService,
@@ -373,6 +374,50 @@ const ajustarIngresoAsistencia = async (req, res) => {
     }
 };
 
+const anularAsistencia = async (req, res) => {
+    try {
+        const { id } = req.validatedParams || req.params;
+        const payload = req.validatedData || req.body || {};
+        const anterior = await obtenerAsistenciaPorIdService(id);
+
+        if (!anterior) {
+            return res.status(404).json({
+                success: false,
+                message: 'Asistencia no encontrada'
+            });
+        }
+
+        const data = await anularAsistenciaService(id, payload, req.user || {});
+
+        await auditarOperacion(req, {
+            accion: 'ASISTENCIA_ANULADA',
+            tabla: 'empleados_asistencias',
+            registroId: id,
+            datosAnteriores: {
+                estado: anterior.estado,
+                hora_ingreso: anterior.hora_ingreso,
+                hora_egreso: anterior.hora_egreso,
+                minutos_trabajados: anterior.minutos_trabajados
+            },
+            datosNuevos: {
+                estado: 'ANULADO',
+                minutos_trabajados: data?.minutos_trabajados,
+                motivo: payload.motivo || null
+            },
+            detallesAdicionales: `Fichaje anulado en asistencia #${id} para empleado #${anterior.empleado_id}`
+        });
+
+        res.json({
+            success: true,
+            message: 'Fichaje anulado exitosamente',
+            data
+        });
+    } catch (error) {
+        console.error('❌ Error al anular asistencia:', error);
+        return responderError(res, error, 'Error al anular fichaje');
+    }
+};
+
 const registrarAsistenciaManual = async (req, res) => {
     try {
         const payload = req.validatedData || req.body;
@@ -663,6 +708,7 @@ module.exports = {
     registrarEgresoAsistencia,
     corregirAsistencia,
     ajustarIngresoAsistencia,
+    anularAsistencia,
     registrarAsistenciaManual,
     obtenerMovimientos,
     obtenerMovimientoPorId,

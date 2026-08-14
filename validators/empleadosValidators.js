@@ -78,6 +78,13 @@ const ajustarIngresoAsistenciaSchema = z.object({
     motivo: sanitizedNullableString
 });
 
+const anularAsistenciaSchema = z.preprocess(
+    (value) => (value == null ? {} : value),
+    z.object({
+        motivo: sanitizedNullableString
+    })
+);
+
 const registrarAsistenciaManualSchema = z
     .object({
         empleado_id: z.number().int().positive('empleado_id debe ser un numero positivo'),
@@ -326,6 +333,7 @@ module.exports = {
     registrarEgresoAsistenciaSchema,
     corregirAsistenciaSchema,
     ajustarIngresoAsistenciaSchema,
+    anularAsistenciaSchema,
     registrarAsistenciaManualSchema,
     crearMovimientoSchema,
     editarMovimientoSchema,
