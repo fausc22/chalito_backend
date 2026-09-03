@@ -18,7 +18,8 @@ const INT_KEYS = new Set([
     'cantidadVendida',
     'hora',
     'cantidadPedidos',
-    'limit'
+    'limit',
+    'cantidadProductosVendidos'
 ]);
 
 const toNumber = (value, fallback = 0) => {
@@ -79,6 +80,15 @@ const obtenerDashboardReportes = async ({ desdeDateTime, hastaDateTime, limit })
         FROM ventas
         WHERE fecha BETWEEN ? AND ?
           AND estado = 'FACTURADA'
+    `;
+
+    const productosVendidosMesQuery = `
+        SELECT
+            COALESCE(SUM(vc.cantidad), 0) AS cantidadProductosVendidos
+        FROM ventas_contenido vc
+        INNER JOIN ventas v ON v.id = vc.venta_id
+        WHERE v.fecha BETWEEN ? AND ?
+          AND v.estado = 'FACTURADA'
     `;
 
     const ventasPorDiaQuery = `
@@ -157,6 +167,7 @@ const obtenerDashboardReportes = async ({ desdeDateTime, hastaDateTime, limit })
 
     const [
         [resumenRows],
+        [productosVendidosMesRows],
         [ventasPorDiaRows],
         [productosMasVendidosRows],
         [horariosDemandaRows],
@@ -165,6 +176,7 @@ const obtenerDashboardReportes = async ({ desdeDateTime, hastaDateTime, limit })
         [modalidadesRows]
     ] = await Promise.all([
         db.execute(resumenQuery, [desdeDateTime, hastaDateTime]),
+        db.execute(productosVendidosMesQuery, [desdeDateTime, hastaDateTime]),
         db.execute(ventasPorDiaQuery, [desdeDateTime, hastaDateTime]),
         db.execute(productosMasVendidosQuery, [desdeDateTime, hastaDateTime]),
         db.execute(horariosDemandaQuery, [desdeDateTime, hastaDateTime]),
@@ -174,6 +186,7 @@ const obtenerDashboardReportes = async ({ desdeDateTime, hastaDateTime, limit })
     ]);
 
     const resumenBase = resumenRows?.[0] || {};
+    const productosVendidosMesBase = productosVendidosMesRows?.[0] || {};
     const resumen = normalizeNumericObject({
         cantidadVentas: 0,
         totalVendido: 0,
@@ -183,7 +196,9 @@ const obtenerDashboardReportes = async ({ desdeDateTime, hastaDateTime, limit })
         ticketPromedio: 0,
         ventaMinima: 0,
         ventaMaxima: 0,
-        ...resumenBase
+        cantidadProductosVendidos: 0,
+        ...resumenBase,
+        ...productosVendidosMesBase
     });
 
     const ventasPorDia = (ventasPorDiaRows || []).map((row) => ({
