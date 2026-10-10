@@ -1,6 +1,26 @@
 // controllers/inventarioController.js - Sistema Chalito
 const db = require('./dbPromise');
 const { auditarOperacion, obtenerDatosAnteriores, limpiarDatosSensibles } = require('../middlewares/auditoriaMiddleware');
+const { deleteImageFromFileServer, resolvePublicIdFromUrl } = require('../config/fileStorage');
+
+/**
+ * @returns {{ valido: boolean, valor?: string|null, mensaje?: string }}
+ */
+const normalizarImagenUrlCategoria = (imagenUrl) => {
+    if (imagenUrl === undefined) return { valido: true, valor: undefined };
+    if (imagenUrl === null || imagenUrl === '') return { valido: true, valor: null };
+    if (typeof imagenUrl !== 'string') {
+        return { valido: false, mensaje: 'imagen_url debe ser un texto' };
+    }
+    const valor = imagenUrl.trim();
+    if (valor.length > 500) {
+        return { valido: false, mensaje: 'imagen_url no puede superar los 500 caracteres' };
+    }
+    if (!/^https?:\/\//i.test(valor)) {
+        return { valido: false, mensaje: 'imagen_url debe ser una URL válida' };
+    }
+    return { valido: true, valor };
+};
 
 const normalizarPeso = (peso, { requerido = false } = {}) => {
     if (peso === undefined || peso === null || peso === '') {
@@ -1649,7 +1669,7 @@ const obtenerCategorias = async (req, res) => {
     try {
         const { activo } = req.query;
         
-        let query = 'SELECT id, nombre, descripcion, orden, activo, visible_carta FROM categorias';
+        let query = 'SELECT id, nombre, descripcion, imagen_url, orden, activo, visible_carta FROM categorias';
         const params = [];
         
         // Filtro por activo si se proporciona
@@ -1684,12 +1704,20 @@ const crearCategoria = async (req, res) => {
     try {
         console.log('📁 Creando nueva categoría...');
 
-        const { nombre, descripcion, orden = 0, activo = 1, visible_carta = 1 } = req.body;
+        const { nombre, descripcion, orden = 0, activo = 1, visible_carta = 1, imagen_url } = req.body;
 
         if (!nombre || nombre.trim() === '') {
             return res.status(400).json({
                 success: false,
                 message: 'El nombre de la categoría es obligatorio'
+            });
+        }
+
+        const imagenValidacion = normalizarImagenUrlCategoria(imagen_url);
+        if (!imagenValidacion.valido) {
+            return res.status(400).json({
+                success: false,
+                message: imagenValidacion.mensaje
             });
         }
 
@@ -1708,13 +1736,14 @@ const crearCategoria = async (req, res) => {
 
         // Insertar categoría
         const query = `
-            INSERT INTO categorias (nombre, descripcion, orden, activo, visible_carta)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO categorias (nombre, descripcion, imagen_url, orden, activo, visible_carta)
+            VALUES (?, ?, ?, ?, ?, ?)
         `;
 
         const [result] = await db.execute(query, [
             nombre.trim(),
             descripcion || null,
+            imagenValidacion.valor ?? null,
             parseInt(orden) || 0,
             activo ? 1 : 0,
             visible_carta ? 1 : 0
@@ -1725,7 +1754,7 @@ const crearCategoria = async (req, res) => {
             accion: 'CREATE_CATEGORIA',
             tabla: 'categorias',
             registroId: result.insertId,
-            datosNuevos: limpiarDatosSensibles({ nombre, descripcion, orden, activo, visible_carta }),
+            datosNuevos: limpiarDatosSensibles({ nombre, descripcion, orden, activo, visible_carta, imagen_url: imagenValidacion.valor ?? null }),
             detallesAdicionales: `Categoría creada: ${nombre}`
         });
 
@@ -1738,6 +1767,7 @@ const crearCategoria = async (req, res) => {
                 id: result.insertId,
                 nombre,
                 descripcion,
+                imagen_url: imagenValidacion.valor ?? null,
                 orden
             }
         });
@@ -1767,7 +1797,7 @@ const obtenerCategoria = async (req, res) => {
         }
 
         const [categorias] = await db.execute(
-            'SELECT id, nombre, descripcion, orden, activo, visible_carta FROM categorias WHERE id = ?',
+            'SELECT id, nombre, descripcion, imagen_url, orden, activo, visible_carta FROM categorias WHERE id = ?',
             [id]
         );
 
@@ -1810,12 +1840,20 @@ const obtenerCategoria = async (req, res) => {
 const editarCategoria = async (req, res) => {
     try {
         const { id } = req.params;
-        const { nombre, descripcion, orden, activo, visible_carta } = req.body;
+        const { nombre, descripcion, orden, activo, visible_carta, imagen_url } = req.body;
 
         if (!id || isNaN(parseInt(id))) {
             return res.status(400).json({
                 success: false,
                 message: 'ID de categoría inválido'
+            });
+        }
+
+        const imagenValidacion = normalizarImagenUrlCategoria(imagen_url);
+        if (!imagenValidacion.valido) {
+            return res.status(400).json({
+                success: false,
+                message: imagenValidacion.mensaje
             });
         }
 
@@ -1867,6 +1905,10 @@ const editarCategoria = async (req, res) => {
             camposActualizar.push('visible_carta = ?');
             valoresActualizar.push(visible_carta ? 1 : 0);
         }
+        if (imagenValidacion.valor !== undefined) {
+            camposActualizar.push('imagen_url = ?');
+            valoresActualizar.push(imagenValidacion.valor);
+        }
 
         if (camposActualizar.length === 0) {
             return res.status(400).json({
@@ -1880,6 +1922,14 @@ const editarCategoria = async (req, res) => {
         valoresActualizar.push(id);
 
         await db.execute(query, valoresActualizar);
+
+        const imagenAnterior = datosAnteriores.imagen_url;
+        if (imagenValidacion.valor !== undefined && imagenAnterior && imagenValidacion.valor !== imagenAnterior) {
+            const publicIdAnterior = resolvePublicIdFromUrl(imagenAnterior);
+            if (publicIdAnterior) {
+                await deleteImageFromFileServer(publicIdAnterior);
+            }
+        }
 
         // Auditar cambios
         await auditarOperacion(req, {
@@ -1949,6 +1999,11 @@ const eliminarCategoria = async (req, res) => {
         // Eliminar categoría
         await db.execute('DELETE FROM categorias WHERE id = ?', [id]);
 
+        const publicIdImagen = resolvePublicIdFromUrl(datosAnteriores.imagen_url);
+        if (publicIdImagen) {
+            await deleteImageFromFileServer(publicIdImagen);
+        }
+
         // Auditar eliminación
         await auditarOperacion(req, {
             accion: 'DELETE_CATEGORIA',
@@ -2003,12 +2058,12 @@ const filtrarCategorias = async (req, res) => {
         // Query principal con conteo de artículos
         let query = `
             SELECT
-                c.id, c.nombre, c.descripcion, c.orden, c.activo, c.visible_carta,
+                c.id, c.nombre, c.descripcion, c.imagen_url, c.orden, c.activo, c.visible_carta,
                 COUNT(a.id) as total_articulos
             FROM categorias c
             LEFT JOIN articulos a ON c.id = a.categoria_id AND a.activo = 1
             WHERE ${whereClause}
-            GROUP BY c.id, c.nombre, c.descripcion, c.orden, c.activo, c.visible_carta
+            GROUP BY c.id, c.nombre, c.descripcion, c.imagen_url, c.orden, c.activo, c.visible_carta
             ORDER BY c.orden, c.nombre
         `;
 

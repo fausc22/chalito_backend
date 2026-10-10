@@ -48,6 +48,7 @@ Ejecutar siempre por nombre de archivo (prefijo numerico):
   - `OTRO` y tipos no mapeados => `controla_stock = true`
 - `004_clientes.sql` -> modulo clientes (estructura segun el archivo).
 - `005_checkout_sesiones_mp.sql` -> tabla `checkout_sesiones_mp` para checkout Mercado Pago sin crear pedido hasta pago aprobado.
+- `026_categorias_imagen.sql` -> agrega `categorias.imagen_url` (imagen de la card en la carta online, NULL = imagen automatica).
 
 ## Seeds relacionados
 

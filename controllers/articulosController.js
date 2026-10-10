@@ -305,6 +305,7 @@ const obtenerCategorias = async (req, res) => {
                 c.id, 
                 c.nombre, 
                 c.descripcion,
+                c.imagen_url,
                 c.orden,
                 c.visible_carta
             FROM categorias c

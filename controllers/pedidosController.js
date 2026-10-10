@@ -568,21 +568,20 @@ const obtenerPedidoPorId = async (req, res) => {
 };
 
 /**
- * Actualizar estado de pedido
- * PUT /pedidos/:id/estado
+ * Cambia el estado de un pedido con todas sus validaciones y efectos
+ * (comanda, cobro/venta, CAE, auditoría, WebSocket).
+ * Devuelve { status, body } para que el caller decida cómo responder.
  */
-const actualizarEstadoPedido = async (req, res) => {
+const ejecutarCambioEstadoPedido = async ({ id, estado, req }) => {
+        const respuesta = (status, body) => ({ status, body });
         const connection = await db.getConnection();
         
         try {
-            const { id } = req.validatedParams || req.params;
-            const { estado } = req.validatedData || req.body;
-            
             // Obtener datos anteriores
             const datosAnteriores = await obtenerDatosAnteriores('pedidos', id);
             
             if (!datosAnteriores) {
-                return res.status(404).json({
+                return respuesta(404, {
                     success: false,
                     message: 'Pedido no encontrado'
                 });
@@ -591,7 +590,7 @@ const actualizarEstadoPedido = async (req, res) => {
             if (estado !== datosAnteriores.estado
                 && esEstadoAvanceOperativoCocina(estado)
                 && !pedidoEstaHabilitadoOperativamente(datosAnteriores)) {
-                return res.status(400).json({
+                return respuesta(400, {
                     success: false,
                     message: 'El pedido tiene el pago pendiente (Mercado Pago o transferencia web sin acreditar). No puede avanzar en cocina hasta estar PAGADO.',
                     code: 'PEDIDO_BLOQUEADO_POR_PAGO',
@@ -615,7 +614,7 @@ const actualizarEstadoPedido = async (req, res) => {
                 
                 if (pedidoInfo.length === 0) {
                     await connection.rollback();
-                    return res.status(404).json({
+                    return respuesta(404, {
                         success: false,
                         message: 'Pedido no encontrado'
                     });
@@ -623,7 +622,7 @@ const actualizarEstadoPedido = async (req, res) => {
                 
                 if (pedidoInfo[0].estado_pago !== 'PAGADO') {
                     await connection.rollback();
-                    return res.status(400).json({
+                    return respuesta(400, {
                         success: false,
                         message: 'No se puede entregar un pedido que no está cobrado. El pedido debe estar en estado PAGADO para poder entregarse.',
                         code: 'PEDIDO_NO_COBRADO',
@@ -649,7 +648,7 @@ const actualizarEstadoPedido = async (req, res) => {
                         }
                     } else if (!reconciliacion.success) {
                         await connection.rollback();
-                        return res.status(400).json({
+                        return respuesta(400, {
                             success: false,
                             message: reconciliacion.message || 'No se puede entregar un pedido sin venta asociada. El pedido debe estar cobrado primero.',
                             code: reconciliacion.code || 'SIN_VENTA_ASOCIADA'
@@ -658,7 +657,7 @@ const actualizarEstadoPedido = async (req, res) => {
                 }
                 if (!venta) {
                     await connection.rollback();
-                    return res.status(400).json({
+                    return respuesta(400, {
                         success: false,
                         message: 'No se puede entregar un pedido sin venta asociada. El pedido debe estar cobrado primero.',
                         code: 'SIN_VENTA_ASOCIADA'
@@ -685,7 +684,7 @@ const actualizarEstadoPedido = async (req, res) => {
                     
                     if (infoCapacidad.estaLlena) {
                         await connection.rollback();
-                        return res.status(400).json({
+                        return respuesta(400, {
                             success: false,
                             message: `No hay capacidad disponible. Cocina al máximo (${infoCapacidad.pedidosEnPreparacion}/${infoCapacidad.capacidadMaxima} pedidos en preparación)`,
                             code: 'CAPACIDAD_COCINA_LLENA',
@@ -912,7 +911,7 @@ const actualizarEstadoPedido = async (req, res) => {
                 }
             }
             
-            res.json({
+            return respuesta(200, {
                 success: true,
                 message: 'Estado actualizado correctamente',
                 data: {
@@ -926,13 +925,89 @@ const actualizarEstadoPedido = async (req, res) => {
         } catch (error) {
             await connection.rollback();
             console.error('❌ Error al actualizar estado:', error);
-            res.status(500).json({
+            return respuesta(500, {
                 success: false,
                 message: 'Error al actualizar estado'
             });
         } finally {
             connection.release();
         }
+};
+
+/**
+ * Actualizar estado de pedido
+ * PUT /pedidos/:id/estado
+ */
+const actualizarEstadoPedido = async (req, res) => {
+    const { id } = req.validatedParams || req.params;
+    const { estado } = req.validatedData || req.body;
+    const { status, body } = await ejecutarCambioEstadoPedido({ id, estado, req });
+    res.status(status).json(body);
+};
+
+const ESTADOS_FINALIZABLES = ['RECIBIDO', 'EN_PREPARACION', 'LISTO'];
+
+/**
+ * Cierre del día: pasa a LISTO y luego a ENTREGADO todos los pedidos activos y pagados.
+ * Los RECIBIDO van directo a LISTO (sin comanda ni control de capacidad de cocina).
+ * Los pedidos sin cobrar no se tocan.
+ * POST /pedidos/finalizar-todos
+ */
+const finalizarTodosLosPedidos = async (req, res) => {
+    try {
+        const placeholders = ESTADOS_FINALIZABLES.map(() => '?').join(', ');
+        const [pedidos] = await db.execute(
+            `SELECT id, estado, estado_pago, cliente_nombre
+             FROM pedidos
+             WHERE estado IN (${placeholders})
+             ORDER BY id ASC`,
+            ESTADOS_FINALIZABLES
+        );
+
+        const pagados = pedidos.filter((p) => p.estado_pago === 'PAGADO');
+        const sinCobrar = pedidos
+            .filter((p) => p.estado_pago !== 'PAGADO')
+            .map((p) => ({ id: p.id, cliente_nombre: p.cliente_nombre, estado: p.estado }));
+
+        const finalizados = [];
+        const errores = [];
+
+        for (const pedido of pagados) {
+            if (pedido.estado !== 'LISTO') {
+                const resListo = await ejecutarCambioEstadoPedido({ id: pedido.id, estado: 'LISTO', req });
+                if (resListo.status !== 200) {
+                    errores.push({ id: pedido.id, message: resListo.body?.message || 'Error al marcar como listo' });
+                    continue;
+                }
+            }
+
+            const resEntregado = await ejecutarCambioEstadoPedido({ id: pedido.id, estado: 'ENTREGADO', req });
+            if (resEntregado.status !== 200) {
+                errores.push({ id: pedido.id, message: resEntregado.body?.message || 'Error al marcar como entregado' });
+                continue;
+            }
+
+            finalizados.push(pedido.id);
+        }
+
+        console.log(`✅ [BACKEND] Finalizar todos: ${finalizados.length} finalizados, ${sinCobrar.length} sin cobrar, ${errores.length} con error`);
+
+        res.json({
+            success: true,
+            message: `${finalizados.length} pedido(s) finalizado(s)`,
+            data: {
+                finalizados,
+                sinCobrar,
+                errores
+            }
+        });
+    } catch (error) {
+        console.error('❌ Error al finalizar todos los pedidos:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error al finalizar los pedidos'
+        });
+    }
 };
 
 /**
@@ -2117,6 +2192,7 @@ module.exports = {
     obtenerPedidoPorId,
     actualizarPedido,
     actualizarEstadoPedido,
+    finalizarTodosLosPedidos,
     actualizarObservaciones,
     actualizarHorarioEntrega,
     eliminarPedido,

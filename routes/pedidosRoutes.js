@@ -7,6 +7,7 @@ const {
     obtenerPedidoPorId,
     actualizarPedido,
     actualizarEstadoPedido,
+    finalizarTodosLosPedidos,
     actualizarObservaciones,
     actualizarHorarioEntrega,
     eliminarPedido,
@@ -37,6 +38,7 @@ const {
 } = require('../validators/pedidosValidators');
 
 router.post('/', apiRateLimiter, ...writePedidos, validate(crearPedidoSchema), crearPedido);
+router.post('/finalizar-todos', apiRateLimiter, ...pedidosEstado, finalizarTodosLosPedidos);
 router.get('/capacidad', apiRateLimiter, ...readPedidos, obtenerCapacidadCocina);
 router.get('/', apiRateLimiter, ...readPedidos, obtenerPedidos);
 router.get('/entregados', apiRateLimiter, ...readPedidos, obtenerPedidosEntregados);
