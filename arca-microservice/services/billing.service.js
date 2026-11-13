@@ -152,11 +152,12 @@ class BillingService {
   }
 
   /**
-   * CREAR FACTURA A MONOTRIBUTISTA
+   * CREAR FACTURA B A MONOTRIBUTISTA
+   * La letra B no quita el IVA: el emisor inscripto lo declara igual.
    */
   async crearFacturaMonotributista(cuit, items, opciones = {}) {
     const datosFactura = {
-      tipoComprobante: TIPOS_COMPROBANTE.FACTURA_A,
+      tipoComprobante: TIPOS_COMPROBANTE.FACTURA_B,
       concepto: opciones.concepto || 1,
       cliente: {
         tipoDocumento: 80, // CUIT
@@ -171,7 +172,9 @@ class BillingService {
   }
 
   /**
-   * ✅ NUEVO: CREAR FACTURA A EXENTO
+   * Factura B a sujeto exento.
+   * La exención es del comprador: no toma crédito fiscal.
+   * El emisor inscripto informa el IVA de la alícuota del ítem.
    */
   async crearFacturaExento(cuitODni, items, opciones = {}) {
     const tipoDoc = determinarTipoDocumento(cuitODni);
@@ -242,7 +245,7 @@ class BillingService {
 
 
   /**
- * ✅ CREAR NOTA DE CRÉDITO A (Responsable Inscripto/Monotributo)
+ * ✅ CREAR NOTA DE CRÉDITO A (Responsable Inscripto)
  * Anula total o parcialmente una Factura A
  */
 async crearNotaCreditoA(
@@ -336,10 +339,9 @@ async crearNotaCredito(
 ) {
   try {
     const condicionIVA = datosCliente.condicionIVA || CONDICIONES_IVA.CONSUMIDOR_FINAL;
-    
-    // ✅ Determinar tipo de NC según condición IVA
-    if (condicionIVA === CONDICIONES_IVA.RESPONSABLE_INSCRIPTO || 
-        condicionIVA === CONDICIONES_IVA.MONOTRIBUTO) {
+
+    // NC A solo para Responsable Inscripto. Exento, CF y Monotributo van en NC B.
+    if (condicionIVA === CONDICIONES_IVA.RESPONSABLE_INSCRIPTO) {
       
       if (!datosCliente.cuit) {
         throw new Error('CUIT es obligatorio para Nota de Crédito A');
@@ -353,7 +355,7 @@ async crearNotaCredito(
       );
       
     } else {
-      // Consumidor Final o Exento
+      // Exento, Consumidor Final o Monotributo
       return await this.crearNotaCreditoB(
         facturaAsociada,
         items,
@@ -368,7 +370,7 @@ async crearNotaCredito(
 }
 
   /**
-   * ✅ CREAR NOTA DE DÉBITO A (Responsable Inscripto/Monotributo)
+   * ✅ CREAR NOTA DE DÉBITO A (Responsable Inscripto)
    * Incrementa el importe de una Factura A
    */
   async crearNotaDebitoA(
@@ -462,10 +464,9 @@ async crearNotaCredito(
   ) {
     try {
       const condicionIVA = datosCliente.condicionIVA || CONDICIONES_IVA.CONSUMIDOR_FINAL;
-      
-      // ✅ Determinar tipo de ND según condición IVA
-      if (condicionIVA === CONDICIONES_IVA.RESPONSABLE_INSCRIPTO || 
-          condicionIVA === CONDICIONES_IVA.MONOTRIBUTO) {
+
+      // ND A solo para Responsable Inscripto. Exento, CF y Monotributo van en ND B.
+      if (condicionIVA === CONDICIONES_IVA.RESPONSABLE_INSCRIPTO) {
         
         if (!datosCliente.cuit) {
           throw new Error('CUIT es obligatorio para Nota de Débito A');
@@ -479,7 +480,7 @@ async crearNotaCredito(
         );
         
       } else {
-        // Consumidor Final o Exento
+        // Exento, Consumidor Final o Monotributo
         return await this.crearNotaDebitoB(
           facturaAsociada,
           items,

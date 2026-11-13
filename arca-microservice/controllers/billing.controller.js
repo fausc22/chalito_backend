@@ -452,7 +452,7 @@ class BillingController {
 
   /**
  * POST /api/notas-credito/tipo-a
- * Crear Nota de Crédito A (Responsable Inscripto/Monotributo)
+ * Crear Nota de Crédito A (Responsable Inscripto)
  */
 async crearNotaCreditoA(req, res) {
   console.log('📦 Body recibido:', JSON.stringify(req.body, null, 2));
@@ -629,7 +629,7 @@ async crearNotaCreditoGeneral(req, res) {
 
 /**
  * POST /api/notas-debito/tipo-a
- * Crear Nota de Débito A (Responsable Inscripto/Monotributo)
+ * Crear Nota de Débito A (Responsable Inscripto)
  */
 async crearNotaDebitoA(req, res) {
   console.log('📦 Body recibido:', JSON.stringify(req.body, null, 2));

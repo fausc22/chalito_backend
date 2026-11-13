@@ -6,13 +6,13 @@
 // TIPOS DE COMPROBANTES AFIP
 // ============================================
 export const TIPOS_COMPROBANTE = {
-  FACTURA_A: 1,           // Para Responsables Inscriptos y Monotributistas
+  FACTURA_A: 1,           // Receptor Responsable Inscripto
   NOTA_DEBITO_A: 2,
   NOTA_CREDITO_A: 3,
-  FACTURA_B: 6,           // Para Consumidores Finales y Exentos
+  FACTURA_B: 6,           // Receptor Exento, Consumidor Final o Monotributista
   NOTA_DEBITO_B: 7,
   NOTA_CREDITO_B: 8,
-  FACTURA_C: 11,          // Para operaciones exentas
+  FACTURA_C: 11,          // Emisor monotributista: no discrimina IVA
   NOTA_DEBITO_C: 12,
   NOTA_CREDITO_C: 13,
 };
@@ -56,12 +56,13 @@ export const CONDICIONES_IVA = {
 // ALÍCUOTAS DE IVA
 // ============================================
 export const ALICUOTAS_IVA = {
-  IVA_0: 3,    // 0% (exento)
-  IVA_2_5: 9,  // 2.5%
-  IVA_5: 8,    // 5%
-  IVA_10_5: 4, // 10.5%
-  IVA_21: 5,   // 21% (el más común)
-  IVA_27: 6,   // 27%
+  OPERACION_EXENTA: 2, // La operación es exenta: el importe va a ImpOpEx, no al array Iva
+  IVA_0: 3,            // 0% gravado (Importe 0). No es la condición del receptor
+  IVA_2_5: 9,          // 2.5%
+  IVA_5: 8,            // 5%
+  IVA_10_5: 4,         // 10.5%
+  IVA_21: 5,           // 21%
+  IVA_27: 6,           // 27%
 };
 
 // Mapeo de alícuotas a porcentajes reales
@@ -128,17 +129,22 @@ export function getNombreComprobante(codigo) {
 }
 
 /**
- * Validar combinación de tipo de comprobante y condición IVA
+ * Validar combinación de tipo de comprobante y condición IVA.
+ * La letra depende del receptor. No apaga el IVA de una venta gravada.
  */
 export function validarCombinaciónComprobanteIVA(tipoComprobante, condicionIVA) {
-  // Factura A solo para Responsables Inscriptos y Monotributistas
+  // A, ND A y NC A: solo Responsable Inscripto
   if ([1, 2, 3].includes(tipoComprobante)) {
-    return [CONDICIONES_IVA.RESPONSABLE_INSCRIPTO, CONDICIONES_IVA.MONOTRIBUTO].includes(condicionIVA);
+    return condicionIVA === CONDICIONES_IVA.RESPONSABLE_INSCRIPTO;
   }
-  
-  // Factura B para Consumidor Final y Exento
+
+  // B, ND B y NC B: Exento, Consumidor Final y Monotributo
   if ([6, 7, 8].includes(tipoComprobante)) {
-    return [CONDICIONES_IVA.CONSUMIDOR_FINAL, CONDICIONES_IVA.EXENTO].includes(condicionIVA);
+    return [
+      CONDICIONES_IVA.EXENTO,
+      CONDICIONES_IVA.CONSUMIDOR_FINAL,
+      CONDICIONES_IVA.MONOTRIBUTO
+    ].includes(condicionIVA);
   }
 
   // Factura C (monotributista emisor): Consumidor Final y demás receptores habituales
@@ -162,7 +168,8 @@ export function esComprobanteC(tipoComprobante) {
 }
 
 /**
- * Determinar si el receptor está exento de IVA
+ * El receptor es sujeto exento (condición 4).
+ * No define la alícuota ni anula el débito fiscal del emisor inscripto.
  */
 export function esExento(condicionIVA) {
   return condicionIVA === CONDICIONES_IVA.EXENTO;

@@ -4,7 +4,6 @@ import {
   CONDICIONES_IVA,
   CONCEPTOS,
   validarCombinaciónComprobanteIVA,
-  esExento,
   esComprobanteC,
   esNotaCredito,
   esNotaDebito
@@ -127,8 +126,8 @@ export function validarImporte(importe, nombre = 'Importe') {
 }
 
 /**
- * Validar estructura completa de un comprobante
- * ✅ ACTUALIZADO: Valida correctamente EXENTOS (sin IVA)
+ * Validar estructura completa de un comprobante.
+ * La condición del receptor no anula el IVA de una venta gravada.
  */
 export function validarDatosComprobante(datos) {
   const errores = [];
@@ -198,8 +197,8 @@ if (!validNC.valido) {
     );
   }
   
-  // ✅ 7. Validar IVA — Factura C no usa array Iva
-const esReceptorExento = esExento(datos.CondicionIVAReceptorId);
+  // 7. Validar IVA. Factura C no usa array Iva.
+  // ImpIVA en 0 solo admite alícuota 3 con importe 0 (operación al 0 %, no receptor exento).
 const esFacturaC = esComprobanteC(datos.CbteTipo);
 
 if (esFacturaC) {
@@ -215,42 +214,51 @@ if (esFacturaC) {
     );
   }
 } else if (datos.ImpNeto > 0 && (!datos.Iva || datos.Iva.length === 0)) {
-  errores.push('Si ImpNeto > 0, debe incluir el array Iva (usar alícuota 3 con Importe 0 para exentos)');
+  errores.push('Si ImpNeto > 0, debe incluir el array Iva (alícuota 3 con Importe 0 solo si la operación es al 0 %)');
 }
 
 if (!esFacturaC && datos.Iva && datos.Iva.length > 0) {
   let sumaBaseImp = 0;
   let sumaIVA = 0;
-  
+
   datos.Iva.forEach((alicuota, index) => {
     if (!alicuota.Id) errores.push(`Iva[${index}].Id es obligatorio`);
     if (alicuota.BaseImp === undefined) errores.push(`Iva[${index}].BaseImp es obligatorio`);
     if (alicuota.Importe === undefined) errores.push(`Iva[${index}].Importe es obligatorio`);
-    
+
+    const idAlicuota = Number(alicuota.Id);
+    const importeLinea = parseFloat(alicuota.Importe || 0);
+    if (idAlicuota === 3 && Math.abs(importeLinea) > 0.001) {
+      errores.push(`Iva[${index}]: la alícuota 3 (0 %) debe informarse con Importe 0`);
+    }
+    if (idAlicuota !== 3 && Math.abs(importeLinea) <= 0.001) {
+      errores.push(`Iva[${index}]: no se puede informar la alícuota ${idAlicuota} con Importe 0. Si ImpIVA es 0, la única alícuota permitida es la id 3 con Importe 0`);
+    }
+
     sumaBaseImp += parseFloat(alicuota.BaseImp || 0);
     sumaIVA += parseFloat(alicuota.Importe || 0);
   });
-  
+
   if (Math.abs(sumaBaseImp - impNetoParsed) > 0.01) {
     errores.push(
       `La suma de BaseImp en Iva (${sumaBaseImp.toFixed(2)}) debe coincidir con ImpNeto (${impNetoParsed})`
     );
   }
-  
+
   if (Math.abs(sumaIVA - impIVAParsed) > 0.01) {
     errores.push(
       `La suma de Importe en Iva (${sumaIVA.toFixed(2)}) debe coincidir con ImpIVA (${impIVAParsed})`
     );
   }
-  
-  // ✅ Para exentos, validar que use alícuota 3 con Importe 0
-  if (esReceptorExento) {
-    const tieneAlicuotaExento = datos.Iva.some(alicuota => alicuota.Id === 3);
-    if (!tieneAlicuotaExento) {
-      errores.push('Para receptores EXENTOS debe usar alícuota ID 3 (0%)');
-    }
-    if (impIVAParsed !== 0) {
-      errores.push('Para receptores EXENTOS, ImpIVA debe ser 0');
+
+  if (impIVAParsed === 0) {
+    const alicuotaDistintaDeCero = datos.Iva.some((alicuota) => {
+      const idAlicuota = Number(alicuota.Id);
+      const importeLinea = parseFloat(alicuota.Importe || 0);
+      return idAlicuota !== 3 || Math.abs(importeLinea) > 0.001;
+    });
+    if (alicuotaDistintaDeCero) {
+      errores.push('Si ImpIVA es 0, la única alícuota permitida es la id 3 con Importe 0');
     }
   }
 }
